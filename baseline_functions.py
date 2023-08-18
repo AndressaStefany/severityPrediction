@@ -1,13 +1,4 @@
-import pandas as pd
-import numpy as np
-
-import string
 import re
-
-from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import FunctionTransformer
-from sklearn.metrics import accuracy_score
 
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
