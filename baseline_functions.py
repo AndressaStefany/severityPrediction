@@ -29,7 +29,8 @@ def remove_code_snippets(text):
 
     return text_without_code
 
-def remove_urls_and_codes(dataframe, col='bug_severity'):
+def remove_urls_and_codes(dataframe, col='description'):
+    # print('col', col)
     dataframe[col] = dataframe[col].apply(lambda text: re.sub(r'http\S+', '', text))
     dataframe[col] = dataframe[col].apply(lambda text: remove_code_snippets(text))
     return dataframe
