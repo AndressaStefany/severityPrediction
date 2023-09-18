@@ -259,7 +259,7 @@ def cross_validation_with_classifier(classifier, X: np.ndarray, y: np.ndarray, n
 
                 test_accuracy = accuracy_score(y_test, y_pred)
                 
-                df_results.append({ "seed": 42, "classifier": classifier.__class__.__name__, "train_fun": train_fun.__name__, "train_accuracy": train_accuracy, "test_accuracy": test_accuracy , "fold_id": fold},ignore_index=True)
+                df_results.append({ "seed": seed, "classifier": classifier.__class__.__name__, "train_fun": train_fun.__name__, "train_accuracy": train_accuracy, "test_accuracy": test_accuracy , "fold_id": fold},ignore_index=True)
 
     return df_results
 
@@ -293,8 +293,8 @@ def read_data_from_disk(folder: Path, id: str = "", full: bool = True):
     return X,y
 
 def generate_data(data_path: Path):
-    save_data_to_disk(lambda :naive_bayes_classifier(is_binomial=True),data_path,id="nb_bino")
-    save_data_to_disk(lambda :naive_bayes_classifier(is_binomial=False),data_path,id="nb_non_bino")
+    save_data_to_disk(lambda :pipeline_naive_bayes(is_binomial=True),data_path,id="nb_bino")
+    save_data_to_disk(lambda :pipeline_naive_bayes(is_binomial=False),data_path,id="nb_non_bino")
     save_data_to_disk(lambda :pipeline_1NN_SVM,data_path,id="svm_knn")
 if __name__ == "__main__":
     data_path = Path("./data/")
