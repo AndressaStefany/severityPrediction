@@ -263,12 +263,13 @@ def cross_validation_with_classifier(classifier, X: np.ndarray, y: np.ndarray, n
 
     return df_results
 
-def save_data_to_disk(pipeline_fn: Callable, folder: Path, id: str = ""):
+def save_data_to_disk(pipeline_fn: Callable, folder: Path, id: str = "", do_print: bool = False):
     bug_reports = pd.read_csv(folder / 'eclipse_filtered.csv')
     print(bug_reports.info())
     pipeline,vectorizer = pipeline_fn()
     X, y = pipeline.fit_transform(bug_reports)
-    print_pipeline(pipeline,bug_reports)
+    if do_print:
+        print_pipeline(pipeline,bug_reports)
     memmapped_array = np.memmap(folder / "X.npy",dtype=np.float32,mode="w+",shape=X.shape)
     with Progress() as progress:
         task = progress.add_task("[red]Loading into file...", total=X.shape[0]*X.shape[1])
