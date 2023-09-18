@@ -209,73 +209,104 @@ def print_pipeline(pipeline: Pipeline, src_data):
             print("X:",r[0][:10], type(r[0]))
             print("y:",r[1][:10], type(r[1]))
         d = r
+def partial_train(X: np.ndarray,y: np.ndarray,classifier,train_indices: np.ndarray,progress: Progress,task):
+    # Incremental fit to avoid memory problems
+    y_train_pred = np.array([])
+    y_train = np.array([])
+    for tr_indices in np.array_split(train_indices, 10):
+        X_train = X[tr_indices]
+        y_train_partial = y[tr_indices]
+        classifier.partial_fit(X_train, y_train_partial, classes=[0,1])
         
-def cross_validation_with_classifier(classifier, X: np.ndarray, y: np.ndarray, n_splits: int = 5):
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-    # Initialize lists to store train and test accuracies
-    train_accuracies = []
-    test_accuracies = []
+        y_train = np.concatenate([y_train,y_train_partial],axis=0)
+        del X_train
+        del y_train_partial
+        progress.update(task,advance=1)
+    for tr_indices in np.array_split(train_indices, 10):
+        X_train = X[tr_indices]
+        y_train_partial = y[tr_indices]
+        y_train_pred = np.concatenate([y_train_pred,classifier.predict(X_train)],axis=0)
+    return y_train, y_train_pred
 
-    # Iterate through each fold
-    for fold, (train_indices, test_indices) in track(enumerate(skf.split(np.zeros((len(y),)), y))):
-        print(f'Fold {fold + 1} of size {len(train_indices)} tr and {len(test_indices)} test')
+def train(X: np.ndarray,y: np.ndarray,classifier,train_indices: np.ndarray,progress: Progress,task):
         X_train = X[train_indices]
-        X_test = X[test_indices]
-        y_train, y_test = y[train_indices], y[test_indices]
-        print("data ready")
+        y_train = y[train_indices]
         classifier.fit(X_train, y_train)
-        print("train ready")
-        
-        y_pred = classifier.predict(X_test)
-        print("predict ready")
-
-        test_accuracy = accuracy_score(y_test, y_pred)
-        test_accuracies.append(test_accuracy)
-
         y_train_pred = classifier.predict(X_train)
-        train_accuracy = accuracy_score(y_train, y_train_pred)
-        train_accuracies.append(train_accuracy)
+        progress.update(task,advance=1)
+        return y_train, y_train_pred
+        
+def cross_validation_with_classifier(classifier, X: np.ndarray, y: np.ndarray, n_splits: int = 5, train_fun: Optional[Callable] = None, num_rep: int = 5):
+    if train_fun is None:
+        train_fun = partial_train
+    # make dataframe to store the seed, the classifieer used, the train method used and the train and test accuracies
+    df_results = pd.DataFrame({ "seed": [], "classifier": [], "train_fun": [], "train_accuracy": [], "test_accuracy": [] , "fold_id": []})
+    for seed in range(num_rep):
+        # Define the k-fold cross-validation strategy
+        skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+        with Progress() as progress:
+            task = progress.add_task("[red]Training...", total=n_splits*10)
+            # Iterate through each fold
+            for fold, (train_indices, test_indices) in enumerate(skf.split(np.zeros((len(y),)), y)):
+                y_train, y_train_pred = train_fun(X,y,classifier,train_indices,progress,task)
+                train_accuracy = accuracy_score(y_train, y_train_pred)
+                
+                del y_train_pred
+                del y_train
+                X_test = X[test_indices]
+                y_pred = classifier.predict(X_test)
+                y_test = y[test_indices]
 
-        # Print accuracies for this fold
-        print(f'Fold {fold + 1} - Train Accuracy: {train_accuracy:.4f}, Test Accuracy: {test_accuracy:.4f}')
-    # Calculate and print mean accuracies across all folds
-    mean_train_accuracy = sum(train_accuracies) / n_splits
-    mean_test_accuracy = sum(test_accuracies) / n_splits
-    print(f'Mean Train Accuracy: {mean_train_accuracy:.4f}, Mean Test Accuracy: {mean_test_accuracy:.4f}')
-    
-if __name__ == "__main__":
-    data_path = Path("./data/")
-    bug_reports = pd.read_csv(data_path / 'eclipse_filtered.csv')
+                test_accuracy = accuracy_score(y_test, y_pred)
+                
+                df_results.append({ "seed": 42, "classifier": classifier.__class__.__name__, "train_fun": train_fun.__name__, "train_accuracy": train_accuracy, "test_accuracy": test_accuracy , "fold_id": fold},ignore_index=True)
+
+    return df_results
+
+def save_data_to_disk(pipeline_fn: Callable, folder: Path, id: str = ""):
+    bug_reports = pd.read_csv(folder / 'eclipse_filtered.csv')
     print(bug_reports.info())
-    pipeline,vectorizer = pipeline_naive_bayes()
+    pipeline,vectorizer = pipeline_fn()
     X, y = pipeline.fit_transform(bug_reports)
     print_pipeline(pipeline,bug_reports)
+    memmapped_array = np.memmap(folder / "X.npy",dtype=np.float32,mode="w+",shape=X.shape)
+    with Progress() as progress:
+        task = progress.add_task("[red]Loading into file...", total=X.shape[0]*X.shape[1])
+        for i in range(X.shape[0]):
+            for j in range(X.shape[1]):
+                memmapped_array[i, j] = X[i,j]
+                progress.update(task,advance=1)
+    memmapped_array.flush()
+    with open(folder / f"X_{id}.shape", "w") as shape_file:
+        shape_file.write(f"({X.shape[0]},{X.shape[1]})")
+    np.save(folder / f"y_{id}.npy",y)
+    np.save(folder / f"X_full_{id}.npy",y)
     
-    # Create bag-of-words representation and inspect the result on the preprocessed description column
-    feature_names = vectorizer.get_feature_names_out()
+def read_data_from_disk(folder: Path, id: str = "", full: bool = True):
+    if full:
+        X = np.load(data_path / f"y_{id}.npy")
+    else:
+        with open(data_path / f"X_{id}.shape", "r") as shape_file:
+            shape = eval(shape_file.read().strip())
+        X = np.memmap(data_path / f"X_{id}.npy", dtype='float32', mode='r',shape=shape)
+    y = np.load(data_path / f"y_{id}.npy")
+    return X,y
 
-    # Print the bag-of-words representation
-    print(f"There are feature vector of size {len(feature_names)} (vocabulary size found)")
-    n_samples = 10
-    print(f"Here are {n_samples} of the feature names (vocabulary) found:")
-    for f in feature_names[:n_samples]:
-        print(f)
-    np.save(data_path / "X.npy",X)
-    memmapped_array = np.memmap(data_path / "X.npy",dtype=np.float32,mode="w+",shape=X.shape)
-    # with Progress() as progress:
-    #     task = progress.add_task("[red]Loading into file...", total=X.shape[0]*X.shape[1])
-    #     for i in range(X.shape[0]):
-    #         for j in range(X.shape[1]):
-    #             memmapped_array[i, j] = X[i,j]
-    #             progress.update(task,advance=1)
-    # memmapped_array.flush()
-    # with open(data_path / "X.shape", "w") as shape_file:
-    #     shape_file.write(f"({X.shape[0]},{X.shape[1]})")
-    np.save(data_path / "y.npy",y)
-    with open(data_path / "X.shape", "r") as shape_file:
-        shape = eval(shape_file.read().strip())
-    X = np.memmap(data_path / "X.npy", dtype='float32', mode='r',shape=shape)
-    y = np.load(data_path / "y.npy")
-    # Define the Naive Bayes classifier
-    naive_bayes_classifier = BernoulliNB()
-    cross_validation_with_classifier(naive_bayes_classifier,X,y)
+def generate_data(data_path: Path):
+    save_data_to_disk(lambda :naive_bayes_classifier(is_binomial=True),data_path,id="nb_bino")
+    save_data_to_disk(lambda :naive_bayes_classifier(is_binomial=False),data_path,id="nb_non_bino")
+    save_data_to_disk(lambda :pipeline_1NN_SVM,data_path,id="svm_knn")
+if __name__ == "__main__":
+    data_path = Path("./data/")
+    generate_data(data_path)
+    # # Define the Naive Bayes classifier
+    # classifier = BernoulliNB()
+    # read_data_from_disk(data_path,id="nb_bino")
+    # df = cross_validation_with_classifier(classifier,X,y)
+    # out_path = data_path / "results_baselines.csv"
+    # # check if out_path exists and if so get the dataframe and append the df dataframe to it and write it back into the file
+    # if  out_path.exists():
+    #     df_old = pd.read_csv(out_path)
+    #     df = pd.concat([df_old,df])
+    # df.to_csv(out_path,index=False)
+    
