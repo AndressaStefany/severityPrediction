@@ -265,18 +265,14 @@ def cross_validation_with_classifier(classifier, X: np.ndarray, y: np.ndarray, n
 
 def save_data_to_disk(pipeline_fn: Callable, folder: Path, id: str = "", do_print: bool = False):
     bug_reports = pd.read_csv(folder / 'eclipse_filtered.csv')
-    print(bug_reports.info())
+    if do_print:
+        print(bug_reports.info())
     pipeline,vectorizer = pipeline_fn()
     X, y = pipeline.fit_transform(bug_reports)
     if do_print:
         print_pipeline(pipeline,bug_reports)
-    memmapped_array = np.memmap(folder / "X.npy",dtype=np.float32,mode="w+",shape=X.shape)
-    with Progress() as progress:
-        task = progress.add_task("[red]Loading into file...", total=X.shape[0]*X.shape[1])
-        for i in range(X.shape[0]):
-            for j in range(X.shape[1]):
-                memmapped_array[i, j] = X[i,j]
-                progress.update(task,advance=1)
+    memmapped_array = np.memmap(folder / f"X_{id}.npy",dtype=np.float32,mode="w+",shape=X.shape)
+    memmapped_array[:] = X[:]
     memmapped_array.flush()
     with open(folder / f"X_{id}.shape", "w") as shape_file:
         shape_file.write(f"({X.shape[0]},{X.shape[1]})")
@@ -297,6 +293,19 @@ def generate_data(data_path: Path):
     save_data_to_disk(lambda :pipeline_naive_bayes(is_binomial=True),data_path,id="nb_bino")
     save_data_to_disk(lambda :pipeline_naive_bayes(is_binomial=False),data_path,id="nb_non_bino")
     save_data_to_disk(lambda :pipeline_1NN_SVM,data_path,id="svm_knn")
+    
+def run_trainings(folder: Path):
+    df_results = pd.DataFrame({ "seed": [], "classifier": [], "train_fun": [], "train_accuracy": [], "test_accuracy": [] , "fold_id": []})
+    for classifier,pipeline_id,full in zip([
+        [BernoulliNB(),MultinomialNB(),GaussianNB(),ComplementNB(),SVC(),KNeighborsClassifier()],
+        ["nb_bino","nb_non_bino","nb_non_bino","nb_non_bino","svm_knn","svm_knn"],
+        [False,False,False,False,True,True]
+        ]):
+        X,y = read_data_from_disk(folder, id=pipeline_id, full=full)
+        df = cross_validation_with_classifier(classifier,X,y)
+        df_results.append(df)
+        
+        
 if __name__ == "__main__":
     data_path = Path("./data/")
     generate_data(data_path)
