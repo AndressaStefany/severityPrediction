@@ -330,9 +330,8 @@ def hyperparameter_search(folder: Path):
         prior = trial.suggest_float("prior",0,1)
         priors = np.array([prior,1-prior])
         var_smoothing = trial.suggest_float("var_smoothing",1e-14,1,log=True)
-        df_results = pd.DataFrame({ "seed": [], "classifier": [], "train_fun": [], "train_accuracy": [], "test_accuracy": [] , "fold_id": [], })
         X,y = read_data_from_disk(folder, id="nb_non_bino", full=False)
-        df = cross_validation_with_classifier("GaussianNB",X,y,train_fun=partial_train)
+        df = cross_validation_with_classifier("GaussianNB",X,y,train_fun=partial_train, priors=priors,var_smoothing=var_smoothing)
         del X
         del y
         return df["test_accuracy"].mean()
@@ -350,5 +349,6 @@ if __name__ == "__main__":
     print(f"Available Memory: {virtual_memory.available / (1024 ** 3):.2f} GB")
     data_path = Path("./data/")
     # generate_data(data_path)
-    run_trainings(data_path)
+    # run_trainings(data_path)
+    hyperparameter_search(data_path)
     
