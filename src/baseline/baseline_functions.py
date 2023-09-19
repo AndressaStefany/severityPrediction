@@ -8,6 +8,7 @@ from typing import * #type: ignore
 from IPython.display import display
 from rich.progress import Progress
 import optuna
+import json
 
 from scipy.sparse import csr_matrix
 from sklearn.pipeline import Pipeline
@@ -230,7 +231,10 @@ def train(X: np.ndarray,y: np.ndarray,classifier,train_indices: np.ndarray,progr
         X_train = csr_matrix(X[train_indices])
         y_train = (y[train_indices])
         classifier.fit(X_train, y_train)
-        y_train_pred = classifier.predict_probas(X_train)[:,1]
+        if isinstance(classifier,SVC) or isinstance(classifier, KNeighborsClassifier):
+            y_train_pred = classifier.predict_proba(X_train)[:,1]
+        else:
+            y_train_pred = classifier.predict_probas(X_train)
         progress.update(task,advance=1)
         return y_train, y_train_pred
         
@@ -248,7 +252,7 @@ def cross_validation_with_classifier(classifier_name, X: np.ndarray, y: np.ndarr
             # Iterate through each fold
             for fold, (train_indices, test_indices) in enumerate(skf.split(np.zeros((len(y),)), y)):
                 y_train, y_train_pred = train_fun(X,y,classifier,train_indices,progress,task)
-                train_accuracy = accuracy_score(y_train, y_train_pred)
+                train_accuracy = accuracy_score(y_train, y_train_pred.round(decimals=0).astype(int))
                 
                 del y_train_pred
                 del y_train
@@ -258,8 +262,8 @@ def cross_validation_with_classifier(classifier_name, X: np.ndarray, y: np.ndarr
                 fpr, tpr, thresholds = roc_curve(y_test, y_pred)
                 roc_auc = auc(fpr, tpr)
 
-                test_accuracy = accuracy_score(y_test, y_pred)
-                df_results.append({ "seed": seed, "classifier": classifier.__class__.__name__, "train_fun": train_fun.__name__, "train_accuracy": train_accuracy, "test_accuracy": test_accuracy , "fold_id": fold, "roc_auc": roc_auc})
+                test_accuracy = accuracy_score(y_test, y_pred.round(decimals=0).astype(int))
+                df_results.append({ "seed": seed, "classifier": classifier.__class__.__name__, "train_fun": train_fun.__name__, "train_accuracy": train_accuracy, "test_accuracy": test_accuracy , "fold_id": fold, "roc_auc": roc_auc, **classifier_args})
 
     return pd.DataFrame(df_results)
 
@@ -318,59 +322,98 @@ def get_classifier(classifier_name: str,**kwargs):
         return KNeighborsClassifier(**kwargs)
     else:
         raise ValueError(f"Unknown classifier {classifier_name}")
-    
+ClassifierName = Literal["BernoulliNB","MultinomialNB","GaussianNB","ComplementNB","SVC","KNeighborsClassifier"]
 def run_trainings(folder: Path):
-    df_results = pd.DataFrame({ "seed": [], "classifier": [], "train_fun": [], "train_accuracy": [], "test_accuracy": [] , "fold_id": []})
+    df_results = None
     for i,(classifier,pipeline_id,full) in enumerate(zip(
         ["BernoulliNB","MultinomialNB","GaussianNB","ComplementNB","SVC","KNeighborsClassifier"],
         ["nb_bino","nb_non_bino","nb_non_bino","nb_non_bino","svm_knn","svm_knn"],
         [False,False,False,False,True,True]
         )):
+        if not full:
+            continue
         print(f"Training {classifier}")
         X,y = read_data_from_disk(folder, id=pipeline_id, full=full)
         print(f"Data ready for {classifier}")
         df = cross_validation_with_classifier(classifier,X,y,train_fun=partial_train if not full else train)
         del X
         del y
-        df_results = pd.concat([df_results,df],ignore_index=True)
+        if df_results is None:
+            df_results = df
+        else:
+            df_results = pd.concat([df_results,df],ignore_index=True)
         df_results.to_csv(folder / "results_baselines.csv",index=False)
+class TrialAdapter:
+    def __init__(self, trial=None, args=None):
+        self.trial = trial
+        self.args = args
+    def suggest_int(self,*args,**kwargs):
+        if self.trial is not None:
+            return self.trial.suggest_int(*args,**kwargs)
+        else:
+            return self.args[args[0]] #type: ignore
+    def suggest_categorical(self,*args,**kwargs):
+        if self.trial is not None:
+            return self.trial.suggest_categorical(*args,**kwargs)
+        else:
+            return self.args[args[0]] #type: ignore
+    def suggest_float(self,*args,**kwargs):
+        if self.trial is not None:
+            return self.trial.suggest_float(*args,**kwargs)
+        else:
+            return self.args[args[0]] #type: ignore
         
-def hyperparameter_search(folder: Path):
-    def run(trial: optuna.Trial):
+def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None, trial_mode: bool = True):
+    if trial_mode:
+        trial = TrialAdapter(trial=trial) #type: ignore
+    else:
+        trial = TrialAdapter(args=trial)#type: ignore
+    folder = Path("./data/")
+    if models is None:
+        models = ['BernoulliNB','MultinomialNB','GaussianNB','ComplementNB']
+    classifier_name = trial.suggest_categorical("classifier_name",models)
+    kwargs = {}
+    if classifier_name == "BernouilliNB":
+        id="nb_bino"
+        full = False
+    elif classifier_name in ["MultinomialNB","GaussianNB"]:
+        id="nb_non_bino"
+        full = False
+    elif classifier_name in ["SVC","KNeighborsClassifier"]:
+        id="svm_knn"
+        full = True
+    else:
+        raise ValueError
+    kwargs["classifier_name"] = classifier_name
+    if classifier_name in ["BernoulliNB","MultinomialNB","ComplementNB"]:
+        kwargs["alpha"] = trial.suggest_float("alpha",1e-10,1,log=True)
+        kwargs['binarize'] = trial.suggest_float("binarize", 0.0, 1.0)
+        kwargs['fit_prior'] = trial.suggest_categorical("fit_prior", [True, False])
+    if classifier_name == "ComplementNB":
         prior = trial.suggest_float("prior",0,1)
-        priors = np.array([prior,1-prior])
-        var_smoothing = trial.suggest_float("var_smoothing",1e-14,1,log=True)
-        X,y = read_data_from_disk(folder, id="nb_non_bino", full=False)
-        df = cross_validation_with_classifier("GaussianNB",X,y,train_fun=partial_train, priors=priors,var_smoothing=var_smoothing)
-        del X
-        del y
-        return df["test_accuracy"].mean()
-    optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
-    study_name = "study-gaussian-bn"  # Unique identifier of the study.
-    storage_name = "sqlite:///{}.db".format(study_name)
-    study = optuna.create_study(direction="maximize",study_name=study_name, storage=storage_name)
-    study.optimize(run,n_trials=100)
-    print(study.best_params)
-    print(study.best_value)
-
-def reproduce_best(folder: Path):
-    prior = 0.5095649512102972
-    priors = np.array([prior,1-prior])
-    var_smoothing = 2.3623013202337124e-11
-    X,y = read_data_from_disk(folder, id="nb_non_bino", full=False)
-    df = cross_validation_with_classifier("GaussianNB",X,y,train_fun=partial_train, priors=priors,var_smoothing=var_smoothing)
+        kwargs["norm"] = trial.suggest_categorical("norm",[False,True])
+    if classifier_name == "GaussianNB":
+        prior = trial.suggest_float("prior",0,1)
+        kwargs["priors"] = np.array([prior,1-prior])
+        kwargs["var_smoothing"] = trial.suggest_float("var_smoothing",1e-14,1,log=True)
+    X,y = read_data_from_disk(folder, id, full=full)
+    df = cross_validation_with_classifier(classifier_name,X,y,train_fun=partial_train if full else train,**kwargs)
     del X
     del y
-    # add prior and var_smoothing to each line of the df
-    df["prior"] = prior
-    df["var_smoothing"] = var_smoothing
-    df.to_csv(folder / "best_model.csv")
-    # show all lines and columnes of  the dataframe
-    pd.set_option('display.max_columns', None)
-    pd.set_option('display.max_rows', None)
-    print(df)
-    
-        
+    return df["test_accuracy"].mean()
+
+def hyperparameter_search(id: str, models: Optional[List[ClassifierName]] = None, n_jobs: int = 4):
+    optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
+    study_name = f"study-{id}"  # Unique identifier of the study.
+    storage_name = "sqlite:///{}.db".format(study_name)
+    study = optuna.create_study(direction="maximize",study_name=study_name, storage=storage_name)
+    study.optimize(lambda trial:run_optuna(trial,models=models),n_trials=100,n_jobs=4)
+    with open(f"data/study-{id}-best.json",'w') as f:
+        json.dump({
+            "best_params": study.best_params,
+            "best_value": study.best_value
+        },f)
+
 if __name__ == "__main__":
     import psutil
 
@@ -378,6 +421,8 @@ if __name__ == "__main__":
     print(f"Available Memory: {virtual_memory.available / (1024 ** 3):.2f} GB")
     data_path = Path("./data/")
     # generate_data(data_path)
-    run_trainings(data_path)
-    # hyperparameter_search(data_path)
+    # run_trainings(data_path)
+    hyperparameter_search("bayesian-networks",["BernoulliNB","ComplementNB","GaussianNB","MultinomialNB"])
+    hyperparameter_search("bayesian-networks",["SVC"],n_jobs=1)
+    hyperparameter_search("bayesian-networks",["KNeighborsClassifier"],n_jobs=1)
     # reproduce_best(data_path)
