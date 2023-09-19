@@ -9,6 +9,7 @@ from IPython.display import display
 from rich.progress import Progress
 import optuna
 
+from scipy.sparse import csr_matrix
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
@@ -226,10 +227,10 @@ def partial_train(X: np.ndarray,y: np.ndarray,classifier,train_indices: np.ndarr
     return y_train, y_train_pred
 
 def train(X: np.ndarray,y: np.ndarray,classifier,train_indices: np.ndarray,progress: Progress,task):
-        X_train = X[train_indices]
-        y_train = y[train_indices]
+        X_train = csr_matrix(X[train_indices])
+        y_train = (y[train_indices])
         classifier.fit(X_train, y_train)
-        y_train_pred = classifier.predict(X_train)
+        y_train_pred = classifier.predict_probas(X_train)[:,1]
         progress.update(task,advance=1)
         return y_train, y_train_pred
         
@@ -302,9 +303,19 @@ def get_classifier(classifier_name: str,**kwargs):
     elif classifier_name == "ComplementNB":
         return ComplementNB(**kwargs)
     elif classifier_name == "SVC":
-        return SVC(C=100.0, kernel='rbf', gamma=0.001, probability=True,**kwargs)
+        if "C" not in kwargs:
+            kwargs["C"] = 100.0
+        if "kernel" not in kwargs:
+            kwargs["kernel"] = "rbf"
+        if "probability" not in kwargs:
+            kwargs["probability"] = True
+        if "gamma" not in kwargs:
+            kwargs["gamma"] = 0.001
+        return SVC(**kwargs)
     elif classifier_name == "KNeighborsClassifier":
-        return KNeighborsClassifier(n_neighbors=5,**kwargs)
+        if "n_neighbors" not in kwargs:
+            kwargs["n_neighbors"] = 5
+        return KNeighborsClassifier(**kwargs)
     else:
         raise ValueError(f"Unknown classifier {classifier_name}")
     
@@ -367,6 +378,6 @@ if __name__ == "__main__":
     print(f"Available Memory: {virtual_memory.available / (1024 ** 3):.2f} GB")
     data_path = Path("./data/")
     # generate_data(data_path)
-    # run_trainings(data_path)
+    run_trainings(data_path)
     # hyperparameter_search(data_path)
-    reproduce_best(data_path)
+    # reproduce_best(data_path)
