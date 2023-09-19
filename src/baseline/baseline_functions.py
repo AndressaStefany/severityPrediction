@@ -1,15 +1,14 @@
 import re
-import abc
+import logging
+import sys
 import string
 import numpy as np
 import pandas as pd
 from typing import * #type: ignore
 from IPython.display import display
-from rich.progress import track, Progress
-from functools import partial
+from rich.progress import Progress
 import optuna
 
-import sklearn
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
@@ -335,12 +334,31 @@ def hyperparameter_search(folder: Path):
         del X
         del y
         return df["test_accuracy"].mean()
-    study = optuna.create_study(direction="maximize")
+    optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
+    study_name = "study-gaussian-bn"  # Unique identifier of the study.
+    storage_name = "sqlite:///{}.db".format(study_name)
+    study = optuna.create_study(direction="maximize",study_name=study_name, storage=storage_name)
     study.optimize(run,n_trials=100)
     print(study.best_params)
     print(study.best_value)
-    print(study.best)
-        
+
+def reproduce_best(folder: Path):
+    prior = 0.5095649512102972
+    priors = np.array([prior,1-prior])
+    var_smoothing = 2.3623013202337124e-11
+    X,y = read_data_from_disk(folder, id="nb_non_bino", full=False)
+    df = cross_validation_with_classifier("GaussianNB",X,y,train_fun=partial_train, priors=priors,var_smoothing=var_smoothing)
+    del X
+    del y
+    # add prior and var_smoothing to each line of the df
+    df["prior"] = prior
+    df["var_smoothing"] = var_smoothing
+    df.to_csv(folder / "best_model.csv")
+    # show all lines and columnes of  the dataframe
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.max_rows', None)
+    print(df)
+    
         
 if __name__ == "__main__":
     import psutil
@@ -350,5 +368,5 @@ if __name__ == "__main__":
     data_path = Path("./data/")
     # generate_data(data_path)
     # run_trainings(data_path)
-    hyperparameter_search(data_path)
-    
+    # hyperparameter_search(data_path)
+    reproduce_best(data_path)
