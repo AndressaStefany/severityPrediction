@@ -208,7 +208,7 @@ def print_pipeline(pipeline: Pipeline, src_data):
             print("X:",r[0][:10], type(r[0]))
             print("y:",r[1][:10], type(r[1]))
         d = r
-def partial_train(X: np.ndarray,y: np.ndarray,classifier,train_indices: np.ndarray,progress: Progress,task):
+def partial_train(X: np.ndarray,y: np.ndarray,classifier,train_indices: np.ndarray):
     # Incremental fit to avoid memory problems
     y_train_pred = np.array([])
     y_train = np.array([])
@@ -220,14 +220,13 @@ def partial_train(X: np.ndarray,y: np.ndarray,classifier,train_indices: np.ndarr
         y_train = np.concatenate([y_train,y_train_partial],axis=0)
         del X_train
         del y_train_partial
-        progress.update(task,advance=1)
     for tr_indices in np.array_split(train_indices, 10):
         X_train = X[tr_indices]
         y_train_partial = y[tr_indices]
         y_train_pred = np.concatenate([y_train_pred,classifier.predict(X_train)],axis=0)
     return y_train, y_train_pred
 
-def train(X: np.ndarray,y: np.ndarray,classifier,train_indices: np.ndarray,progress: Progress,task):
+def train(X: np.ndarray,y: np.ndarray,classifier,train_indices: np.ndarray):
         X_train = csr_matrix(X[train_indices])
         y_train = (y[train_indices])
         classifier.fit(X_train, y_train)
@@ -235,35 +234,32 @@ def train(X: np.ndarray,y: np.ndarray,classifier,train_indices: np.ndarray,progr
             y_train_pred = classifier.predict_proba(X_train)[:,1]
         else:
             y_train_pred = classifier.predict_probas(X_train)
-        progress.update(task,advance=1)
         return y_train, y_train_pred
         
-def cross_validation_with_classifier(classifier_name, X: np.ndarray, y: np.ndarray, n_splits: int = 5, train_fun: Optional[Callable] = None, num_rep: int = 5, **classifier_args):
+def cross_validation_with_classifier(X: np.ndarray, y: np.ndarray, n_splits: int = 5, train_fun: Optional[Callable] = None, num_rep: int = 5, **classifier_args):
     if train_fun is None:
         train_fun = partial_train
-    classifier = get_classifier(classifier_name,**classifier_args)
+    classifier = get_classifier(**classifier_args)
     # make dataframe to store the seed, the classifieer used, the train method used and the train and test accuracies
     df_results = []
     for seed in range(num_rep):
         # Define the k-fold cross-validation strategy
         skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
-        with Progress() as progress:
-            task = progress.add_task("[red]Training...", total=n_splits*10)
-            # Iterate through each fold
-            for fold, (train_indices, test_indices) in enumerate(skf.split(np.zeros((len(y),)), y)):
-                y_train, y_train_pred = train_fun(X,y,classifier,train_indices,progress,task)
-                train_accuracy = accuracy_score(y_train, y_train_pred.round(decimals=0).astype(int))
-                
-                del y_train_pred
-                del y_train
-                X_test = X[test_indices]
-                y_pred = classifier.predict(X_test)
-                y_test = y[test_indices]
-                fpr, tpr, thresholds = roc_curve(y_test, y_pred)
-                roc_auc = auc(fpr, tpr)
+        # Iterate through each fold
+        for fold, (train_indices, test_indices) in enumerate(skf.split(np.zeros((len(y),)), y)):
+            y_train, y_train_pred = train_fun(X,y,classifier,train_indices)
+            train_accuracy = accuracy_score(y_train, y_train_pred.round(decimals=0).astype(int))
+            
+            del y_train_pred
+            del y_train
+            X_test = X[test_indices]
+            y_pred = classifier.predict(X_test)
+            y_test = y[test_indices]
+            fpr, tpr, thresholds = roc_curve(y_test, y_pred)
+            roc_auc = auc(fpr, tpr)
 
-                test_accuracy = accuracy_score(y_test, y_pred.round(decimals=0).astype(int))
-                df_results.append({ "seed": seed, "classifier": classifier.__class__.__name__, "train_fun": train_fun.__name__, "train_accuracy": train_accuracy, "test_accuracy": test_accuracy , "fold_id": fold, "roc_auc": roc_auc, **classifier_args})
+            test_accuracy = accuracy_score(y_test, y_pred.round(decimals=0).astype(int))
+            df_results.append({ "seed": seed, "classifier": classifier.__class__.__name__, "train_fun": train_fun.__name__, "train_accuracy": train_accuracy, "test_accuracy": test_accuracy , "fold_id": fold, "roc_auc": roc_auc, **classifier_args})
 
     return pd.DataFrame(df_results)
 
@@ -335,7 +331,9 @@ def run_trainings(folder: Path):
         print(f"Training {classifier}")
         X,y = read_data_from_disk(folder, id=pipeline_id, full=full)
         print(f"Data ready for {classifier}")
-        df = cross_validation_with_classifier(classifier,X,y,train_fun=partial_train if not full else train)
+        classifier_args = {}
+        classifier_args['classifier_name'] = classifier
+        df = cross_validation_with_classifier(X,y,train_fun=partial_train if not full else train,**classifier_args)
         del X
         del y
         if df_results is None:
@@ -373,22 +371,23 @@ def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None
         models = ['BernoulliNB','MultinomialNB','GaussianNB','ComplementNB']
     classifier_name = trial.suggest_categorical("classifier_name",models)
     kwargs = {}
-    if classifier_name == "BernouilliNB":
+    if classifier_name == "BernoulliNB":
         id="nb_bino"
         full = False
-    elif classifier_name in ["MultinomialNB","GaussianNB"]:
+    elif classifier_name in ["MultinomialNB","GaussianNB","ComplementNB"]:
         id="nb_non_bino"
         full = False
     elif classifier_name in ["SVC","KNeighborsClassifier"]:
         id="svm_knn"
         full = True
     else:
-        raise ValueError
+        raise ValueError(f"classifier_name {classifier_name} is not a possible name")
     kwargs["classifier_name"] = classifier_name
     if classifier_name in ["BernoulliNB","MultinomialNB","ComplementNB"]:
         kwargs["alpha"] = trial.suggest_float("alpha",1e-10,1,log=True)
-        kwargs['binarize'] = trial.suggest_float("binarize", 0.0, 1.0)
         kwargs['fit_prior'] = trial.suggest_categorical("fit_prior", [True, False])
+    if classifier_name in ["BernoulliNB"]:
+        kwargs['binarize'] = trial.suggest_float("binarize", 0.0, 1.0)
     if classifier_name == "ComplementNB":
         prior = trial.suggest_float("prior",0,1)
         kwargs["norm"] = trial.suggest_categorical("norm",[False,True])
@@ -397,7 +396,7 @@ def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None
         kwargs["priors"] = np.array([prior,1-prior])
         kwargs["var_smoothing"] = trial.suggest_float("var_smoothing",1e-14,1,log=True)
     X,y = read_data_from_disk(folder, id, full=full)
-    df = cross_validation_with_classifier(classifier_name,X,y,train_fun=partial_train if full else train,**kwargs)
+    df = cross_validation_with_classifier(X,y,train_fun=partial_train if full else train,**kwargs)
     del X
     del y
     return df["test_accuracy"].mean()
