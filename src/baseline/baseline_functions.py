@@ -6,6 +6,8 @@ import pandas as pd
 from typing import * #type: ignore
 from IPython.display import display
 from rich.progress import track, Progress
+from functools import partial
+import optuna
 
 import sklearn
 from sklearn.pipeline import Pipeline
@@ -14,15 +16,11 @@ from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.naive_bayes import BernoulliNB, GaussianNB, ComplementNB, MultinomialNB
 from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.svm import SVC
+from sklearn.svm import SVC, LinearSVC
+from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import accuracy_score, roc_curve, auc
 import pandas as pd
 from pathlib import Path
-
-from sklearn.pipeline import Pipeline
-from sklearn.naive_bayes import BernoulliNB, GaussianNB, ComplementNB, MultinomialNB
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.svm import SVC
 
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
@@ -236,11 +234,12 @@ def train(X: np.ndarray,y: np.ndarray,classifier,train_indices: np.ndarray,progr
         progress.update(task,advance=1)
         return y_train, y_train_pred
         
-def cross_validation_with_classifier(classifier, X: np.ndarray, y: np.ndarray, n_splits: int = 5, train_fun: Optional[Callable] = None, num_rep: int = 5):
+def cross_validation_with_classifier(classifier_name, X: np.ndarray, y: np.ndarray, n_splits: int = 5, train_fun: Optional[Callable] = None, num_rep: int = 5, **classifier_args):
     if train_fun is None:
         train_fun = partial_train
+    classifier = get_classifier(classifier_name,**classifier_args)
     # make dataframe to store the seed, the classifieer used, the train method used and the train and test accuracies
-    df_results = pd.DataFrame({ "seed": [], "classifier": [], "train_fun": [], "train_accuracy": [], "test_accuracy": [] , "fold_id": []})
+    df_results = []
     for seed in range(num_rep):
         # Define the k-fold cross-validation strategy
         skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
@@ -256,12 +255,13 @@ def cross_validation_with_classifier(classifier, X: np.ndarray, y: np.ndarray, n
                 X_test = X[test_indices]
                 y_pred = classifier.predict(X_test)
                 y_test = y[test_indices]
+                fpr, tpr, thresholds = roc_curve(y_test, y_pred)
+                roc_auc = auc(fpr, tpr)
 
                 test_accuracy = accuracy_score(y_test, y_pred)
-                
-                df_results.append({ "seed": seed, "classifier": classifier.__class__.__name__, "train_fun": train_fun.__name__, "train_accuracy": train_accuracy, "test_accuracy": test_accuracy , "fold_id": fold},ignore_index=True)
+                df_results.append({ "seed": seed, "classifier": classifier.__class__.__name__, "train_fun": train_fun.__name__, "train_accuracy": train_accuracy, "test_accuracy": test_accuracy , "fold_id": fold, "roc_auc": roc_auc})
 
-    return df_results
+    return pd.DataFrame(df_results)
 
 def save_data_to_disk(pipeline_fn: Callable, folder: Path, id: str = "", do_print: bool = False):
     bug_reports = pd.read_csv(folder / 'eclipse_filtered.csv')
@@ -276,47 +276,79 @@ def save_data_to_disk(pipeline_fn: Callable, folder: Path, id: str = "", do_prin
     memmapped_array.flush()
     with open(folder / f"X_{id}.shape", "w") as shape_file:
         shape_file.write(f"({X.shape[0]},{X.shape[1]})")
+    np.save(folder / f"X_full_{id}.npy",X)
     np.save(folder / f"y_{id}.npy",y)
-    np.save(folder / f"X_full_{id}.npy",y)
     
 def read_data_from_disk(folder: Path, id: str = "", full: bool = True):
     if full:
-        X = np.load(data_path / f"y_{id}.npy")
+        X = np.load(folder / f"X_full_{id}.npy")
     else:
-        with open(data_path / f"X_{id}.shape", "r") as shape_file:
+        with open(folder / f"X_{id}.shape", "r") as shape_file:
             shape = eval(shape_file.read().strip())
-        X = np.memmap(data_path / f"X_{id}.npy", dtype='float32', mode='r',shape=shape)
-    y = np.load(data_path / f"y_{id}.npy")
+        X = np.memmap(folder / f"X_{id}.npy", dtype='float32', mode='r',shape=shape)
+    y = np.load(folder / f"y_{id}.npy")
     return X,y
 
 def generate_data(data_path: Path):
     save_data_to_disk(lambda :pipeline_naive_bayes(is_binomial=True),data_path,id="nb_bino")
     save_data_to_disk(lambda :pipeline_naive_bayes(is_binomial=False),data_path,id="nb_non_bino")
-    save_data_to_disk(lambda :pipeline_1NN_SVM,data_path,id="svm_knn")
+    save_data_to_disk(pipeline_1NN_SVM,data_path,id="svm_knn")
+def get_classifier(classifier_name: str,**kwargs):
+    if classifier_name == "BernoulliNB":
+        return BernoulliNB(**kwargs)
+    elif classifier_name == "MultinomialNB":
+        return MultinomialNB(**kwargs)
+    elif classifier_name == "GaussianNB":
+        return GaussianNB(**kwargs)
+    elif classifier_name == "ComplementNB":
+        return ComplementNB(**kwargs)
+    elif classifier_name == "SVC":
+        return SVC(C=100.0, kernel='rbf', gamma=0.001, probability=True,**kwargs)
+    elif classifier_name == "KNeighborsClassifier":
+        return KNeighborsClassifier(n_neighbors=5,**kwargs)
+    else:
+        raise ValueError(f"Unknown classifier {classifier_name}")
     
 def run_trainings(folder: Path):
     df_results = pd.DataFrame({ "seed": [], "classifier": [], "train_fun": [], "train_accuracy": [], "test_accuracy": [] , "fold_id": []})
-    for classifier,pipeline_id,full in zip([
-        [BernoulliNB(),MultinomialNB(),GaussianNB(),ComplementNB(),SVC(),KNeighborsClassifier()],
+    for i,(classifier,pipeline_id,full) in enumerate(zip(
+        ["BernoulliNB","MultinomialNB","GaussianNB","ComplementNB","SVC","KNeighborsClassifier"],
         ["nb_bino","nb_non_bino","nb_non_bino","nb_non_bino","svm_knn","svm_knn"],
         [False,False,False,False,True,True]
-        ]):
+        )):
+        print(f"Training {classifier}")
         X,y = read_data_from_disk(folder, id=pipeline_id, full=full)
-        df = cross_validation_with_classifier(classifier,X,y)
-        df_results.append(df)
+        print(f"Data ready for {classifier}")
+        df = cross_validation_with_classifier(classifier,X,y,train_fun=partial_train if not full else train)
+        del X
+        del y
+        df_results = pd.concat([df_results,df],ignore_index=True)
+        df_results.to_csv(folder / "results_baselines.csv",index=False)
+        
+def hyperparameter_search(folder: Path):
+    def run(trial: optuna.Trial):
+        prior = trial.suggest_float("prior",0,1)
+        priors = np.array([prior,1-prior])
+        var_smoothing = trial.suggest_float("var_smoothing",1e-14,1,log=True)
+        df_results = pd.DataFrame({ "seed": [], "classifier": [], "train_fun": [], "train_accuracy": [], "test_accuracy": [] , "fold_id": [], })
+        X,y = read_data_from_disk(folder, id="nb_non_bino", full=False)
+        df = cross_validation_with_classifier("GaussianNB",X,y,train_fun=partial_train)
+        del X
+        del y
+        return df["test_accuracy"].mean()
+    study = optuna.create_study(direction="maximize")
+    study.optimize(run,n_trials=100)
+    print(study.best_params)
+    print(study.best_value)
+    print(study.best)
         
         
 if __name__ == "__main__":
+    import psutil
+
+    virtual_memory = psutil.virtual_memory()
+    print(f"Available Memory: {virtual_memory.available / (1024 ** 3):.2f} GB")
     data_path = Path("./data/")
-    generate_data(data_path)
-    # # Define the Naive Bayes classifier
-    # classifier = BernoulliNB()
-    # read_data_from_disk(data_path,id="nb_bino")
-    # df = cross_validation_with_classifier(classifier,X,y)
-    # out_path = data_path / "results_baselines.csv"
-    # # check if out_path exists and if so get the dataframe and append the df dataframe to it and write it back into the file
-    # if  out_path.exists():
-    #     df_old = pd.read_csv(out_path)
-    #     df = pd.concat([df_old,df])
-    # df.to_csv(out_path,index=False)
+    # generate_data(data_path)
+    run_trainings(data_path)
     
