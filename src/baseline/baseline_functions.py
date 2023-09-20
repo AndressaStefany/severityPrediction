@@ -402,15 +402,15 @@ def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None
     if classifier_name == "SVC":
         kernel = trial.suggest_categorical("kernel", ["linear", "poly", "rbf", "sigmoid"])
         kwargs = {
+            "classifier_name": "SVC",
             "C": trial.suggest_float("C", 1e-5, 1e5,log=True),
             "kernel": kernel,
             "degree": trial.suggest_int("degree", 1, 5) if kernel == "poly" else 3,
             "gamma": trial.suggest_categorical("gamma", ["scale", "auto"]) if kernel in ["rbf", "poly", "sigmoid"] else "scale",
-            "coef0": trial.suggest_uniform("coef0", -1.0, 1.0) if kernel in ["poly","sigmoid"] else 0,
+            "coef0": trial.suggest_float("coef0", -1.0, 1.0) if kernel in ["poly","sigmoid"] else 0,
             "shrinking": trial.suggest_categorical("shrinking", [True, False]),
             "probability": True,
-            "tol": trial.suggest_loguniform("tol", 1e-5, 1e-1),
-            "cache_size": trial.suggest_loguniform("cache_size", 1e2, 5e2),
+            "tol": trial.suggest_float("tol", 1e-5, 1e-1,log=True),
             "class_weight": trial.suggest_categorical("class_weight", [None, "balanced"]),
             "max_iter": trial.suggest_int("max_iter", -1, 1000),
             "decision_function_shape": trial.suggest_categorical("decision_function_shape", ["ovo", "ovr"]),
@@ -418,11 +418,12 @@ def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None
         }
     if classifier_name == "KNeighborsClassifier":
         kwargs = {
-            "n_neighbors": [1, 3, 5, 7, 9, 11],  # Number of neighbors
-            "weights": ["uniform", "distance"],  # Weight function
-            "algorithm": ["auto", "ball_tree", "kd_tree", "brute"],  # Algorithm
-            "leaf_size": [10, 20, 30, 40, 50],  # Leaf size
-            "p": [1, 2, 3],  # Power parameter for the Minkowski metric (1 for Manhattan, 2 for Euclidean, 3 Minkwski)
+            "classifier_name": "KNeighborsClassifier",
+            "n_neighbors": trial.suggest_categorical("n_neighbors",[1, 3, 5, 7, 9, 11]),  # Number of neighbors
+            "weights": trial.suggest_categorical("weights",["uniform", "distance"]),  # Weight function
+            "algorithm": trial.suggest_categorical("algorithm",["auto", "ball_tree", "kd_tree", "brute"]),  # Algorithm
+            "leaf_size": trial.suggest_categorical("leaf_size",[10, 20, 30, 40, 50]),  # Leaf size
+            "p": trial.suggest_categorical("p",[1, 2, 3]),  # Power parameter for the Minkowski metric (1 for Manhattan, 2 for Euclidean, 3 Minkwski)
         }
     X,y = read_data_from_disk(folder, id, full=full)
     print("testing ",kwargs)
