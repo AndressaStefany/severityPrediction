@@ -246,6 +246,7 @@ def cross_validation_with_classifier(X: np.ndarray, y: np.ndarray, n_splits: int
         # Define the k-fold cross-validation strategy
         skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
         # Iterate through each fold
+        print(f"Seed {seed}: ",end="")
         for fold, (train_indices, test_indices) in enumerate(skf.split(np.zeros((len(y),)), y)):
             y_train, y_train_pred = train_fun(X,y,classifier,train_indices)
             train_accuracy = accuracy_score(y_train, y_train_pred.round(decimals=0).astype(int))
@@ -260,6 +261,8 @@ def cross_validation_with_classifier(X: np.ndarray, y: np.ndarray, n_splits: int
 
             test_accuracy = accuracy_score(y_test, y_pred.round(decimals=0).astype(int))
             df_results.append({ "seed": seed, "classifier": classifier.__class__.__name__, "train_fun": train_fun.__name__, "train_accuracy": train_accuracy, "test_accuracy": test_accuracy , "fold_id": fold, "roc_auc": roc_auc, **classifier_args})
+            print(f"f{fold}",end=" ")
+        print()
 
     return pd.DataFrame(df_results)
 
@@ -360,7 +363,8 @@ class TrialAdapter:
             return self.trial.suggest_float(*args,**kwargs)
         else:
             return self.args[args[0]] #type: ignore
-        
+
+
 def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None, trial_mode: bool = True):
     if trial_mode:
         trial = TrialAdapter(trial=trial) #type: ignore
@@ -395,8 +399,34 @@ def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None
         prior = trial.suggest_float("prior",0,1)
         kwargs["priors"] = np.array([prior,1-prior])
         kwargs["var_smoothing"] = trial.suggest_float("var_smoothing",1e-14,1,log=True)
+    if classifier_name == "SVC":
+        kernel = trial.suggest_categorical("kernel", ["linear", "poly", "rbf", "sigmoid"])
+        kwargs = {
+            "C": trial.suggest_float("C", 1e-5, 1e5,log=True),
+            "kernel": kernel,
+            "degree": trial.suggest_int("degree", 1, 5) if kernel == "poly" else 3,
+            "gamma": trial.suggest_categorical("gamma", ["scale", "auto"]) if kernel in ["rbf", "poly", "sigmoid"] else "scale",
+            "coef0": trial.suggest_uniform("coef0", -1.0, 1.0) if kernel in ["poly","sigmoid"] else 0,
+            "shrinking": trial.suggest_categorical("shrinking", [True, False]),
+            "probability": True,
+            "tol": trial.suggest_loguniform("tol", 1e-5, 1e-1),
+            "cache_size": trial.suggest_loguniform("cache_size", 1e2, 5e2),
+            "class_weight": trial.suggest_categorical("class_weight", [None, "balanced"]),
+            "max_iter": trial.suggest_int("max_iter", -1, 1000),
+            "decision_function_shape": trial.suggest_categorical("decision_function_shape", ["ovo", "ovr"]),
+            "break_ties": trial.suggest_categorical("break_ties", [True, False]),
+        }
+    if classifier_name == "KNeighborsClassifier":
+        kwargs = {
+            "n_neighbors": [1, 3, 5, 7, 9, 11],  # Number of neighbors
+            "weights": ["uniform", "distance"],  # Weight function
+            "algorithm": ["auto", "ball_tree", "kd_tree", "brute"],  # Algorithm
+            "leaf_size": [10, 20, 30, 40, 50],  # Leaf size
+            "p": [1, 2, 3],  # Power parameter for the Minkowski metric (1 for Manhattan, 2 for Euclidean, 3 Minkwski)
+        }
     X,y = read_data_from_disk(folder, id, full=full)
-    df = cross_validation_with_classifier(X,y,train_fun=partial_train if full else train,**kwargs)
+    print("testing ",kwargs)
+    df = cross_validation_with_classifier(X,y,train_fun=partial_train if not full else train,**kwargs)
     del X
     del y
     return df["test_accuracy"].mean()
@@ -405,8 +435,8 @@ def hyperparameter_search(id: str, models: Optional[List[ClassifierName]] = None
     optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
     study_name = f"study-{id}"  # Unique identifier of the study.
     storage_name = "sqlite:///{}.db".format(study_name)
-    study = optuna.create_study(direction="maximize",study_name=study_name, storage=storage_name)
-    study.optimize(lambda trial:run_optuna(trial,models=models),n_trials=100,n_jobs=4)
+    study = optuna.create_study(direction="maximize",study_name=study_name, storage=storage_name, load_if_exists=True)
+    study.optimize(lambda trial:run_optuna(trial,models=models),n_trials=100,n_jobs=n_jobs)
     with open(f"data/study-{id}-best.json",'w') as f:
         json.dump({
             "best_params": study.best_params,
@@ -421,7 +451,7 @@ if __name__ == "__main__":
     data_path = Path("./data/")
     # generate_data(data_path)
     # run_trainings(data_path)
-    hyperparameter_search("bayesian-networks",["BernoulliNB","ComplementNB","GaussianNB","MultinomialNB"])
-    hyperparameter_search("bayesian-networks",["SVC"],n_jobs=1)
-    hyperparameter_search("bayesian-networks",["KNeighborsClassifier"],n_jobs=1)
+    # hyperparameter_search("bayesian-networks",["BernoulliNB","ComplementNB","GaussianNB","MultinomialNB"],n_jobs=1)
+    hyperparameter_search("svc",["SVC"],n_jobs=1)
+    # hyperparameter_search("knn",["KNeighborsClassifier"],n_jobs=1)
     # reproduce_best(data_path)
