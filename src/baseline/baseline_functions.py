@@ -227,7 +227,7 @@ def partial_train(X: np.ndarray,y: np.ndarray,classifier,train_indices: np.ndarr
     return y_train, y_train_pred
 
 def train(X: np.ndarray,y: np.ndarray,classifier,train_indices: np.ndarray):
-        X_train = csr_matrix(X[train_indices])
+        X_train = (X[train_indices])
         y_train = (y[train_indices])
         classifier.fit(X_train, y_train)
         if isinstance(classifier,SVC) or isinstance(classifier, KNeighborsClassifier):
@@ -401,6 +401,11 @@ def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None
         kwargs["var_smoothing"] = trial.suggest_float("var_smoothing",1e-14,1,log=True)
     if classifier_name == "SVC":
         kernel = trial.suggest_categorical("kernel", ["linear", "poly", "rbf", "sigmoid"])
+        is_max_iter = trial.suggest_categorical("is_max_iter", [True, False])
+        if not is_max_iter:
+            max_iter = -1
+        else:
+            max_iter = trial.suggest_int("max_iter", 1, 1000)
         kwargs = {
             "classifier_name": "SVC",
             "C": trial.suggest_float("C", 1e-5, 1e5,log=True),
@@ -412,14 +417,14 @@ def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None
             "probability": True,
             "tol": trial.suggest_float("tol", 1e-5, 1e-1,log=True),
             "class_weight": trial.suggest_categorical("class_weight", [None, "balanced"]),
-            "max_iter": trial.suggest_int("max_iter", -1, 1000),
+            "max_iter": max_iter,
             "decision_function_shape": trial.suggest_categorical("decision_function_shape", ["ovo", "ovr"]),
             "break_ties": trial.suggest_categorical("break_ties", [True, False]),
         }
     if classifier_name == "KNeighborsClassifier":
         kwargs = {
             "classifier_name": "KNeighborsClassifier",
-            "n_neighbors": trial.suggest_categorical("n_neighbors",[1, 3, 5, 7, 9, 11]),  # Number of neighbors
+            "n_neighbors": trial.suggest_categorical("n_neighbors",[1, 5, 7]),  # Number of neighbors
             "weights": trial.suggest_categorical("weights",["uniform", "distance"]),  # Weight function
             "algorithm": trial.suggest_categorical("algorithm",["auto", "brute"]),  # Algorithm not "ball_tree", "kd_tree" because sparse input
             "leaf_size": trial.suggest_categorical("leaf_size",[10, 20, 30, 40, 50]),  # Leaf size
