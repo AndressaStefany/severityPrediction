@@ -421,7 +421,7 @@ def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None
             "classifier_name": "KNeighborsClassifier",
             "n_neighbors": trial.suggest_categorical("n_neighbors",[1, 3, 5, 7, 9, 11]),  # Number of neighbors
             "weights": trial.suggest_categorical("weights",["uniform", "distance"]),  # Weight function
-            "algorithm": trial.suggest_categorical("algorithm",["auto", "ball_tree", "kd_tree", "brute"]),  # Algorithm
+            "algorithm": trial.suggest_categorical("algorithm",["auto", "brute"]),  # Algorithm not "ball_tree", "kd_tree" because sparse input
             "leaf_size": trial.suggest_categorical("leaf_size",[10, 20, 30, 40, 50]),  # Leaf size
             "p": trial.suggest_categorical("p",[1, 2, 3]),  # Power parameter for the Minkowski metric (1 for Manhattan, 2 for Euclidean, 3 Minkwski)
         }
@@ -453,6 +453,6 @@ if __name__ == "__main__":
     # generate_data(data_path)
     # run_trainings(data_path)
     # hyperparameter_search("bayesian-networks",["BernoulliNB","ComplementNB","GaussianNB","MultinomialNB"],n_jobs=1)
-    hyperparameter_search("svc",["SVC"],n_jobs=1)
-    # hyperparameter_search("knn",["KNeighborsClassifier"],n_jobs=1)
+    # hyperparameter_search("svc",["SVC"],n_jobs=1)
+    hyperparameter_search("knn",["KNeighborsClassifier"],n_jobs=1)
     # reproduce_best(data_path)
