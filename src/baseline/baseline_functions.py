@@ -5,8 +5,8 @@ import string
 import numpy as np
 import pandas as pd
 from typing import * #type: ignore
-from IPython.display import display
-from rich.progress import Progress
+# from IPython.display import display
+# from rich.progress import Progress
 import optuna
 import json
 
