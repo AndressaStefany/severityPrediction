@@ -451,11 +451,11 @@ def hyperparameter_search(id: str, models: Optional[List[ClassifierName]] = None
         },f)
 
 if __name__ == "__main__":
-    import psutil
+    # import psutil
 
-    virtual_memory = psutil.virtual_memory()
-    print(f"Available Memory: {virtual_memory.available / (1024 ** 3):.2f} GB")
-    data_path = Path("./data/")
+    # virtual_memory = psutil.virtual_memory()
+    # print(f"Available Memory: {virtual_memory.available / (1024 ** 3):.2f} GB")
+    # data_path = Path("./data/")
     # generate_data(data_path)
     # run_trainings(data_path)
     # hyperparameter_search("bayesian-networks",["BernoulliNB","ComplementNB","GaussianNB","MultinomialNB"],n_jobs=1)
