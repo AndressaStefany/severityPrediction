@@ -406,6 +406,7 @@ def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None
             max_iter = -1
         else:
             max_iter = trial.suggest_int("max_iter", 1, 1000)
+        decision_function_shape = trial.suggest_categorical("decision_function_shape", ["ovo", "ovr"]) 
         kwargs = {
             "classifier_name": "SVC",
             "C": trial.suggest_float("C", 1e-5, 1e5,log=True),
@@ -418,8 +419,8 @@ def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None
             "tol": trial.suggest_float("tol", 1e-5, 1e-1,log=True),
             "class_weight": trial.suggest_categorical("class_weight", [None, "balanced"]),
             "max_iter": max_iter,
-            "decision_function_shape": trial.suggest_categorical("decision_function_shape", ["ovo", "ovr"]),
-            "break_ties": trial.suggest_categorical("break_ties", [True, False]),
+            "decision_function_shape": decision_function_shape,
+            "break_ties": trial.suggest_categorical("break_ties", [True, False]) if decision_function_shape != 'ovo' else False,
         }
     if classifier_name == "KNeighborsClassifier":
         kwargs = {
@@ -458,6 +459,6 @@ if __name__ == "__main__":
     # generate_data(data_path)
     # run_trainings(data_path)
     # hyperparameter_search("bayesian-networks",["BernoulliNB","ComplementNB","GaussianNB","MultinomialNB"],n_jobs=1)
-    # hyperparameter_search("svc",["SVC"],n_jobs=1)
-    hyperparameter_search("knn",["KNeighborsClassifier"],n_jobs=1)
+    hyperparameter_search("svc",["SVC"],n_jobs=4)
+    hyperparameter_search("knn",["KNeighborsClassifier"],n_jobs=4)
     # reproduce_best(data_path)
