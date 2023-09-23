@@ -427,21 +427,27 @@ def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None
             "classifier_name": "KNeighborsClassifier",
             "n_neighbors": trial.suggest_categorical("n_neighbors",[1, 5, 7]),  # Number of neighbors
             "weights": trial.suggest_categorical("weights",["uniform", "distance"]),  # Weight function
-            "algorithm": trial.suggest_categorical("algorithm",["auto", "brute"]),  # Algorithm not "ball_tree", "kd_tree" because sparse input
+            "algorithm": trial.suggest_categorical("algorithm",["auto", "ball_tree", "kd_tree", "brute"]),  # Algorithm not "ball_tree", "kd_tree" because sparse input
             "leaf_size": trial.suggest_categorical("leaf_size",[10, 20, 30, 40, 50]),  # Leaf size
             "p": trial.suggest_categorical("p",[1, 2, 3]),  # Power parameter for the Minkowski metric (1 for Manhattan, 2 for Euclidean, 3 Minkwski)
         }
     X,y = read_data_from_disk(folder, id, full=full)
-    print("testing ",kwargs)
+    with open("./data/out.txt","a") as f:
+        f.write("start "+str(kwargs)+"\n")
     df = cross_validation_with_classifier(X,y,train_fun=partial_train if not full else train,**kwargs)
     del X
     del y
-    return df["test_accuracy"].mean()
+    value = df["test_accuracy"].mean()
+    with open("./data/out.txt","a") as f:
+        f.write("end "+str(kwargs)+f" with {value}\n")
+    return value
 
 def hyperparameter_search(id: str, models: Optional[List[ClassifierName]] = None, n_jobs: int = 4):
     optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
     study_name = f"study-{id}"  # Unique identifier of the study.
     storage_name = "sqlite:///{}.db".format(study_name)
+    with open("./data/out.txt","w") as f:
+        f.write("Start\n")
     study = optuna.create_study(direction="maximize",study_name=study_name, storage=storage_name, load_if_exists=True)
     study.optimize(lambda trial:run_optuna(trial,models=models),n_trials=100,n_jobs=n_jobs)
     with open(f"data/study-{id}-best.json",'w') as f:
