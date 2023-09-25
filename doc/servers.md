@@ -64,14 +64,14 @@ to fill first:
 ```
 #!/bin/bash
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:1 # request a GPU
+#SBATCH --gpus-per-node=v100l:1 # on cedar choose one v100l gpu but can be also p100l
 #SBATCH --cpus-per-task=1 # change this parameter to 2,4,6,... and increase "--num_workers" accordingly to see the effect on performance
-#SBATCH --time=00:00:10           # duration (JJ-HH:MM:SS)
-#SBATCH --output=%x-%j.out
-#SBATCH --error=%x-%j.out
-#SBATCH --mail-user=email_address
+#SBATCH --time=00:10:00           # duration (JJ-HH:MM:SS)
+#SBATCH --output=log-%x-%j.out
+#SBATCH --error=log-%x-%j.out
+#SBATCH --mail-user=youemail
 #SBATCH --mail-type=ALL
-#SBATCH --mem=8GB
+#SBATCH --mem=8G # Request 8 GB of RAM
 
 # syntax of 
 # Capture the start time
@@ -81,7 +81,8 @@ start_time=$(date +"%Y-%m-%d %H:%M:%S")
 module load python/3.9
 virtualenv --no-download $SLURM_TMPDIR/env
 source $SLURM_TMPDIR/env/bin/activate
-pip install torch transformers accelerate huggingface_hub --no-index
+pip install torch  --no-index
+pip install transformers accelerate huggingface_hub xformers --no-index
 
 # Execution of the script: replace by python path_to_your_script
 # Do not forget to change the pathes to absolute pathes (dont hesitate to use $USER variable)
@@ -122,7 +123,7 @@ If your job is running You should see something like
 JOBID     USER      ACCOUNT           NAME  ST  TIME_LEFT NODES CPUS TRES_PER_N MIN_MEM  NODELIST (REASON)
 41184718   rmoine def-aloise_g launch_test.sh   R       0:41     1    1 gres:gpu:t      8G bg12006 (None)
        
-Note the `R` indicating it is running. If it was `PD` it means that it can not find ressources for the job or that you do not have enough priority. Try to reduce the memory requirement, number of cpus if possible. Do not remove the min_memory requirement of 8GB because otherwise it stays pending
+Note the `R` indicating it is running. If it was `PD` it means that it can not find ressources for the job or that you do not have enough priority. Try to reduce the memory requirement, number of cpus if possible. **Do not remove the min_memory requirement of 8GB because otherwise it stays pending**
 
 ### 5.2.2 Stopping a task
 
