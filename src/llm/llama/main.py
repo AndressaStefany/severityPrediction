@@ -23,8 +23,10 @@ def main(model: str = "meta-llama/Llama-2-7b-chat-hf", token: str = ""):
         eos_token_id=tokenizer.eos_token_id,
         max_length=200, # I'll change here
     )
+    file = open("/project/def-aloise/$USER/output.txt", "w")
     for seq in sequences:
-        print(f"Result: {seq['generated_text']}")
+        file.write(f"Result: {seq['generated_text']}")
+    file.close()
         
 if __name__ == "_main__":
     main("TinyPixel/Llama-2-7B-bf16-sharded")

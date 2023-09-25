@@ -71,6 +71,7 @@ to fill first:
 #SBATCH --error=%x-%j.out
 #SBATCH --mail-user=email_address
 #SBATCH --mail-type=ALL
+#SBATCH --mem=8GB
 
 # syntax of 
 # Capture the start time
@@ -121,7 +122,7 @@ If your job is running You should see something like
 JOBID     USER      ACCOUNT           NAME  ST  TIME_LEFT NODES CPUS TRES_PER_N MIN_MEM  NODELIST (REASON)
 41184718   rmoine def-aloise_g launch_test.sh   R       0:41     1    1 gres:gpu:t      8G bg12006 (None)
        
-Note the `R` indicating it is running. If it was `PD` it means that it can not find ressources for the job or that you do not have enough priority. Try to reduce 
+Note the `R` indicating it is running. If it was `PD` it means that it can not find ressources for the job or that you do not have enough priority. Try to reduce the memory requirement, number of cpus if possible. Do not remove the min_memory requirement of 8GB because otherwise it stays pending
 
 ### 5.2.2 Stopping a task
 
