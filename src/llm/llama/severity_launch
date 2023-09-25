@@ -18,10 +18,9 @@ virtualenv --no-download $SLURM_TMPDIR/env
 source $SLURM_TMPDIR/env/bin/activate
 pip install torch transformers accelerate huggingface_hub --no-index
 
-
 # Execution of the script: replace by python path_to_your_script
-# Do not forget to change the pathes to absolute pathes
-python -c "import torch;print(torch.cuda.is_available())"
+# Do not forget to change the pathes to absolute pathes (dont hesitate to use $USER variable)
+python /project/def-aloise/$USER/main.py
 
 
 # Capture the end time

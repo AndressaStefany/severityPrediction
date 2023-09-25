@@ -52,8 +52,8 @@ You need to adapt your pathes. Here are the folders available:
 
 ```
 cd ...to your script directory
-scp -r script_folder username@beluga.calculcanada.ca
-scp -r script_folder username@cedar.calculcanada.ca
+scp -r script_folder username@beluga.calculcanada.ca:/project/def-aloise/...
+scp -r script_folder username@cedar.calculcanada.ca:/project/def-aloise/...
 ```
 severity_launch file:
 to fill first:
@@ -66,7 +66,7 @@ to fill first:
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1 # request a GPU
 #SBATCH --cpus-per-task=1 # change this parameter to 2,4,6,... and increase "--num_workers" accordingly to see the effect on performance
-#SBATCH --time=00:00:10           # duration (JJ-HH:MM)
+#SBATCH --time=00:00:10           # duration (JJ-HH:MM:SS)
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.out
 #SBATCH --mail-user=email_address
@@ -80,13 +80,11 @@ start_time=$(date +"%Y-%m-%d %H:%M:%S")
 module load python/3.9
 virtualenv --no-download $SLURM_TMPDIR/env
 source $SLURM_TMPDIR/env/bin/activate
-pip install torch --no-index
-pip install torch --no-index
-
+pip install torch transformers accelerate huggingface_hub --no-index
 
 # Execution of the script: replace by python path_to_your_script
-# Do not forget to change the pathes to absolute pathes
-python -c "import torch;print(torch.cuda.is_available())"
+# Do not forget to change the pathes to absolute pathes (dont hesitate to use $USER variable)
+python /project/def-aloise/$USER/main.py
 
 
 # Capture the end time
