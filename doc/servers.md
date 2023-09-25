@@ -46,7 +46,7 @@ You need to adapt your pathes. Here are the folders available:
 | PROJECT | /project/def-aloise/username/ | 1TB and 500K files per user. <br> Shared in the research group |
 
 ⚠ For CEDAR move your scripts to SCRATCH or PROJECT
-## 4. Copy files
+## 4. Copy files in the correct directory (see above)
 
 (Optional) add the `severity_launch` file in your repository
 
@@ -55,16 +55,22 @@ cd ...to your script directory
 scp -r script_folder username@beluga.calculcanada.ca
 scp -r script_folder username@cedar.calculcanada.ca
 ```
-severity_launch file
+severity_launch file:
+to fill first:
+- email address (or delete the two last_lines)
+- how many CPUs (for efficient data loading maybe or leave it at 1)
+- absolute script path (see chapter 3)
 
 ```
 #!/bin/bash
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1 # request a GPU
 #SBATCH --cpus-per-task=1 # change this parameter to 2,4,6,... and increase "--num_workers" accordingly to see the effect on performance
-#SBATCH --time=00:00:10
+#SBATCH --time=00:00:10           # duration (JJ-HH:MM)
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.out
+#SBATCH --mail-user=email_address
+#SBATCH --mail-type=ALL
 
 # syntax of 
 # Capture the start time
@@ -116,7 +122,68 @@ If your job is running You should see something like
 JOBID     USER      ACCOUNT           NAME  ST  TIME_LEFT NODES CPUS TRES_PER_N MIN_MEM  NODELIST (REASON)
 41184718   rmoine def-aloise_g launch_test.sh   R       0:41     1    1 gres:gpu:t      8G bg12006 (None)
        
-Note the `R` indicating it is running. If it was 
+Note the `R` indicating it is running. If it was `PD` it means that it can not find ressources for the job or that you do not have enough priority. Try to reduce 
+
+### 5.2.2 Stopping a task
+
+If mistake, to not use too computing time (limited to group)
+
+scancel JOBID
+
+JOBID that you get with squeue (sq -u $USER)
+## Annex: slurm status
+
+Jobs typically pass through several states in the course of their execution. The typical states are PENDING, RUNNING, SUSPENDED, COMPLETING, and COMPLETED. An explanation of each state follows.
+BF BOOT_FAIL
+Job terminated due to launch failure, typically due to a hardware failure (e.g. unable to boot the node or block and the job can not be requeued).
+CA CANCELLED
+Job was explicitly cancelled by the user or system administrator. The job may or may not have been initiated.
+CD COMPLETED
+Job has terminated all processes on all nodes with an exit code of zero.
+CF CONFIGURING
+Job has been allocated resources, but are waiting for them to become ready for use (e.g. booting).
+CG COMPLETING
+Job is in the process of completing. Some processes on some nodes may still be active.
+DL DEADLINE
+Job terminated on deadline.
+F FAILED
+Job terminated with non-zero exit code or other failure condition.
+NF NODE_FAIL
+Job terminated due to failure of one or more allocated nodes.
+OOM OUT_OF_MEMORY
+Job experienced out of memory error.
+PD PENDING
+Job is awaiting resource allocation.
+PR PREEMPTED
+Job terminated due to preemption.
+R RUNNING
+Job currently has an allocation.
+RD RESV_DEL_HOLD
+Job is being held after requested reservation was deleted.
+RF REQUEUE_FED
+Job is being requeued by a federation.
+RH REQUEUE_HOLD
+Held job is being requeued.
+RQ REQUEUED
+Completing job is being requeued.
+RS RESIZING
+Job is about to change size.
+RV REVOKED
+Sibling was removed from cluster due to other cluster starting the job.
+SI SIGNALING
+Job is being signaled.
+SE SPECIAL_EXIT
+The job was requeued in a special state. This state can be set by users, typically in EpilogSlurmctld, if the job has terminated with a particular exit value.
+SO STAGE_OUT
+Job is staging out files.
+ST STOPPED
+Job has an allocation, but execution has been stopped with SIGSTOP signal. CPUS have been retained by this job.
+S SUSPENDED
+Job has an allocation, but execution has been suspended and CPUs have been released for other jobs.
+TO TIMEOUT
+Job terminated upon reaching its time limit.
+
+
 
 
 
