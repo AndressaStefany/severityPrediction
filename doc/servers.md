@@ -81,6 +81,7 @@ module load python/3.9
 virtualenv --no-download $SLURM_TMPDIR/env
 source $SLURM_TMPDIR/env/bin/activate
 pip install torch --no-index
+pip install torch --no-index
 
 
 # Execution of the script: replace by python path_to_your_script
