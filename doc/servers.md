@@ -1,6 +1,19 @@
-## Procédure
-1. Setup WSL ssh access
-2. 
+We advice to use CEDAR to have GPUs with bigger vram and internet access
+If no internet access is needed, beluga can be tested too
+
+- [[#Pipeline setup|Pipeline setup]]
+- [[#1. Choose GPU server|1. Choose GPU server]]
+	- [[#1. Choose GPU server#Cedar|Cedar]]
+	- [[#1. Choose GPU server#Beluga|Beluga]]
+- [[#2. Setup SSH access|2. Setup SSH access]]
+- [[#3. Adapt your script pathes|3. Adapt your script pathes]]
+- [[#4. Copy files in the correct directory (see above)|4. Copy files in the correct directory (see above)]]
+- [[#5. Connect & launch & check status|5. Connect & launch & check status]]
+	- [[#5. Connect & launch & check status#5.1 Launch|5.1 Launch]]
+	- [[#5. Connect & launch & check status#5.2 Check the status of the job|5.2 Check the status of the job]]
+		- [[#5.2 Check the status of the job#5.2.1 ⚠ Pending job|5.2.1 ⚠ Pending job]]
+	- [[#5. Connect & launch & check status#5.2.2 Stopping a task|5.2.2 Stopping a task]]
+- [[#Annex: slurm status|Annex: slurm status]]
 ## 1. Choose GPU server
 
 ### Cedar
