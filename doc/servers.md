@@ -1,3 +1,5 @@
+## Serveurs utilisables
+
 ### Cedar
 | nœuds | cœurs | mémoire disponible | CPU                                         | stockage     | GPU                                       |
 | ----- | ----- | ------------------ | ------------------------------------------- | ------------ | ----------------------------------------- |
@@ -78,3 +80,11 @@ An alias can be made:
 
 ```echo "alias myalias='sq -u rmoine'" >> ~/.bashrc```
 
+## Usage & dossiers
+
+
+| Name    | Chemin                        | Description / Usage          |
+| ------- | ----------------------------- | ---------------------------- |
+| HOME    | /home/username/               | 50GB and 500K files per user |
+| SCRATCH | /scratch/username/            | 20TB and 1M files per user <br>⚠ Clean periodically |
+| PROJECT | /project/def-aloise/username/ | 1TB and 500K files per user. <br> Shared in the research group |
