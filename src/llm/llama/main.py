@@ -4,11 +4,9 @@ import torch
 from huggingface_hub import login
 import os
 
-def main(model: str = "meta-llama/Llama-2-7b-chat-hf", token: str = "hf_xxx"):
-    if token == "hf_xxx":
+def main(model: str = "meta-llama/Llama-2-7b-chat-hf", token: str = ""):
+    if token != "":
         login(token=token)
-    else:
-        token = token
     tokenizer = AutoTokenizer.from_pretrained(model)
     pipeline = transformers.pipeline(
         "text-generation",
