@@ -85,7 +85,7 @@
 Categorize the bug report into one of 2 categories:\\
 0 = NOT SEVERE\\
 1 = SEVERE\\
-Input:\\
+\#\#\# Input:\\
 \{data\}\\
 \#\#\# Response:
     }};

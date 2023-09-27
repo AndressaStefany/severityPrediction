@@ -26,7 +26,17 @@ from pathlib import Path
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
-    
+from string import Template
+
+def build_prompt(data: str, preprompt: bool = True):
+    with open("./data/template.txt") as f:
+        t = Template(f.read())
+    preprompt = ""
+    if preprompt:
+        with open("./data/preprompt.txt") as f:
+            preprompt = f.read().strip()
+    return t.substitute(input=data,preprompt=preprompt)
+default_severities_to_keep = ('normal', 'enhancement') #type: ignore
 def filter_bug_severity(dataframe: pd.DataFrame, severity_col='bug_severity', severities_to_keep: Optional[Tuple[str]] = None) -> pd.DataFrame:
     """Filters the dataframe of bugs to keep only bugs within a provided severity set of possibilities
     
@@ -38,13 +48,13 @@ def filter_bug_severity(dataframe: pd.DataFrame, severity_col='bug_severity', se
     # Output
         - pd.DataFrame, the filtered dataframe
     """
-    # precisa filtrar a resolusao/bug_status ????
     if severities_to_keep is None:
-        severities_to_keep = ('normal', 'enhancement') #type: ignore
+        global default_severities_to_keep
+        severities_to_keep = default_severities_to_keep #type: ignore
     filtered_reports = dataframe[~dataframe[severity_col].isin(severities_to_keep)] #type: ignore
     selected_columns = ['_id', 'bug_id', 'description', 'bug_severity']
     return filtered_reports[selected_columns]
-
+default_high_severities_vals = {'blocker', 'critical','major'}
 def create_binary_feature(dataframe, severity_col: str ='bug_severity', high_severities_vals: Optional[Set[str]] = None) -> pd.DataFrame:
     """Creates a binary feature based on the severity of the bug
     
@@ -56,7 +66,8 @@ def create_binary_feature(dataframe, severity_col: str ='bug_severity', high_sev
         - pd.DataFrame, the dataframe with the binary feature
     """
     if high_severities_vals is None:
-        high_severities_vals = {'blocker', 'critical','major'} #type: ignore
+        global default_high_severities_vals
+        high_severities_vals =  default_high_severities_vals#type: ignore
 
     bug_reports_copy = dataframe.copy()
     bug_reports_copy['binary_severity'] = bug_reports_copy[severity_col].apply(
@@ -66,7 +77,7 @@ def create_binary_feature(dataframe, severity_col: str ='bug_severity', high_sev
 
 # check as remover without flag, and as it is in the data
 def remove_code_snippets(text: str) -> str:
-    """Remove programming code snippets enclosed in triple or single backticks with regex
+    """Remove programming code snippets enclosed in triple or single backticks with regex (does not work)
 
     # Args
         - text: str, the text to process
@@ -84,6 +95,10 @@ def remove_code_snippets(text: str) -> str:
 
     return text_without_code
 
+def remove_url(text: str):
+    url_pattern = r'http\S+'
+    return re.sub(url_pattern, '', text)
+
 def remove_urls_and_codes(dataframe: pd.DataFrame, col_to_process: str='description') -> pd.DataFrame:
     """Remove URLs and programming code snippets from the description column of a dataframe
 
@@ -93,9 +108,8 @@ def remove_urls_and_codes(dataframe: pd.DataFrame, col_to_process: str='descript
         
     # Output
         - pd.DataFrame, the dataframe with the URLs and programming"""
-    url_pattern = r'http\S+'
-    dataframe[col_to_process] = dataframe[col_to_process].apply(lambda text: re.sub(url_pattern, '', text))
-    dataframe[col_to_process] = dataframe[col_to_process].apply(lambda text: remove_code_snippets(text))
+    dataframe[col_to_process] = dataframe[col_to_process].apply(remove_url)
+    dataframe[col_to_process] = dataframe[col_to_process].apply(remove_code_snippets)
     return dataframe
 
 def preprocess_text(dataframe, col_to_process='description'):
