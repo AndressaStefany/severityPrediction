@@ -365,7 +365,7 @@ class TrialAdapter:
             return self.args[args[0]] #type: ignore
 
 
-def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None, trial_mode: bool = True):
+def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None, trial_mode: bool = True, num_rep: int = 5):
     if trial_mode:
         trial = TrialAdapter(trial=trial) #type: ignore
     else:
@@ -434,7 +434,7 @@ def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None
     X,y = read_data_from_disk(folder, id, full=full)
     with open("./data/out.txt","a") as f:
         f.write("start "+str(kwargs)+"\n")
-    df = cross_validation_with_classifier(X,y,train_fun=partial_train if not full else train,**kwargs)
+    df = cross_validation_with_classifier(X,y,train_fun=partial_train if not full else train,**kwargs,num_rep=num_rep)
     del X
     del y
     value = df["test_accuracy"].mean()
@@ -442,14 +442,14 @@ def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None
         f.write("end "+str(kwargs)+f" with {value}\n")
     return value
 
-def hyperparameter_search(id: str, models: Optional[List[ClassifierName]] = None, n_jobs: int = 4):
+def hyperparameter_search(id: str, models: Optional[List[ClassifierName]] = None, n_jobs: int = 4, num_rep: int = 5):
     optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
     study_name = f"study-{id}"  # Unique identifier of the study.
     storage_name = "sqlite:///{}.db".format(study_name)
     with open("./data/out.txt","w") as f:
         f.write("Start\n")
     study = optuna.create_study(direction="maximize",study_name=study_name, storage=storage_name, load_if_exists=True)
-    study.optimize(lambda trial:run_optuna(trial,models=models),n_trials=100,n_jobs=n_jobs)
+    study.optimize(lambda trial:run_optuna(trial,models=models,num_rep=num_rep),n_trials=100,n_jobs=n_jobs)
     with open(f"data/study-{id}-best.json",'w') as f:
         json.dump({
             "best_params": study.best_params,
