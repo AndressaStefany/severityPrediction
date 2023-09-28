@@ -15,7 +15,12 @@ from typing import *
 import re
 from sklearn.metrics import confusion_matrix, accuracy_score, recall_score, f1_score, precision_score
 import datetime
-
+from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    pipeline,
+    BitsAndBytesConfig,
+)
 def process(l: str) -> Optional[dict]:
     """The multiprocessing function that generates the dictionnary from a line of the eclipse_clear.json file"""
     global default_severities_to_keep
@@ -70,19 +75,28 @@ def classify(answer: str) -> int:
         return 0
     return -1
 
-def main(path_descriptions: Path, model: str = "meta-llama/Llama-2-70b-chat-hf", token: str = ""):
+def main(path_descriptions: Path, model: str = "meta-llama/Llama-2-13b-chat-hf", token: str = ""):
     print('Start')
     if token != "":
         login(token=token)
     tokenizer = AutoTokenizer.from_pretrained(model)
+    
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_use_double_quant=True,
+    )
     pipeline = transformers.pipeline(
         "text-generation",
-        model=model,
-        torch_dtype=torch.float16,
+        model=AutoModelForCausalLM.from_pretrained(
+            model,
+            quantization_config=bnb_config,
+            device_map="auto",
+            trust_remote_code=True,
+        ),
         device_map="auto",
     )
-    if torch.cuda.is_available():
-        torch.set_default_tensor_type(torch.cuda.HalfTensor)
     with open(path_descriptions) as f:
         data = json.load(f)
     L = []
