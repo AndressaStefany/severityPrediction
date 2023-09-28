@@ -28,14 +28,65 @@ from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
 from string import Template
 
-def build_prompt(data: str, preprompt: bool = True):
+def process(l: str, do_prompt: bool = True, preprompt: bool = True, add_instructions: str = "") -> Optional[dict]:
+    """The multiprocessing function that generates the dictionnary from a line of the eclipse_clear.json file"""
+    global default_severities_to_keep
+    global default_high_severities_vals
+    data: dict = eval(l.strip())
+    # filter severities
+    if data['bug_severity'] not in default_severities_to_keep:
+        return
+    # binarize severities
+    severity = 1 if data['bug_severity'] in default_high_severities_vals else 0
+    # process descriptions
+    description = data['description']
+    if isinstance(description, list):
+        description = " ".join(description)
+    if not isinstance(description, str):
+        return 
+    description = description.strip()
+    if description == "":
+        return
+    description = remove_url(description)
+    if do_prompt:
+        description = build_prompt(description, preprompt=preprompt, add_instructions=add_instructions)
+    _id = data['_id']
+    bug_id = data['bug_id']
+    return {"_id": _id, "bug_id": bug_id, "severity": severity, "description": description}
+
+def build_few_shot(data: List[str]) -> str:
+    """Build the few shot example using the data as input. It will take the first two example of severe and non severe samples as examples and remove them from data
+    
+    # Arguments
+        - data: List[str], the listof lines of unprocessed json data
+        
+    # Output
+        - str, the string of the additionnal instructions to add to the prompt
+    """
+    bugs_examples: Dict[int,dict] = {}
+    for i,l in enumerate(data):
+        r = process(l, do_prompt=False)
+        if r is None:
+            continue
+        if r['severity'] not in bugs_examples:
+            r['idx'] = i
+            bugs_examples[r['severity']] = r
+        if 1 in bugs_examples and 0 in bugs_examples:
+            break
+    with open("./data/template_few_shots.txt") as f:
+        t = Template(f.read())
+    del data[bugs_examples[0]['idx']]
+    del data[bugs_examples[1]['idx']]
+    return t.substitute(severe_descr=bugs_examples[1]['description'],non_severe_descr=bugs_examples[0]['description'])
+    
+def build_prompt(data: str, preprompt: bool = True, add_instructions: str = ""):
     with open("./data/template.txt") as f:
         t = Template(f.read())
     preprompt = ""
     if preprompt:
         with open("./data/preprompt.txt") as f:
             preprompt = f.read().strip()
-    return t.substitute(input=data,preprompt=preprompt)
+    return t.substitute(input=data,preprompt=preprompt,add_instructions=add_instructions)
 default_severities_to_keep = ('normal', 'enhancement') #type: ignore
 def filter_bug_severity(dataframe: pd.DataFrame, severity_col='bug_severity', severities_to_keep: Optional[Tuple[str]] = None) -> pd.DataFrame:
     """Filters the dataframe of bugs to keep only bugs within a provided severity set of possibilities

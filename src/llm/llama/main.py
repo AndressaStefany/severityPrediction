@@ -21,39 +21,18 @@ from transformers import (
     pipeline,
     BitsAndBytesConfig,
 )
-def process(l: str) -> Optional[dict]:
-    """The multiprocessing function that generates the dictionnary from a line of the eclipse_clear.json file"""
-    global default_severities_to_keep
-    global default_high_severities_vals
-    data: dict = eval(l.strip())
-    # filter severities
-    if data['bug_severity'] not in default_severities_to_keep:
-        return
-    # binarize severities
-    severity = 1 if data['bug_severity'] in default_high_severities_vals else 0
-    # process descriptions
-    description = data['description']
-    if isinstance(description, list):
-        description = " ".join(description)
-    if not isinstance(description, str):
-        return 
-    description = description.strip()
-    if description == "":
-        return
-    description = remove_url(description)
-    description = build_prompt(description)
-    _id = data['_id']
-    bug_id = data['bug_id']
-    return {"_id": _id, "bug_id": bug_id, "severity": severity, "description": description}
-
-def preprocess_data(file_name: str, data_folder: Path):
+from functools import partial
+def preprocess_data(file_name: str, data_folder: Path, few_shots: bool = True, id: str = ""):
     """Takes the csv file as input, apply the preprocessings and write the resulting data to files"""
     print("Starting preprocessing")
     # open json file
     with open(data_folder / file_name) as f:
         data: List[str] = f.readlines()
+    add_instructions = ""
+    if few_shots:
+        add_instructions = build_few_shot(data)
     with multiprocessing.Pool() as p:
-        data_processed: List[dict] = [e for e in p.map(process, data) if e is not None]
+        data_processed: List[dict] = [e for e in p.map(partial(process,add_instructions=add_instructions), data) if e is not None]
     for i in range(len(data_processed)):
         data_processed[i]['idx'] = i
     data_out = data_processed
@@ -62,7 +41,7 @@ def preprocess_data(file_name: str, data_folder: Path):
     folder.mkdir(exist_ok=True)
     print("saving...")
     ## save everything in a metadata file
-    with open(folder / "llm_full_data.json", "w") as f:
+    with open(folder / f"llm_data{id}.json", "w") as f:
         json.dump(data_out, f, indent=2)
 
 def classify(answer: str) -> int:
@@ -119,6 +98,11 @@ def main(path_descriptions: Path, model: str = "meta-llama/Llama-2-13b-chat-hf",
     return L
 
 def compute_metrics(data_path: Path):
+    """Taking the path to output prediction json file, it computes the statistics of the predictions
+    
+    # Arguments
+        - data_path: Path, 
+    """
     with open(data_path) as f:
         data = json.load(f)
     pred = []
@@ -158,7 +142,8 @@ if __name__ == "__main__":
     # logging.basicConfig(filename='/project/def-aloise/rmoine/log-severity.log', level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     # logger = logging.getLogger('severity')
     # main("TinyPixel/Llama-2-7B-bf16-sharded")
-    # preprocess_data("eclipse_clear.json", Path("data"))
-    path_data = Path("/project/def-aloise/rmoine/severityPrediction/llmm_full_data.json")
-    main(path_data)
-    compute_metrics(path_data.parent / "predictions.json")
+    preprocess_data("eclipse_clear.json", Path("data"),few_shots=True,id="_few_shots")
+    preprocess_data("eclipse_clear.json", Path("data"),few_shots=False,id="")
+    # path_data = Path("/project/def-aloise/rmoine/severityPrediction/llmm_full_data.json")
+    # main(path_data)
+    # compute_metrics(path_data.parent / "predictions.json")
