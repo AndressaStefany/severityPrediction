@@ -136,7 +136,6 @@ def compute_metrics(data_path: Path):
     
 if __name__ == "__main__":
     import warnings
-
     # Ignore DeprecationWarning
     warnings.filterwarnings("ignore")
     # logging.basicConfig(filename='/project/def-aloise/rmoine/log-severity.log', level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')

@@ -30,11 +30,11 @@ from string import Template
 
 def process(l: str, do_prompt: bool = True, preprompt: bool = True, add_instructions: str = "") -> Optional[dict]:
     """The multiprocessing function that generates the dictionnary from a line of the eclipse_clear.json file"""
-    global default_severities_to_keep
+    global default_severities_to_del
     global default_high_severities_vals
     data: dict = eval(l.strip())
     # filter severities
-    if data['bug_severity'] not in default_severities_to_keep:
+    if data['bug_severity'] in default_severities_to_del:
         return
     # binarize severities
     severity = 1 if data['bug_severity'] in default_high_severities_vals else 0
@@ -76,7 +76,10 @@ def build_few_shot(data: List[str]) -> str:
     with open("./data/template_few_shots.txt") as f:
         t = Template(f.read())
     del data[bugs_examples[0]['idx']]
-    del data[bugs_examples[1]['idx']]
+    if bugs_examples[1]['idx'] > bugs_examples[0]['idx']:
+        bugs_examples[1]['idx'] -= 1
+    else:
+        del data[bugs_examples[1]['idx']]
     return t.substitute(severe_descr=bugs_examples[1]['description'],non_severe_descr=bugs_examples[0]['description'])
     
 def build_prompt(data: str, preprompt: bool = True, add_instructions: str = ""):
@@ -87,7 +90,7 @@ def build_prompt(data: str, preprompt: bool = True, add_instructions: str = ""):
         with open("./data/preprompt.txt") as f:
             preprompt = f.read().strip()
     return t.substitute(input=data,preprompt=preprompt,add_instructions=add_instructions)
-default_severities_to_keep = ('normal', 'enhancement') #type: ignore
+default_severities_to_del = ('normal', 'enhancement') #type: ignore
 def filter_bug_severity(dataframe: pd.DataFrame, severity_col='bug_severity', severities_to_keep: Optional[Tuple[str]] = None) -> pd.DataFrame:
     """Filters the dataframe of bugs to keep only bugs within a provided severity set of possibilities
     
@@ -100,8 +103,8 @@ def filter_bug_severity(dataframe: pd.DataFrame, severity_col='bug_severity', se
         - pd.DataFrame, the filtered dataframe
     """
     if severities_to_keep is None:
-        global default_severities_to_keep
-        severities_to_keep = default_severities_to_keep #type: ignore
+        global default_severities_to_del
+        severities_to_keep = default_severities_to_del #type: ignore
     filtered_reports = dataframe[~dataframe[severity_col].isin(severities_to_keep)] #type: ignore
     selected_columns = ['_id', 'bug_id', 'description', 'bug_severity']
     return filtered_reports[selected_columns]
