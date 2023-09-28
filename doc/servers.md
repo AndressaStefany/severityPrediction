@@ -128,7 +128,9 @@ sq -u $USER
 ```
 An alias can be aded to your bashrc with the command *replace the username*:
 
-```echo "alias status='sq -u $USER'" >> ~/.bashrc```
+```
+echo "alias status='sq -u $USER'" >> ~/.bashrc
+```
 
 #### 5.2.1 ⚠ Pending job
 

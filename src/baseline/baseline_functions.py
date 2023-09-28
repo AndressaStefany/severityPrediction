@@ -68,7 +68,7 @@ def build_few_shot(data: List[str]) -> str:
         r = process(l, do_prompt=False)
         if r is None:
             continue
-        if r['severity'] not in bugs_examples:
+        if r['severity'] not in bugs_examples and len(r['description']) < 250:
             r['idx'] = i
             bugs_examples[r['severity']] = r
         if 1 in bugs_examples and 0 in bugs_examples:
@@ -85,11 +85,11 @@ def build_few_shot(data: List[str]) -> str:
 def build_prompt(data: str, preprompt: bool = True, add_instructions: str = ""):
     with open("./data/template.txt") as f:
         t = Template(f.read())
-    preprompt = ""
+    preprompt_data = ""
     if preprompt:
         with open("./data/preprompt.txt") as f:
-            preprompt = f.read().strip()
-    return t.substitute(input=data,preprompt=preprompt,add_instructions=add_instructions)
+            preprompt_data = f.read().strip()
+    return t.substitute(input=data,preprompt=preprompt_data,add_instructions=add_instructions)
 default_severities_to_del = ('normal', 'enhancement') #type: ignore
 def filter_bug_severity(dataframe: pd.DataFrame, severity_col='bug_severity', severities_to_keep: Optional[Tuple[str]] = None) -> pd.DataFrame:
     """Filters the dataframe of bugs to keep only bugs within a provided severity set of possibilities
