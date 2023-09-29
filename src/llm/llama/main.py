@@ -12,6 +12,10 @@ try:
     from src.baseline.baseline_functions import *
 except Exception:
     pass
+try:
+    from rich.progress import track
+except Exception:
+    pass
 import json
 import multiprocessing
 from typing import *
@@ -38,8 +42,13 @@ def preprocess_data(file_name: str, data_folder: Path, few_shots: bool = True, i
     add_instructions = ""
     if few_shots:
         add_instructions = build_few_shot(data)
-    with multiprocessing.Pool() as p:
-        data_processed: List[dict] = [e for e in p.map(partial(process,add_instructions=add_instructions), data) if e is not None]
+    data_processed = []
+    for i,d in track(enumerate(data),total=len(data)):
+        result = process(d,add_instructions=add_instructions)
+        if result is not None:
+            data_processed.append(result)
+    # with multiprocessing.Pool() as p:
+    #     data_processed: List[dict] = [e for e in p.map(partial(process,add_instructions=add_instructions), data) if e is not None]
     for i in range(len(data_processed)):
         data_processed[i]['idx'] = i
     data_out = data_processed
@@ -61,7 +70,7 @@ def classify(answer: str) -> int:
         return 0
     return -1
 
-def get_max_tokens(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = ""):
+def get_max_tokens(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", start: int = 0, end: int = -1):
     print('Start')
     if token != "":
         login(token=token)
@@ -82,14 +91,21 @@ def get_max_tokens(path_descriptions: Path, model_name: str = "meta-llama/Llama-
     )
     with open(path_descriptions) as f:
         data = json.load(f)
+    if end == -1:
+        end = len(data)
+    data = data[start:end]
     max_work = 0
     min_not_work = float('inf')
     print("Starting inference")
-    for d in tqdm(data):
+    Ltokens = []
+    for i,d in tqdm(enumerate(data)):
         gc.collect()
         torch.cuda.empty_cache()
         text = d['description']
         n_tokens = len(tokenizer.tokenize(text))
+        Ltokens.append(n_tokens)
+        if not (max_work < n_tokens < min_not_work):
+            continue
         try:
             [answer] = pipeline(
                 text,
@@ -103,11 +119,14 @@ def get_max_tokens(path_descriptions: Path, model_name: str = "meta-llama/Llama-
             max_work = max(max_work,n_tokens)
         except Exception:
             min_not_work = min(min_not_work,n_tokens)
-    with open(path_descriptions.parent / "max_tokens_v100l.json",'w') as f:
+    with open(path_descriptions.parent / f"max_tokens_v100l_chunk_{start}.json",'w') as f:
         json.dump({
             "min_not_work": min_not_work,
-            "max_work": max_work
+            "max_work": max_work,
+            "number_of_tokens": Ltokens
         },f)
+        
+
 def compute_metrics(data_path: Path):
     """Taking the path to output prediction json file, it computes the statistics of the predictions
     
@@ -155,6 +174,8 @@ if __name__ == "__main__":
     # preprocess_data("eclipse_clear.json", Path("data"),few_shots=False,id="")
     # preprocess_data("eclipse_clear.json", Path("data"),few_shots=True,id="_few_shots")
     path_data = Path("/project/def-aloise/rmoine/llm_data.json")
-    model="TheBloke/Llama-2-13B-GPTQ"
-    get_max_tokens(path_data,token="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")
-    compute_metrics(path_data.parent / "predictions.json")
+    # model="TheBloke/Llama-2-13B-GPTQ"
+    get_max_tokens(path_data,token="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",start=0,end=24225)
+    get_max_tokens(path_data,token="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",start=24225,end=48450)
+    get_max_tokens(path_data,token="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",start=48450,end=72676)
+    # compute_metrics(path_data.parent / "predictions.json")

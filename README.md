@@ -9,6 +9,7 @@
 - [x] Use as text-generation or text-classification
 - [x] Remove the explanation
 - [x] Llama2 incoherent answers
+- [ ] Gather statistics on the number of tokens
 
 ## Pipeline
 
