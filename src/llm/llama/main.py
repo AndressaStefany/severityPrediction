@@ -156,5 +156,5 @@ if __name__ == "__main__":
     # preprocess_data("eclipse_clear.json", Path("data"),few_shots=True,id="_few_shots")
     path_data = Path("/project/def-aloise/rmoine/llm_data.json")
     model="TheBloke/Llama-2-13B-GPTQ"
-    main(path_data,token="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")
+    get_max_tokens(path_data,token="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")
     compute_metrics(path_data.parent / "predictions.json")
