@@ -8,7 +8,10 @@ from huggingface_hub import login
 from nltk.tokenize import word_tokenize
 from pathlib import Path
 import pandas as pd
-from src.baseline.baseline_functions import *
+try:
+    from src.baseline.baseline_functions import *
+except Exception:
+    pass
 import json
 import multiprocessing
 from typing import *
@@ -21,6 +24,10 @@ from transformers import (
     pipeline,
     BitsAndBytesConfig,
 )
+import gc
+import os
+from tqdm import tqdm
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 from functools import partial
 def preprocess_data(file_name: str, data_folder: Path, few_shots: bool = True, id: str = ""):
     """Takes the csv file as input, apply the preprocessings and write the resulting data to files"""
@@ -54,49 +61,53 @@ def classify(answer: str) -> int:
         return 0
     return -1
 
-def main(path_descriptions: Path, model: str = "meta-llama/Llama-2-13b-chat-hf", token: str = ""):
+def get_max_tokens(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = ""):
     print('Start')
     if token != "":
         login(token=token)
-    tokenizer = AutoTokenizer.from_pretrained(model)
-    
-    bnb_config = BitsAndBytesConfig(
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    double_quant_config = BitsAndBytesConfig(
         load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16,
         bnb_4bit_use_double_quant=True,
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, 
+        quantization_config=double_quant_config
     )
     pipeline = transformers.pipeline(
         "text-generation",
-        model=AutoModelForCausalLM.from_pretrained(
-            model,
-            quantization_config=bnb_config,
-            device_map="auto",
-            trust_remote_code=True,
-        ),
-        device_map="auto",
+        model=model,
+        tokenizer=tokenizer,
+        device_map="auto"
     )
     with open(path_descriptions) as f:
         data = json.load(f)
-    L = []
-    for d in data:
-        [answer] = pipeline(
-            d['description'],
-            do_sample=True,
-            top_k=1,
-            num_return_sequences=1,
-            eos_token_id=tokenizer.eos_token_id,
-            max_length=100, # I'll change here
-        )
-        answer = answer['generated_text']
-        if not isinstance(answer, str):
-            raise Exception("Unknown result answer: "+str(answer))
-        severity = classify(answer)
-        L.append({**d, "answer": answer, "severity_pred": severity})
-    with open(path_descriptions.parent / "predictions.json", "w") as f:
-        json.dump(L,f)
-    return L
-
+    max_work = 0
+    min_not_work = float('inf')
+    print("Starting inference")
+    for d in tqdm(data):
+        gc.collect()
+        torch.cuda.empty_cache()
+        text = d['description']
+        n_tokens = len(tokenizer.tokenize(text))
+        try:
+            [answer] = pipeline(
+                text,
+                do_sample=True,
+                top_k=1,
+                num_return_sequences=1,
+                eos_token_id=tokenizer.eos_token_id,
+                max_length=100, 
+            )
+            del answer
+            max_work = max(max_work,n_tokens)
+        except Exception:
+            min_not_work = min(min_not_work,n_tokens)
+    with open(path_descriptions.parent / "max_tokens_v100l.json",'w') as f:
+        json.dump({
+            "min_not_work": min_not_work,
+            "max_work": max_work
+        },f)
 def compute_metrics(data_path: Path):
     """Taking the path to output prediction json file, it computes the statistics of the predictions
     
@@ -143,6 +154,7 @@ if __name__ == "__main__":
     # main("TinyPixel/Llama-2-7B-bf16-sharded")
     # preprocess_data("eclipse_clear.json", Path("data"),few_shots=False,id="")
     # preprocess_data("eclipse_clear.json", Path("data"),few_shots=True,id="_few_shots")
-    path_data = Path("/project/def-aloise/rmoine/severityPrediction/llmm_full_data.json")
-    main(path_data)
+    path_data = Path("/project/def-aloise/rmoine/llm_data.json")
+    model="TheBloke/Llama-2-13B-GPTQ"
+    main(path_data,token="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")
     compute_metrics(path_data.parent / "predictions.json")
