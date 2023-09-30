@@ -70,6 +70,47 @@ def classify(answer: str) -> int:
         return 0
     return -1
 
+def get_tokens(data, tokenizer):
+    Ltokens = []
+    for i, d in tqdm(enumerate(data)):
+        gc.collect()
+        torch.cuda.empty_cache()
+        text = d['text']
+        n_tokens = len(tokenizer.tokenize(text))
+        Ltokens.append(n_tokens)
+    return Ltokens
+
+def get_max_mix(token_lengths, tokenizer, pipeline):
+    min_token_length = min(token_lengths)
+    max_token_length = max(token_lengths)
+    
+    max_work = 0
+    min_not_work = float('inf')
+    
+    while min_token_length < max_token_length:
+        gc.collect()
+        torch.cuda.empty_cache()
+        mid_token_length = (min_token_length + max_token_length) // 2
+        text = "hello " * mid_token_length  # Create a test text of the desired length
+        try:
+            [answer] = pipeline(
+                text,
+                do_sample=True,
+                top_k=1,
+                num_return_sequences=1,
+                eos_token_id=tokenizer.eos_token_id,
+                max_length=1024,
+            )
+            del answer
+            # If the code above works, update max_work and adjust the search range
+            max_work = mid_token_length
+            min_token_length = mid_token_length + 1
+        except Exception as e:
+            # If the code above raises an exception, update min_not_work and adjust the search range
+            min_not_work = mid_token_length
+            max_token_length = mid_token_length - 1
+    return (max_work, min_not_work)
+
 def get_max_tokens(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", start: int = 0, end: int = -1):
     print('Start')
     if token != "":
@@ -94,36 +135,14 @@ def get_max_tokens(path_descriptions: Path, model_name: str = "meta-llama/Llama-
     if end == -1:
         end = len(data)
     data = data[start:end]
-    max_work = 0
-    min_not_work = float('inf')
-    print("Starting inference")
-    Ltokens = []
-    for i,d in tqdm(enumerate(data)):
-        gc.collect()
-        torch.cuda.empty_cache()
-        text = d['description']
-        n_tokens = len(tokenizer.tokenize(text))
-        Ltokens.append(n_tokens)
-        if not (max_work < n_tokens < min_not_work):
-            continue
-        try:
-            [answer] = pipeline(
-                text,
-                do_sample=True,
-                top_k=1,
-                num_return_sequences=1,
-                eos_token_id=tokenizer.eos_token_id,
-                max_length=100, 
-            )
-            del answer
-            max_work = max(max_work,n_tokens)
-        except Exception:
-            min_not_work = min(min_not_work,n_tokens)
+    
+    token_lengths = get_tokens(data, tokenizer)
+    (max_work, min_not_work) = get_max_mix(token_lengths, tokenizer, pipeline)
     with open(path_descriptions.parent / f"max_tokens_v100l_chunk_{start}.json",'w') as f:
         json.dump({
             "min_not_work": min_not_work,
             "max_work": max_work,
-            "number_of_tokens": Ltokens
+            "number_of_tokens": token_lengths
         },f)
         
 
