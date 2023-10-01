@@ -30,6 +30,7 @@ from transformers import (
 )
 import gc
 import os
+import math
 from tqdm import tqdm
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 from functools import partial
@@ -64,10 +65,10 @@ def classify(answer: str) -> int:
     """Return 0 if not severe, 1 if severe and -1 if unknown"""
     pattern_severe = "[sS][eE][vV][eE][rR][eE]"
     pattern_not_severe = "[nN][oO][tT] *"+pattern_severe
-    if re.match(pattern_severe, answer) is not None or ("0" in answer and "1" not in answer):
-        return 1
     if re.match(pattern_not_severe, answer) is not None or ("1" in answer and "0" not in answer):
         return 0
+    elif re.match(pattern_severe, answer) is not None or ("0" in answer and "1" not in answer):
+        return 1
     return -1
 
 def get_tokens(data, tokenizer):
@@ -144,21 +145,84 @@ def get_max_tokens(path_descriptions: Path, model_name: str = "meta-llama/Llama-
             "max_work": max_work,
             "number_of_tokens": token_lengths
         },f)
-        
 
-def compute_metrics(data_path: Path):
-    """Taking the path to output prediction json file, it computes the statistics of the predictions
+def main(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", start: int = 0, end: int = -1):
+    if token != "":
+        login(token=token)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    double_quant_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, 
+        quantization_config=double_quant_config
+    )
+    pipeline = transformers.pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        device_map="auto"
+    )
+    with open(path_descriptions) as f:
+        data = json.load(f)
+    if end == -1:
+        end = len(data)
+    data = data[start:end]
+    responses = []
+    for i, d in tqdm(enumerate(data)):
+        gc.collect()
+        torch.cuda.empty_cache()
+        answer = float('nan')
+        severity = float('nan')
+        text = d['text']
+        n_tokens = len(tokenizer.tokenize(text))
+
+        if n_tokens < 7366:
+            [answer] = pipeline(
+                text,
+                do_sample=True,
+                top_k=1,
+                num_return_sequences=1,
+                eos_token_id=tokenizer.eos_token_id,
+                max_length=1024,
+            )
+            answer = answer['generated_text']
+            if not isinstance(answer, str):
+                raise Exception("Unknown result answer: "+str(answer))
+            severity = classify(answer)
+
+        responses.append({**d, "answer": answer, "severity_pred": severity})
+    with open(path_descriptions.parent / f"predictions/predictions_v100l_chunk_{start}.json", "w") as f:
+        json.dump(responses,f)
+        
+def get_severities(folder_path: Path):
+    binary_severity_values = []
+    severity_pred_values = []
+
+    folder_path = Path(folder_path)
+    json_file_paths = [file for file in folder_path.glob('*.json')]
+
+    for json_file_path in json_file_paths:
+        with open(json_file_path) as f:
+            data = json.load(f)
+
+        for d in data:
+            binary_severity_value = d['binary_severity']
+            severity_pred_value = d['severity_pred']
+            # Check if severity_pred_value is -1 or nan before adding them to the lists
+            if severity_pred_value != -1 and not math.isnan(severity_pred_value):
+                binary_severity_values.append(binary_severity_value)
+                severity_pred_values.append(severity_pred_value)
+    return (binary_severity_values, severity_pred_values)
+
+def compute_metrics(folder_path: Path):
+    """Taking the path of the predictions folder, it computes the statistics of the predictions
     
     # Arguments
-        - data_path: Path, 
-    """
-    with open(data_path) as f:
-        data = json.load(f)
-    pred = []
-    true = []
-    for d in data:
-        pred.append(d['severity_pred'])
-        true.append(d['severity'])
+        - folder_path: Path, 
+    """            
+    (true, pred) = get_severities(folder_path)
     # Compute the confusion matrix
     conf_matrix = confusion_matrix(true, pred)
 
@@ -173,7 +237,7 @@ def compute_metrics(data_path: Path):
     # Compute F1-score
     f1 = f1_score(true, pred)
     
-    with open(data_path.parent / "metrics.json", "w") as f:
+    with open(folder_path / "metrics.json", "w") as f:
         json.dump({
             "date_timestamp": datetime.datetime.now().timestamp(),
             "confusion_matrix": conf_matrix.tolist(),
@@ -192,9 +256,12 @@ if __name__ == "__main__":
     # main("TinyPixel/Llama-2-7B-bf16-sharded")
     # preprocess_data("eclipse_clear.json", Path("data"),few_shots=False,id="")
     # preprocess_data("eclipse_clear.json", Path("data"),few_shots=True,id="_few_shots")
-    path_data = Path("/project/def-aloise/rmoine/llm_data.json")
+    path_data = Path("/project/def-aloise/andressa/eclipse_with_text.json")
     # model="TheBloke/Llama-2-13B-GPTQ"
-    get_max_tokens(path_data,token="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",start=0,end=24225)
-    get_max_tokens(path_data,token="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",start=24225,end=48450)
-    get_max_tokens(path_data,token="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",start=48450,end=72676)
-    # compute_metrics(path_data.parent / "predictions.json")
+    # get_max_tokens(path_data,token="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",start=0,end=24225)
+    # get_max_tokens(path_data,token="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",start=24225,end=48450)
+    # get_max_tokens(path_data,token="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",start=48450,end=72676)
+    main(path_data,token="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",start=0,end=24225)
+    # main(path_data,token="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",start=24225,end=48450)
+    # main(path_data,token="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",start=48450,end=72676)
+    # compute_metrics(path_data.parent / "predictions/")
