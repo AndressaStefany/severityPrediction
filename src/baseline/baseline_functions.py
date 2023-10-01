@@ -532,7 +532,17 @@ if __name__ == "__main__":
     # data_path = Path("./data/")
     # generate_data(data_path)
     # run_trainings(data_path)
-    # hyperparameter_search("bayesian-networks",["BernoulliNB","ComplementNB","GaussianNB","MultinomialNB"],n_jobs=1)
-    hyperparameter_search("svc",["SVC"],n_jobs=4)
-    hyperparameter_search("knn",["KNeighborsClassifier"],n_jobs=4)
+    import argparse
+    parser = argparse.ArgumentParser(description="Select between SVC and KNN algorithms")
+    parser.add_argument("algorithm", choices=["bayesian", "SVC", "KNN"], help="Choose the algorithm (SVC or KNN)")
+
+    args = parser.parse_args()
+    if args.algorithm == "bayesian":
+        hyperparameter_search("bayesian-networks",["BernoulliNB","ComplementNB","GaussianNB","MultinomialNB"],n_jobs=1)
+    elif args.algorithm == "SVC":
+        hyperparameter_search("svc",["SVC"],n_jobs=2)
+    elif args.algorithm == "KNN":
+        hyperparameter_search("knn",["KNeighborsClassifier"],n_jobs=2)
+    else:
+        raise Exception
     # reproduce_best(data_path)
