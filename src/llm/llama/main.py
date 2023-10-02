@@ -35,7 +35,7 @@ import gc
 import os
 import math
 from tqdm import tqdm
-from pretty_confusion_matrix import pp_matrix
+from explore.pretty_confusion_matrix import pp_matrix
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 from functools import partial
 def preprocess_data(file_name: str, data_folder: Path, few_shots: bool = True, id: str = ""):
@@ -235,29 +235,64 @@ def compute_metrics(folder_path: Path, class_mapping: Optional[dict] = None):
     # Compute accuracy
     accuracy = accuracy_score(true, pred)
     # Compute precision
-    precision = precision_score(true, pred, average=None)
+    precision: np.ndarray = precision_score(true, pred, average=None) #type: ignore
 
     # Compute recall
-    recall = recall_score(true, pred, average=None)
+    recall: np.ndarray = recall_score(true, pred, average=None) #type: ignore
 
     # Compute F1-score
-    f1 = f1_score(true, pred, average=None)
+    f1: np.ndarray = f1_score(true, pred, average=None) #type: ignore
     
     with open(folder_path / "metrics.json", "w") as f:
         json.dump({
             "date_timestamp": datetime.datetime.now().timestamp(),
             "confusion_matrix": conf_matrix.tolist(),
             "accuracy": accuracy,
-            "precision": precision.tolist(),
-            "recall": recall.tolist(),
-            "f1": f1.tolist()
+            "precision": precision.tolist(), 
+            "recall": recall.tolist(), 
+            "f1": f1.tolist() 
             },f)
         
+    plot_confusion(
+        conf_matrix=conf_matrix,
+        folder_path=folder_path,
+        class_mapping=None,
+        unique_values=None,
+        backend="agg" #type: ignore
+    )
+    
+def plot_confusion(conf_matrix: np.ndarray, folder_path: Optional[Path] = None, class_mapping: Optional[Dict] = None, unique_values: Optional[List] = None, backend = Optional[Literal['agg']]):
+    """Takes the confusion matrix and plots it with totals values (recall is the percentage of the total of each column, precision percentage for the total of each line and accuracy is the percentage at the bottom right)
+    Can be used in notebooks just to plot or just to save into a file. See doc of arguments
+    
+    # Arguments
+        - conf_matrix: np.ndarray, confusion matrix
+        - folder_path: Path, path to the folder where the plot will be saved
+        - class_mapping: Optional[Dict], mapping from possible values predicted to name (str or int), default {-1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
+        - unique_values: Optional[List], list of possible values default [-1, 0, 1]
+        - backend: Optional[Literal['agg']], the backend to use, tries to plot on screen (default) if no backend (with default backend) or just save to a file with agg
+    
+    # Returns
+        None
+    """
+    if class_mapping is None:
+        class_mapping = {-1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
+    if unique_values is None:
+        unique_values = [-1,0,1]
     # pretty print the confusion matrix
-    df_conf_matrix = pd.DataFrame(conf_matrix, index=[class_mapping[e] for e in unique], columns=[class_mapping[e] for e in unique])
-    matplotlib.use("agg")
-    pp_matrix(df_conf_matrix, cmap="winter", fz=11, figsize=[5,5])
-    plt.savefig(folder_path / "confusion_matrix.png")
+    values = list(class_mapping.values())
+    df_conf_matrix = pd.DataFrame(conf_matrix, index=values, columns=values)
+    if backend is not None:
+        matplotlib.use("agg")
+    pp_matrix(df_conf_matrix, cmap="winter", fz=11, figsize=[5,5], title="Confusion matrix\nBottom green recall;Right green precision\nBottom right accuracy")
+    if folder_path is not None:
+        plt.savefig(folder_path / "confusion_matrix.png")
+    try:
+        plt.show()
+    except Exception as e:
+        print(e)
+        pass
+    
 if __name__ == "__main__":
     import warnings
     # Ignore DeprecationWarning

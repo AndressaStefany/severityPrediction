@@ -152,6 +152,7 @@ def pp_matrix(
     figsize=[8, 8],
     show_null_values=0,
     pred_val_axis="y",
+    title="Confusion matrix"
 ):
     """
     print conf matrix with default layout (like matlab)
@@ -234,11 +235,11 @@ def pp_matrix(
         ax.text(item["x"], item["y"], item["text"], **item["kw"])
 
     # titles and legends
-    ax.set_title("Confusion matrix")
+    ax.set_title(title)
     ax.set_xlabel(xlbl)
     ax.set_ylabel(ylbl)
     plt.tight_layout()  # set layout slim
-    plt.show()
+    return ax
 
 
 def pp_matrix_from_data(
