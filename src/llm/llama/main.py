@@ -220,18 +220,24 @@ def get_severities(folder_path: Path):
                 severity_pred_values.append(severity_pred_value)
     return (binary_severity_values, severity_pred_values)
 
-def compute_metrics(folder_path: Path, class_mapping: Optional[dict] = None):
-    """Taking the path of the predictions folder, it computes the statistics of the predictions
+def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None, class_mapping: Optional[dict] = None):
+    """Taking the path of the predictions folder, it computes the statistics with the predictions (confusion matrix, precision, recall, f1-score). The confusion matrix is plotted into a png file
     
     # Arguments
-        - folder_path: Path, 
+        - folder_predictions: Path, path to the folder where the prediction files are stored
+        - folder_out: Path, path to the folder where the statistics will be stored
+        - class_mapping: Optional[Dict], mapping from possible values predicted to name (str or int), default {-1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
+        
+    # Return
+        None        
     """
-    (true, pred) = get_severities(folder_path)
+    if folder_out is None:
+        folder_out = folder_predictions
+    (true, pred) = get_severities(folder_predictions)
     # Compute the confusion matrix
     conf_matrix = confusion_matrix(true, pred)
-    unique = np.unique(pred)
     if class_mapping is None:
-        class_mapping = {e:e for e in unique}
+        class_mapping = {-1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
     # Compute accuracy
     accuracy = accuracy_score(true, pred)
     # Compute precision
@@ -243,7 +249,7 @@ def compute_metrics(folder_path: Path, class_mapping: Optional[dict] = None):
     # Compute F1-score
     f1: np.ndarray = f1_score(true, pred, average=None) #type: ignore
     
-    with open(folder_path / "metrics.json", "w") as f:
+    with open(folder_out / "metrics.json", "w") as f:
         json.dump({
             "date_timestamp": datetime.datetime.now().timestamp(),
             "confusion_matrix": conf_matrix.tolist(),
@@ -255,7 +261,7 @@ def compute_metrics(folder_path: Path, class_mapping: Optional[dict] = None):
         
     plot_confusion(
         conf_matrix=conf_matrix,
-        folder_path=folder_path,
+        folder_path=folder_out,
         class_mapping=None,
         unique_values=None,
         backend="agg" #type: ignore
