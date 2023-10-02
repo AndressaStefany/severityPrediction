@@ -186,6 +186,7 @@ def main(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat
                 num_return_sequences=1,
                 eos_token_id=tokenizer.eos_token_id,
                 max_length=1024,
+                return_full_text=False
             )
             answer = answer['generated_text']
             if not isinstance(answer, str):
@@ -193,6 +194,10 @@ def main(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat
             severity = classify(answer)
 
         responses.append({**d, "answer": answer, "severity_pred": severity})
+        if i%5==0:
+            with open(path_descriptions.parent / f"predictions/predictions_v100l_chunk_{start}.json", "w") as f:
+                json.dump(responses,f)
+        
     with open(path_descriptions.parent / f"predictions/predictions_v100l_chunk_{start}.json", "w") as f:
         json.dump(responses,f)
         
