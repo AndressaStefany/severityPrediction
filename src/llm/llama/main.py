@@ -235,22 +235,22 @@ def compute_metrics(folder_path: Path, class_mapping: Optional[dict] = None):
     # Compute accuracy
     accuracy = accuracy_score(true, pred)
     # Compute precision
-    precision = precision_score(true, pred)
+    precision = precision_score(true, pred, average=None)
 
     # Compute recall
-    recall = recall_score(true, pred)
+    recall = recall_score(true, pred, average=None)
 
     # Compute F1-score
-    f1 = f1_score(true, pred)
+    f1 = f1_score(true, pred, average=None)
     
     with open(folder_path / "metrics.json", "w") as f:
         json.dump({
             "date_timestamp": datetime.datetime.now().timestamp(),
             "confusion_matrix": conf_matrix.tolist(),
             "accuracy": accuracy,
-            "precision": precision,
-            "recall": recall,
-            "f1": f1
+            "precision": precision.tolist(),
+            "recall": recall.tolist(),
+            "f1": f1.tolist()
             },f)
         
     # pretty print the confusion matrix
