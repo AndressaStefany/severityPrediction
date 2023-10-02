@@ -206,6 +206,16 @@ def main(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat
         json.dump(responses,f)
         
 def get_severities(folder_path: Path):
+    """Aggregates every predictions and true value stored in each json file stored in folder_path
+    
+    # Arguments
+        - folder_path: Path, the path where all of the *.json files are stored. They must contain List[dict] with in dict keys 'binary_severity' and 'severity_pred'
+    
+    # Returns
+        - Tuple[List[int],List[int]], 
+            - List[int], binary_severity_values, the true value of the severity of the bug
+            - List[int], severity_pred_values, the predicted value of the severity of the bug
+    """
     binary_severity_values = []
     severity_pred_values = []
 
