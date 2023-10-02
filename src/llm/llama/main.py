@@ -17,9 +17,12 @@ try:
 except Exception:
     pass
 import json
+import numpy as np
 import multiprocessing
 from typing import *
 import re
+import matplotlib.pyplot as plt
+import matplotlib
 from sklearn.metrics import confusion_matrix, accuracy_score, recall_score, f1_score, precision_score
 import datetime
 from transformers import (
@@ -32,6 +35,7 @@ import gc
 import os
 import math
 from tqdm import tqdm
+from pretty_confusion_matrix import pp_matrix
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 from functools import partial
 def preprocess_data(file_name: str, data_folder: Path, few_shots: bool = True, id: str = ""):
@@ -221,16 +225,18 @@ def get_severities(folder_path: Path):
                 severity_pred_values.append(severity_pred_value)
     return (binary_severity_values, severity_pred_values)
 
-def compute_metrics(folder_path: Path):
+def compute_metrics(folder_path: Path, class_mapping: Optional[dict] = None):
     """Taking the path of the predictions folder, it computes the statistics of the predictions
     
     # Arguments
         - folder_path: Path, 
-    """            
+    """
     (true, pred) = get_severities(folder_path)
     # Compute the confusion matrix
     conf_matrix = confusion_matrix(true, pred)
-
+    unique = np.unique(pred)
+    if class_mapping is None:
+        class_mapping = {e:e for e in unique}
     # Compute accuracy
     accuracy = accuracy_score(true, pred)
     # Compute precision
@@ -251,7 +257,12 @@ def compute_metrics(folder_path: Path):
             "recall": recall,
             "f1": f1
             },f)
-    
+        
+    # pretty print the confusion matrix
+    df_conf_matrix = pd.DataFrame(conf_matrix, index=[class_mapping[e] for e in unique], columns=[class_mapping[e] for e in unique])
+    matplotlib.use("agg")
+    pp_matrix(df_conf_matrix, cmap="winter", fz=11, figsize=[5,5])
+    plt.savefig(folder_path / "confusion_matrix.png")
 if __name__ == "__main__":
     import warnings
     # Ignore DeprecationWarning
