@@ -206,41 +206,9 @@ def main(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat
         
     with open(path_descriptions.parent / f"predictions/predictions_v100l_chunk_{start}.json", "w") as f:
         json.dump(responses,f)
-        
-def get_severities(folder_path: Path, allow_nan: bool = False, allow_incoherent: bool = False):
-    """Aggregates every predictions and true value stored in each json file stored in folder_path
-    
-    # Arguments
-        - folder_path: Path, the path where all of the *.json files are stored. They must contain List[dict] with in dict keys 'binary_severity' and 'severity_pred'
-    
-    # Returns
-        - Tuple[List[int],List[int]], 
-            - List[int], binary_severity_values, the true value of the severity of the bug
-            - List[int], severity_pred_values, the predicted value of the severity of the bug
-    """
-    binary_severity_values = []
-    severity_pred_values = []
-
-    folder_path = Path(folder_path)
-    json_file_paths = [file for file in folder_path.glob('*.json')]
-
-    for json_file_path in json_file_paths:
-        with open(json_file_path) as f:
-            data = json.load(f)
-
-        for d in data:
-            binary_severity_value = d['binary_severity']
-            severity_pred_value = d['severity_pred']
-            # Check if severity_pred_value is -1 or nan before adding them to the lists
-            nan_allow = (not np.isnan(severity_pred_value)) or allow_nan
-            incoherent_allow = severity_pred_value != -1 or allow_incoherent
-            if nan_allow and incoherent_allow:
-                binary_severity_values.append(binary_severity_value)
-                severity_pred_values.append(severity_pred_value)
-    return (binary_severity_values, severity_pred_values)
 
 def extract_fields_from_json(folder_path: Path, fields: List[str], allow_nan: bool = False, allow_incoherent: bool = False):
-    """Aggregates every predictions and true value stored in each json file stored in folder_path. Same logic as get_severities with possibility to choose which fields to return
+    """Aggregates every predictions and true value stored in each json file stored in folder_path with possibility to choose which fields to return
     
     # Arguments
         - folder_path: Path, the path where all of the *.json files are stored. They must contain List[dict] with in dict keys 'binary_severity' and 'severity_pred'
