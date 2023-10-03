@@ -35,7 +35,7 @@ import gc
 import os
 import math
 from tqdm import tqdm
-from explore.pretty_confusion_matrix import pp_matrix
+from pretty_confusion_matrix import pp_matrix
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 from functools import partial
 def preprocess_data(file_name: str, data_folder: Path, few_shots: bool = True, id: str = ""):
