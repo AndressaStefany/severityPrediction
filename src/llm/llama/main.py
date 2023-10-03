@@ -36,6 +36,7 @@ import os
 import math
 from tqdm import tqdm
 from pretty_confusion_matrix import pp_matrix
+from functools import product
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 from functools import partial
 def preprocess_data(file_name: str, data_folder: Path, few_shots: bool = True, id: str = ""):
@@ -237,6 +238,35 @@ def get_severities(folder_path: Path, allow_nan: bool = False, allow_incoherent:
                 severity_pred_values.append(severity_pred_value)
     return (binary_severity_values, severity_pred_values)
 
+def extract_fields_from_json(folder_path: Path, fields: List[str], allow_nan: bool = False, allow_incoherent: bool = False):
+    """Aggregates every predictions and true value stored in each json file stored in folder_path. Same logic as get_severities with possibility to choose which fields to return
+    
+    # Arguments
+        - folder_path: Path, the path where all of the *.json files are stored. They must contain List[dict] with in dict keys 'binary_severity' and 'severity_pred'
+    
+    # Returns
+        - Dict[str,List[int]], Lists for each field required in fields associated to their field name
+    """
+    fields_data = {f:[] for f in fields}
+
+    folder_path = Path(folder_path)
+    json_file_paths = [file for file in folder_path.glob('*.json')]
+
+    for json_file_path in json_file_paths:
+        with open(json_file_path) as f:
+            data: List[DataoutDict] = json.load(f)
+
+        for d in data:
+            binary_severity_value = d['binary_severity']
+            severity_pred_value = d['severity_pred']
+            # Check if severity_pred_value is -1 or nan before adding them to the lists
+            nan_allow = (not np.isnan(severity_pred_value)) or allow_nan
+            incoherent_allow = severity_pred_value != -1 or allow_incoherent
+            if nan_allow and incoherent_allow:
+                for f in fields:
+                    fields_data[f].append(binary_severity_value)
+    return fields_data
+    
 def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None, mapping_dict: Optional[dict] = None, limit_tokens: int = 7366):
     """Taking the path of the predictions folder, it computes the statistics with the predictions (confusion matrix, precision, recall, f1-score). The confusion matrix is plotted into a png file
     
@@ -250,9 +280,10 @@ def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None,
     """
     if folder_out is None:
         folder_out = folder_predictions
-    (true, pred) = get_severities(folder_predictions, allow_nan=True, allow_incoherent=True)
+    fields_data = extract_fields_from_json(folder_predictions, fields=["bug_id", "binary_severity", "severity_pred", "description"],allow_nan=True, allow_incoherent=True)
     # Replace Nan by -2
-    pred = [-2 if np.isnan(e) else e for e in pred ]
+    pred = [-2 if np.isnan(e) else e for e in fields_data['severity_pred'] ]
+    true = fields_data['binary_severity']
     # Compute the confusion matrix
     conf_matrix = confusion_matrix(true, pred)
     if mapping_dict is None:
@@ -286,6 +317,14 @@ def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None,
         limit_tokens=limit_tokens,
         backend="agg" #type: ignore
     )
+    # find representants
+    find_representant(
+        fields_data, 
+        folder_out / "representants.json", 
+        n_samples=5,
+        mapping_dict=mapping_dict,
+        limit_tokens=limit_tokens
+    )
     
 def plot_confusion(conf_matrix: np.ndarray, folder_path: Optional[Path] = None, mapping_dict: Optional[Dict] = None, unique_values: Optional[List] = None, backend = Optional[Literal['agg']], limit_tokens: int = 7366):
     """Takes the confusion matrix and plots it with totals values (recall is the percentage of the total of each column, precision percentage for the total of each line and accuracy is the percentage at the bottom right)
@@ -318,6 +357,51 @@ def plot_confusion(conf_matrix: np.ndarray, folder_path: Optional[Path] = None, 
     except Exception as e:
         print(e)
         pass
+
+def find_representant(data: Union[Path,Dict[str,List[int]]], path_out: Path, n_samples: int = 5, mapping_dict: Optional[Dict] = None, limit_tokens: int = 7366):
+    """Find representants for each cell of the confusion matrix
+    
+    # Arguments
+        - path_data: : Union[Path,Tuple[List[int],List[int]]], either 
+            - Path, path to the folder where the json files where the data are (list of DataoutDict dicts)
+            - Dict[str,List[int]], Dict with fields "bug_id", "binary_severity" "severity_pred" and "description" with binary_severity and severity_pred values with integers values only (no nan)
+        - n_samples: the number of samples to get for each confusion matrix case
+        - mapping_dict: Optional[Dict], mapping from possible values predicted to name (str or int), default {-2, "Too big query", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"} and -2 replaces all nan
+        - path_out: Path, path to where to store the representants
+    """
+    if mapping_dict is None:
+        mapping_dict = {-2: f"Too big query ({limit_tokens} tokens)", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
+    if isinstance(data, Path) or isinstance(data, str):
+        data = extract_fields_from_json(data, fields=["binary_severity","severity_pred","description"], allow_nan=True, allow_incoherent=True) #type: ignore
+        
+    samples = {}
+    for i,j in product([-2,-1,0,1],2):
+        samples[(i,j)] = []
+    for bug_id,true,pred,description in zip(data["bug_id"],data["binary_severity"],data["severity_pred"],data["description"]):
+        pred = pred if not np.isnan(pred) else -2
+        if len(samples[(pred,true)]) < n_samples:
+            samples[(pred,true)].append({"bug_id":bug_id,"true":true,"pred":pred,"description":description})
+        else:
+            all_full = True
+            for k in samples:
+                all_full = all_full and (len(samples[k]) >= n_samples)
+            if all_full:
+                break
+    for (true,pred),Lsamples in samples.items():
+        print("-"*10,f"true: {true} ; pred: {pred}","-"*10)
+        for s in Lsamples:
+            print("bug_id: ",s['bug_id'])
+            print(s['description'])
+    with open(path_out,"w") as f:
+        json.dump(samples,f)
+    return samples
+    
+class DataoutDict(TypedDict):
+    bug_id: str
+    text: str
+    answer: str
+    severity_pred: Union[int,float]
+    binary_severity: int
 
 if __name__ == "__main__":
     import warnings
