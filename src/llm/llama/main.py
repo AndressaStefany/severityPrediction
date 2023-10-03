@@ -150,7 +150,7 @@ def get_max_tokens(path_descriptions: Path, model_name: str = "meta-llama/Llama-
             "number_of_tokens": token_lengths
         },f)
 
-def main(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", start: int = 0, end: int = -1):
+def main(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", start: int = 0, end: int = -1, limit_tokens: int = 7366):
     if token != "":
         login(token=token)
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
@@ -182,7 +182,7 @@ def main(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat
         text = d['text']
         n_tokens = len(tokenizer.tokenize(text))
 
-        if n_tokens < 7366:
+        if n_tokens < limit_tokens:
             [answer] = pipeline(
                 text,
                 do_sample=True,
@@ -205,7 +205,7 @@ def main(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat
     with open(path_descriptions.parent / f"predictions/predictions_v100l_chunk_{start}.json", "w") as f:
         json.dump(responses,f)
         
-def get_severities(folder_path: Path):
+def get_severities(folder_path: Path, allow_nan: bool = False, allow_incoherent: bool = False):
     """Aggregates every predictions and true value stored in each json file stored in folder_path
     
     # Arguments
@@ -230,29 +230,33 @@ def get_severities(folder_path: Path):
             binary_severity_value = d['binary_severity']
             severity_pred_value = d['severity_pred']
             # Check if severity_pred_value is -1 or nan before adding them to the lists
-            if severity_pred_value != -1 and not math.isnan(severity_pred_value):
+            nan_allow = (not np.isnan(severity_pred_value)) or allow_nan
+            incoherent_allow = severity_pred_value != -1 or allow_incoherent
+            if nan_allow and incoherent_allow:
                 binary_severity_values.append(binary_severity_value)
                 severity_pred_values.append(severity_pred_value)
     return (binary_severity_values, severity_pred_values)
 
-def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None, class_mapping: Optional[dict] = None):
+def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None, mapping_dict: Optional[dict] = None, limit_tokens: int = 7366):
     """Taking the path of the predictions folder, it computes the statistics with the predictions (confusion matrix, precision, recall, f1-score). The confusion matrix is plotted into a png file
     
     # Arguments
         - folder_predictions: Path, path to the folder where the prediction files are stored
         - folder_out: Path, path to the folder where the statistics will be stored
-        - class_mapping: Optional[Dict], mapping from possible values predicted to name (str or int), default {-1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
+        - mapping_dict: Optional[Dict], mapping from possible values predicted to name (str or int), default {-2, "Too big query", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"} and -2 replaces all nan
         
     # Return
         None        
     """
     if folder_out is None:
         folder_out = folder_predictions
-    (true, pred) = get_severities(folder_predictions)
+    (true, pred) = get_severities(folder_predictions, allow_nan=True, allow_incoherent=True)
+    # Replace Nan by -2
+    pred = [-2 if np.isnan(e) else e for e in pred ]
     # Compute the confusion matrix
     conf_matrix = confusion_matrix(true, pred)
-    if class_mapping is None:
-        class_mapping = {-1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
+    if mapping_dict is None:
+        mapping_dict = {-2: f"Too big query ({limit_tokens} tokens)", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
     # Compute accuracy
     accuracy = accuracy_score(true, pred)
     # Compute precision
@@ -277,31 +281,32 @@ def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None,
     plot_confusion(
         conf_matrix=conf_matrix,
         folder_path=folder_out,
-        class_mapping=None,
+        mapping_dict=mapping_dict,
         unique_values=None,
+        limit_tokens=limit_tokens,
         backend="agg" #type: ignore
     )
     
-def plot_confusion(conf_matrix: np.ndarray, folder_path: Optional[Path] = None, class_mapping: Optional[Dict] = None, unique_values: Optional[List] = None, backend = Optional[Literal['agg']]):
+def plot_confusion(conf_matrix: np.ndarray, folder_path: Optional[Path] = None, mapping_dict: Optional[Dict] = None, unique_values: Optional[List] = None, backend = Optional[Literal['agg']], limit_tokens: int = 7366):
     """Takes the confusion matrix and plots it with totals values (recall is the percentage of the total of each column, precision percentage for the total of each line and accuracy is the percentage at the bottom right)
     Can be used in notebooks just to plot or just to save into a file. See doc of arguments
     
     # Arguments
         - conf_matrix: np.ndarray, confusion matrix
         - folder_path: Path, path to the folder where the plot will be saved
-        - class_mapping: Optional[Dict], mapping from possible values predicted to name (str or int), default {-1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
+        - mapping_dict: Optional[Dict], mapping from possible values predicted to name (str or int), default {-2, "Too big query", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"} and -2 replaces all nan
         - unique_values: Optional[List], list of possible values default [-1, 0, 1]
         - backend: Optional[Literal['agg']], the backend to use, tries to plot on screen (default) if no backend (with default backend) or just save to a file with agg
     
     # Returns
         None
     """
-    if class_mapping is None:
-        class_mapping = {-1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
+    if mapping_dict is None:
+        mapping_dict = {-2: f"Too big query ({limit_tokens} tokens)", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
     if unique_values is None:
-        unique_values = [-1,0,1]
+        unique_values = [-2,-1,0,1]
     # pretty print the confusion matrix
-    values = list(class_mapping.values())
+    values = list(mapping_dict.values())
     df_conf_matrix = pd.DataFrame(conf_matrix, index=values, columns=values)
     if backend is not None:
         matplotlib.use("agg")
@@ -313,7 +318,7 @@ def plot_confusion(conf_matrix: np.ndarray, folder_path: Optional[Path] = None, 
     except Exception as e:
         print(e)
         pass
-    
+
 if __name__ == "__main__":
     import warnings
     # Ignore DeprecationWarning
