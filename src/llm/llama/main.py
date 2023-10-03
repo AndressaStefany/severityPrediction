@@ -331,6 +331,9 @@ def plot_confusion(conf_matrix: np.ndarray, folder_path: Optional[Path] = None, 
     """Takes the confusion matrix and plots it with totals values (recall is the percentage of the total of each column, precision percentage for the total of each line and accuracy is the percentage at the bottom right)
     Can be used in notebooks just to plot or just to save into a file. See doc of arguments
     
+    Original package: https://github.com/wcipriano/pretty-print-confusion-matrix
+    Doc of MATLAB inspired confusion matrix plotted here: https://www.mathworks.com/help/deeplearning/ref/plotconfusion.html;jsessionid=7052c44c75f9529f74ccd8187446
+    
     # Arguments
         - conf_matrix: np.ndarray, confusion matrix
         - folder_path: Path, path to the folder where the plot will be saved
