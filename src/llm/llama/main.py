@@ -36,9 +36,10 @@ import os
 import math
 from tqdm import tqdm
 from pretty_confusion_matrix import pp_matrix
-from functools import product
+from itertools import product
+from textwrap import wrap
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
-from functools import partial
+
 def preprocess_data(file_name: str, data_folder: Path, few_shots: bool = True, id: str = ""):
     """Takes the csv file as input, apply the preprocessings and write the resulting data to files"""
     print("Starting preprocessing")
@@ -257,14 +258,13 @@ def extract_fields_from_json(folder_path: Path, fields: List[str], allow_nan: bo
             data: List[DataoutDict] = json.load(f)
 
         for d in data:
-            binary_severity_value = d['binary_severity']
             severity_pred_value = d['severity_pred']
             # Check if severity_pred_value is -1 or nan before adding them to the lists
             nan_allow = (not np.isnan(severity_pred_value)) or allow_nan
             incoherent_allow = severity_pred_value != -1 or allow_incoherent
             if nan_allow and incoherent_allow:
                 for f in fields:
-                    fields_data[f].append(binary_severity_value)
+                    fields_data[f].append(d[f])
     return fields_data
     
 def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None, mapping_dict: Optional[dict] = None, limit_tokens: int = 7366):
@@ -287,7 +287,7 @@ def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None,
     # Compute the confusion matrix
     conf_matrix = confusion_matrix(true, pred)
     if mapping_dict is None:
-        mapping_dict = {-2: f"Too big query ({limit_tokens} tokens)", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
+        mapping_dict = {-2: f"Too big >={limit_tokens}", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
     # Compute accuracy
     accuracy = accuracy_score(true, pred)
     # Compute precision
@@ -308,12 +308,12 @@ def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None,
             "recall": recall.tolist(), 
             "f1": f1.tolist() 
             },f)
-        
+    possibilities_pred = [-2 if np.isnan(e) else e for e in np.unique(pred)]
     plot_confusion(
         conf_matrix=conf_matrix,
         folder_path=folder_out,
         mapping_dict=mapping_dict,
-        unique_values=None,
+        unique_values=possibilities_pred,
         limit_tokens=limit_tokens,
         backend="agg" #type: ignore
     )
@@ -323,7 +323,8 @@ def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None,
         folder_out / "representants.json", 
         n_samples=5,
         mapping_dict=mapping_dict,
-        limit_tokens=limit_tokens
+        limit_tokens=limit_tokens,
+        poss=possibilities_pred
     )
     
 def plot_confusion(conf_matrix: np.ndarray, folder_path: Optional[Path] = None, mapping_dict: Optional[Dict] = None, unique_values: Optional[List] = None, backend = Optional[Literal['agg']], limit_tokens: int = 7366):
@@ -341,15 +342,15 @@ def plot_confusion(conf_matrix: np.ndarray, folder_path: Optional[Path] = None, 
         None
     """
     if mapping_dict is None:
-        mapping_dict = {-2: f"Too big query ({limit_tokens} tokens)", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
+        mapping_dict = {-2: f"Too big >={limit_tokens}", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
     if unique_values is None:
         unique_values = [-2,-1,0,1]
     # pretty print the confusion matrix
-    values = list(mapping_dict.values())
+    values = [mapping_dict[e] for e in unique_values]
     df_conf_matrix = pd.DataFrame(conf_matrix, index=values, columns=values)
     if backend is not None:
         matplotlib.use("agg")
-    pp_matrix(df_conf_matrix, cmap="winter", fz=11, figsize=[5,5], title="Confusion matrix\nBottom green recall;Right green precision\nBottom right accuracy")
+    pp_matrix(df_conf_matrix, cmap="winter", fz=11, figsize=[5,5], title="Confusion matrix\nBottom green recall;Right green precision\nBottom right accuracy\n")
     if folder_path is not None:
         plt.savefig(folder_path / "confusion_matrix.png")
     try:
@@ -357,8 +358,11 @@ def plot_confusion(conf_matrix: np.ndarray, folder_path: Optional[Path] = None, 
     except Exception as e:
         print(e)
         pass
+def custom_encoder(obj):
+    """Allow to encode into json file tuple keys"""
+    return str(obj)
 
-def find_representant(data: Union[Path,Dict[str,List[int]]], path_out: Path, n_samples: int = 5, mapping_dict: Optional[Dict] = None, limit_tokens: int = 7366):
+def find_representant(data: Union[Path,Dict[str,List[int]]], path_out: Path, poss: List[int], n_samples: int = 5, mapping_dict: Optional[Dict] = None, limit_tokens: int = 7366):
     """Find representants for each cell of the confusion matrix
     
     # Arguments
@@ -368,32 +372,34 @@ def find_representant(data: Union[Path,Dict[str,List[int]]], path_out: Path, n_s
         - n_samples: the number of samples to get for each confusion matrix case
         - mapping_dict: Optional[Dict], mapping from possible values predicted to name (str or int), default {-2, "Too big query", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"} and -2 replaces all nan
         - path_out: Path, path to where to store the representants
+        - poss: the labels possibilities (-2 for nan)
     """
     if mapping_dict is None:
-        mapping_dict = {-2: f"Too big query ({limit_tokens} tokens)", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
+        mapping_dict = {-2: f"Too big >={limit_tokens}", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
     if isinstance(data, Path) or isinstance(data, str):
         data = extract_fields_from_json(data, fields=["binary_severity","severity_pred","description"], allow_nan=True, allow_incoherent=True) #type: ignore
         
     samples = {}
-    for i,j in product([-2,-1,0,1],2):
-        samples[(i,j)] = []
+    for i,j in product(poss,poss):
+        samples[str((i,j))] = []
     for bug_id,true,pred,description in zip(data["bug_id"],data["binary_severity"],data["severity_pred"],data["description"]):
         pred = pred if not np.isnan(pred) else -2
-        if len(samples[(pred,true)]) < n_samples:
-            samples[(pred,true)].append({"bug_id":bug_id,"true":true,"pred":pred,"description":description})
+        if len(samples[str((pred,true))]) < n_samples:
+            samples[str((pred,true))].append({"bug_id":bug_id,"true":true,"pred":pred,"description":description})
         else:
             all_full = True
             for k in samples:
                 all_full = all_full and (len(samples[k]) >= n_samples)
             if all_full:
                 break
-    for (true,pred),Lsamples in samples.items():
+    for (true_pred),Lsamples in samples.items():
+        true,pred =eval(true_pred)
         print("-"*10,f"true: {true} ; pred: {pred}","-"*10)
         for s in Lsamples:
             print("bug_id: ",s['bug_id'])
             print(s['description'])
     with open(path_out,"w") as f:
-        json.dump(samples,f)
+        json.dump({"samples":samples,"mapping":mapping_dict},f)
     return samples
     
 class DataoutDict(TypedDict):
@@ -412,12 +418,13 @@ if __name__ == "__main__":
     # main("TinyPixel/Llama-2-7B-bf16-sharded")
     # preprocess_data("eclipse_clear.json", Path("data"),few_shots=False,id="")
     # preprocess_data("eclipse_clear.json", Path("data"),few_shots=True,id="_few_shots")
-    path_data = Path("/project/def-aloise/andressa/eclipse_with_text.json")
+    # path_data = Path("/project/def-aloise/andressa/eclipse_with_text.json")
+    path_data = Path("./data/predictions/")
     # model="TheBloke/Llama-2-13B-GPTQ"
     # get_max_tokens(path_data,token="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",start=0,end=24225)
     # get_max_tokens(path_data,token="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",start=24225,end=48450)
     # get_max_tokens(path_data,token="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",start=48450,end=72676)
-    main(path_data,token="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",start=0,end=24225)
+    # main(path_data,token="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",start=0,end=24225)
     # main(path_data,token="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",start=24225,end=48450)
     # main(path_data,token="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",start=48450,end=72676)
-    # compute_metrics(path_data.parent / "predictions/")
+    compute_metrics(path_data / "02",path_data)
