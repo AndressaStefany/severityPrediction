@@ -346,7 +346,7 @@ def plot_confusion(conf_matrix: np.ndarray, folder_path: Optional[Path] = None, 
     if unique_values is None:
         unique_values = [-2,-1,0,1]
     # pretty print the confusion matrix
-    values = [mapping_dict[e] for e in unique_values]
+    values = [mapping_dict[e]+f"\n({e})" for e in unique_values]
     df_conf_matrix = pd.DataFrame(conf_matrix, index=values, columns=values)
     if backend is not None:
         matplotlib.use("agg")
