@@ -71,9 +71,9 @@ def classify(answer: str) -> int:
     """Return 0 if not severe, 1 if severe and -1 if unknown"""
     pattern_severe = "[sS][eE][vV][eE][rR][eE]"
     pattern_not_severe = "[nN][oO][tT] *"+pattern_severe
-    if re.match(pattern_not_severe, answer) is not None or ("1" in answer and "0" not in answer):
+    if re.match(pattern_not_severe, answer) is not None or ("0" in answer and "1" not in answer):
         return 0
-    elif re.match(pattern_severe, answer) is not None or ("0" in answer and "1" not in answer):
+    elif re.match(pattern_severe, answer) is not None or ("1" in answer and "0" not in answer):
         return 1
     return -1
 
@@ -152,7 +152,7 @@ def get_max_tokens(path_descriptions: Path, model_name: str = "meta-llama/Llama-
             "number_of_tokens": token_lengths
         },f)
 
-def main(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", start: int = 0, end: int = -1, limit_tokens: int = 7366):
+def main(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", start: int = 0, end: int = -1, limit_tokens: int = 7364):
     if token != "":
         login(token=token)
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
@@ -224,7 +224,6 @@ def extract_fields_from_json(folder_path: Path, fields: List[str], allow_nan: bo
     for json_file_path in json_file_paths:
         with open(json_file_path) as f:
             data: List[DataoutDict] = json.load(f)
-
         for d in data:
             severity_pred_value = d['severity_pred']
             # Check if severity_pred_value is -1 or nan before adding them to the lists
@@ -235,20 +234,20 @@ def extract_fields_from_json(folder_path: Path, fields: List[str], allow_nan: bo
                     fields_data[f].append(d[f])
     return fields_data
     
-def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None, mapping_dict: Optional[dict] = None, limit_tokens: int = 7366):
+def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None, mapping_dict: Optional[dict] = None, limit_tokens: int = 7364):
     """Taking the path of the predictions folder, it computes the statistics with the predictions (confusion matrix, precision, recall, f1-score). The confusion matrix is plotted into a png file
     
     # Arguments
         - folder_predictions: Path, path to the folder where the prediction files are stored
         - folder_out: Path, path to the folder where the statistics will be stored
-        - mapping_dict: Optional[Dict], mapping from possible values predicted to name (str or int), default {-2, "Too big query", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"} and -2 replaces all nan
+        - mapping_dict: Optional[Dict], mapping from possible values predicted to name (str or int), default {-2:"Too big query", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"} and -2 replaces all nan
         
     # Return
         None        
     """
     if folder_out is None:
         folder_out = folder_predictions
-    fields_data = extract_fields_from_json(folder_predictions, fields=["bug_id", "binary_severity", "severity_pred", "description"],allow_nan=True, allow_incoherent=True)
+    fields_data = extract_fields_from_json(folder_predictions, fields=["bug_id", "binary_severity", "severity_pred", "description"], allow_nan=True, allow_incoherent=True)
     # Replace Nan by -2
     pred = [-2 if np.isnan(e) else e for e in fields_data['severity_pred'] ]
     true = [-2 if pred[i] == -2 else fields_data['binary_severity'][i] for i in range(len(fields_data['binary_severity']))]
