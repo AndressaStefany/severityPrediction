@@ -251,7 +251,7 @@ def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None,
     fields_data = extract_fields_from_json(folder_predictions, fields=["bug_id", "binary_severity", "severity_pred", "description"],allow_nan=True, allow_incoherent=True)
     # Replace Nan by -2
     pred = [-2 if np.isnan(e) else e for e in fields_data['severity_pred'] ]
-    true = fields_data['binary_severity']
+    true = [-2 if pred[i] == -2 else fields_data['binary_severity'][i] for i in range(len(fields_data['binary_severity']))]
     # Compute the confusion matrix
     conf_matrix = confusion_matrix(true, pred)
     if mapping_dict is None:
