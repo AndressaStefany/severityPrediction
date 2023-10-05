@@ -338,7 +338,7 @@ def plot_confusion(conf_matrix: np.ndarray, folder_path: Optional[Path] = None, 
         - conf_matrix: np.ndarray, confusion matrix
         - folder_path: Path, path to the folder where the plot will be saved
         - mapping_dict: Optional[Dict], mapping from possible values predicted to name (str or int), default {-2, "Too big query", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"} and -2 replaces all nan
-        - unique_values: Optional[List], list of possible values default [-1, 0, 1]
+        - unique_values: Optional[List], list of possible values default [-2, -1, 0, 1]
         - backend: Optional[Literal['agg']], the backend to use, tries to plot on screen (default) if no backend (with default backend) or just save to a file with agg
     
     # Returns
@@ -430,4 +430,4 @@ if __name__ == "__main__":
     # main(path_data,token="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",start=0,end=24225)
     # main(path_data,token="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",start=24225,end=48450)
     # main(path_data,token="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",start=48450,end=72676)
-    compute_metrics(path_data / "02",path_data)
+    compute_metrics(path_data / "out", path_data)
