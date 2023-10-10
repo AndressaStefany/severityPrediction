@@ -439,8 +439,11 @@ if __name__ == "__main__":
     # main(path_data,token="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",start=0,end=24225)
     # main(path_data,token="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",start=24225,end=48450)
     # main(path_data,token="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",start=48450,end=72676)
-    compute_metrics(path_data / "out", path_data)
+    for pred_field in ["severity_pred","severity_pred2"]:
+        path_out = path_data / f"out_{pred_field}"
+        path_out.mkdir(parents=True, exist_ok=True)
+        compute_metrics(path_out, path_data, pred_field=pred_field)
     
-    path_in = Path("/scratch/rmoine/severityPrediction2/data/out/representants.json")
-    folder_out = path_in.parent / "representants_explain"
-    main_shap(path_in, folder_out, token="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")
+        path_in = Path(path_out / "representants.json")
+        folder_out = path_in.parent / f"representants_{pred_field}_explain"
+        main_shap(path_in, folder_out, token="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")
