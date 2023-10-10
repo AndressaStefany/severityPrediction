@@ -320,7 +320,7 @@ def plot_confusion(conf_matrix: np.ndarray, folder_path: Optional[Path] = None, 
     df_conf_matrix = pd.DataFrame(conf_matrix, index=values, columns=values)
     if backend is not None:
         matplotlib.use("agg")
-    pp_matrix(df_conf_matrix, cmap="coolwarm", fz=11, figsize=[5,5], title="Confusion matrix\nBottom green recall;Right green precision\nBottom right accuracy\n")
+    pp_matrix(df_conf_matrix, cmap="coolwarm", fz=11, figsize=[5,5], title="Confusion matrix\nBottom green recall;Right green precision\nBottom right accuracy\n",vmin=0,vmax=np.sum(conf_matrix))
     if folder_path is not None:
         plt.savefig(folder_path / "confusion_matrix.png")
     try:

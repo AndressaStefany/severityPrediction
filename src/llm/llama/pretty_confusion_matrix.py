@@ -152,7 +152,9 @@ def pp_matrix(
     figsize=[8, 8],
     show_null_values=0,
     pred_val_axis="y",
-    title="Confusion matrix"
+    title="Confusion matrix",
+    vmin=0,
+    vmax=None
 ):
     """
     print conf matrix with default layout (like matlab)
@@ -190,6 +192,8 @@ def pp_matrix(
         cmap=cmap,
         linecolor="w",
         fmt=fmt,
+        vmax=vmax,
+        vmin=vmin
     )
 
     # set ticklabels rotation
