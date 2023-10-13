@@ -1,7 +1,34 @@
 import unittest
 import pandas as pd
-from baseline_functions import filter_bug_severity, create_binary_feature, remove_urls_and_codes, remove_code_snippets
+from ..baseline.baseline_functions import filter_bug_severity, create_binary_feature, remove_urls_and_codes, remove_code_snippets, preprocess_text
+from typing import *
 
+class TestPreprocessText(unittest.TestCase):
+    def submit(self, data: List[dict]) -> pd.DataFrame:
+        df = pd.DataFrame(data)
+        return preprocess_text(df)
+    def submit_single(self, text: str) -> pd.DataFrame:
+        return self.submit([{"description": text}])
+    def test_empty(self):
+        tests = [""," ","   "," \n ","-","_","!",";",",",""]
+        for t in tests:
+            df = self.submit_single()
+    def test_trailing_back_to_line(self):
+        text = "hello\n\n"
+        df = self.submit_single(data)
+        # check size
+        self.assertEqual(len(df),1)
+        # check all correct fields
+        fields_expected = ["description","text"]
+        missing = set()
+        for f in fields_expected:
+            if f not in df.columns:
+                missing.add(f)
+        self.assertEqual(len(missing),0,msg=f"Required field(s) {missing} are missing. Seeing fields {set(df.columns)}")
+        # check that the trailing back to lines are removed
+        self.assertEqual(df.iloc[0]["description"],"hello")
+    
+        
 class TestURLRemoval(unittest.TestCase):
     def setUp(self):
         # Sample data for URL removal
