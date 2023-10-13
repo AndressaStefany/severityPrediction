@@ -41,7 +41,9 @@ pip install shap --no-index
 
 # Execution of the script: replace by python path_to_your_script
 # Do not forget to change the pathes to absolute pathes (dont hesitate to use $USER variable)
-python /project/def-aloise/$USER/main.py -algorithm finetune -path_data_json /project/def-aloise/rmoine/data/predictions/predictions_v100l.json -path_data_folder /project/def-aloise/rmoine/data/
+root=/scratch/$USER;
+
+python $root/main.py -algorithm finetune -path_data_json $root/data/predictions/predictions_v100l.json -path_data_folder $root/data/
 
 
 # Capture the end time

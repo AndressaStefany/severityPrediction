@@ -288,6 +288,7 @@ def extract_fields_from_json(folder_path: Path, fields: List[str], allow_nan: bo
 
 def main_qlora(
     new_model_name: str, file_examples: Path, folder_out: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", field_input: str = "trunc_text", field_label: str  = "binary_severity",
+               input_field: str = "trunc_text",
                lora_alpha: float = 16, lora_dropout: float = 0.1, lora_r: int = 64, 
                num_train_epochs: int = 1, tr_bs: int = 4, val_bs: int = 4,
                optim: str = "paged_adamw_32bit", save_steps: int = 25,
@@ -636,6 +637,7 @@ if __name__ == "__main__":
     parser.add_argument("-algorithm", choices=algorithms_choices, help="Algorithm to execute", default="inference")
     parser.add_argument("-token", choices=algorithms_choices, help="Token to huggingface", default="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")
     args = parser.parse_args()
+    print(args)
     if args.algorithm == "max_tokens":
         get_max_tokens(args.path_data_json,token=args.token,start=0,end=24225)
         get_max_tokens(args.path_data_json,token=args.token,start=24225,end=48450)
@@ -659,3 +661,4 @@ if __name__ == "__main__":
         folder_out = args.path_data_folder / "out_qlora"
         folder_out.mkdir(exist_ok=True)
         main_qlora("llama-13b-finetune",args.path_data_json,folder_out,token=args.token)
+        
