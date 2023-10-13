@@ -38,6 +38,10 @@ from tqdm import tqdm
 from pretty_confusion_matrix import pp_matrix
 from itertools import product
 from textwrap import wrap
+try:
+    import shap
+except Exception:
+    pass
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 
 def preprocess_data(file_name: str, data_folder: Path, few_shots: bool = True, id: str = ""):
@@ -233,8 +237,48 @@ def extract_fields_from_json(folder_path: Path, fields: List[str], allow_nan: bo
                 for f in fields:
                     fields_data[f].append(d[f])
     return fields_data
-    
-def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None, mapping_dict: Optional[dict] = None, limit_tokens: int = 7364):
+
+def main_shap(file_examples: Path, folder_out: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = ""):
+    if not folder_out.exists():
+        folder_out.mkdir(parents=True)
+    # open sentences
+    with open(file_examples) as f:
+        representants = json.load(f)
+        mapping = representants['mapping']
+        representants = {eval(k):v for k,v in representants['samples'].items()} 
+    if token != "":
+        login(token=token)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    double_quant_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, 
+        quantization_config=double_quant_config
+    )
+    pipeline = transformers.pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        device_map="auto"
+    )
+    pipeline.config.task_specific_params["text-generation"] = dict(
+        do_sample=True,
+        top_k=1,
+        num_return_sequences=1,
+        eos_token_id=tokenizer.eos_token_id,
+        max_length=1024,
+        return_full_text=False
+    )
+    print("Starting inference")
+    for k,Ltext in representants.items():
+        for i,text in enumerate(Ltext):
+            explainer = shap.Explainer(pipeline, tokenizer)
+            shap_values = explainer([text])
+            with open(folder_out / f"shap_pred_{k[0]}_true_{k[1]}_sample_{i}.html","w") as f:
+                f.write(shap.plots.text(shap_values, display=False))
+def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None, pred_field: str = "severity_pred", mapping_dict: Optional[dict] = None, limit_tokens: int = 7364):
     """Taking the path of the predictions folder, it computes the statistics with the predictions (confusion matrix, precision, recall, f1-score). The confusion matrix is plotted into a png file
     
     # Arguments
@@ -247,9 +291,9 @@ def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None,
     """
     if folder_out is None:
         folder_out = folder_predictions
-    fields_data = extract_fields_from_json(folder_predictions, fields=["bug_id", "binary_severity", "severity_pred", "description"], allow_nan=True, allow_incoherent=True)
+    fields_data = extract_fields_from_json(folder_predictions, fields=["bug_id", "binary_severity", pred_field, "description"], allow_nan=True, allow_incoherent=True)
     # Replace Nan by -2
-    pred = [-2 if np.isnan(e) else e for e in fields_data['severity_pred'] ]
+    pred = [-2 if np.isnan(e) else e for e in fields_data[pred_field] ]
     true = [-2 if pred[i] == -2 else fields_data['binary_severity'][i] for i in range(len(fields_data['binary_severity']))]
     # Compute the confusion matrix
     conf_matrix = confusion_matrix(true, pred)
@@ -291,7 +335,8 @@ def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None,
         n_samples=5,
         mapping_dict=mapping_dict,
         limit_tokens=limit_tokens,
-        poss=possibilities_pred
+        poss=possibilities_pred,
+        pred_field=pred_field
     )
     
 def plot_confusion(conf_matrix: np.ndarray, folder_path: Optional[Path] = None, mapping_dict: Optional[Dict] = None, unique_values: Optional[List] = None, backend = Optional[Literal['agg']], limit_tokens: int = 7366):
@@ -320,7 +365,7 @@ def plot_confusion(conf_matrix: np.ndarray, folder_path: Optional[Path] = None, 
     df_conf_matrix = pd.DataFrame(conf_matrix, index=values, columns=values)
     if backend is not None:
         matplotlib.use("agg")
-    pp_matrix(df_conf_matrix, cmap="winter", fz=11, figsize=[5,5], title="Confusion matrix\nBottom green recall;Right green precision\nBottom right accuracy\n")
+    pp_matrix(df_conf_matrix, cmap="coolwarm", fz=11, figsize=[5,5], title="Confusion matrix\nBottom green recall;Right green precision\nBottom right accuracy\n",vmin=0,vmax=np.sum(conf_matrix))
     if folder_path is not None:
         plt.savefig(folder_path / "confusion_matrix.png")
     try:
@@ -332,7 +377,7 @@ def custom_encoder(obj):
     """Allow to encode into json file tuple keys"""
     return str(obj)
 
-def find_representant(data: Union[Path,Dict[str,List[int]]], path_out: Path, poss: List[int], n_samples: int = 5, mapping_dict: Optional[Dict] = None, limit_tokens: int = 7366):
+def find_representant(data: Union[Path,Dict[str,List[int]]], path_out: Path, poss: List[int], pred_field: str = "severity_pred", n_samples: int = 5, mapping_dict: Optional[Dict] = None, limit_tokens: int = 7366):
     """Find representants for each cell of the confusion matrix
     
     # Arguments
@@ -347,12 +392,12 @@ def find_representant(data: Union[Path,Dict[str,List[int]]], path_out: Path, pos
     if mapping_dict is None:
         mapping_dict = {-2: f"Too big >={limit_tokens}", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
     if isinstance(data, Path) or isinstance(data, str):
-        data = extract_fields_from_json(data, fields=["binary_severity","severity_pred","description"], allow_nan=True, allow_incoherent=True) #type: ignore
+        data = extract_fields_from_json(data, fields=["binary_severity",pred_field,"description"], allow_nan=True, allow_incoherent=True) #type: ignore
         
     samples = {}
     for i,j in product(poss,poss):
         samples[str((i,j))] = []
-    for bug_id,true,pred,description in zip(data["bug_id"],data["binary_severity"],data["severity_pred"],data["description"]):
+    for bug_id,true,pred,description in zip(data["bug_id"],data["binary_severity"],data[pred_field],data["description"]):
         pred = pred if not np.isnan(pred) else -2
         if len(samples[str((pred,true))]) < n_samples:
             samples[str((pred,true))].append({"bug_id":bug_id,"true":true,"pred":pred,"description":description})
@@ -362,7 +407,7 @@ def find_representant(data: Union[Path,Dict[str,List[int]]], path_out: Path, pos
                 all_full = all_full and (len(samples[k]) >= n_samples)
             if all_full:
                 break
-    for (true_pred),Lsamples in samples.items():
+    for (true_pred),Lsamples in tqdm(samples.items(), total=len(samples)):
         true,pred =eval(true_pred)
         print("-"*10,f"true: {true} ; pred: {pred}","-"*10)
         for s in Lsamples:
@@ -380,16 +425,13 @@ class DataoutDict(TypedDict):
     binary_severity: int
 
 if __name__ == "__main__":
-    import warnings
-    # Ignore DeprecationWarning
-    warnings.filterwarnings("ignore")
     # logging.basicConfig(filename='/project/def-aloise/rmoine/log-severity.log', level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     # logger = logging.getLogger('severity')
     # main("TinyPixel/Llama-2-7B-bf16-sharded")
     # preprocess_data("eclipse_clear.json", Path("data"),few_shots=False,id="")
     # preprocess_data("eclipse_clear.json", Path("data"),few_shots=True,id="_few_shots")
     # path_data = Path("/project/def-aloise/andressa/eclipse_with_text.json")
-    path_data = Path("./data/predictions/")
+    path_data = Path("/scratch/rmoine/severityPrediction2/data/predictions/")
     # model="TheBloke/Llama-2-13B-GPTQ"
     # get_max_tokens(path_data,token="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",start=0,end=24225)
     # get_max_tokens(path_data,token="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",start=24225,end=48450)
@@ -397,4 +439,11 @@ if __name__ == "__main__":
     # main(path_data,token="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",start=0,end=24225)
     # main(path_data,token="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",start=24225,end=48450)
     # main(path_data,token="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",start=48450,end=72676)
-    compute_metrics(path_data / "out", path_data)
+    for pred_field in ["severity_pred","severity_pred2"]:
+        path_out = path_data / f"out_{pred_field}"
+        path_out.mkdir(parents=True, exist_ok=True)
+        compute_metrics(path_out, path_data, pred_field=pred_field)
+    
+        path_in = Path(path_out / "representants.json")
+        folder_out = path_in.parent / f"representants_{pred_field}_explain"
+        main_shap(path_in, folder_out, token="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")
