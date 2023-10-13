@@ -74,6 +74,7 @@ try:
 except Exception:
     pass
 import sys
+import argparse
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 
 def check_packages(*packages: str):
@@ -285,7 +286,8 @@ def extract_fields_from_json(folder_path: Path, fields: List[str], allow_nan: bo
                     fields_data[f].append(d[f])
     return fields_data
 
-def main_qlora(new_model_name: str, file_examples: Path, folder_out: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "",
+def main_qlora(
+    new_model_name: str, file_examples: Path, folder_out: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", field_input: str = "trunc_text", field_label: str  = "binary_severity",
                lora_alpha: float = 16, lora_dropout: float = 0.1, lora_r: int = 64, 
                num_train_epochs: int = 1, tr_bs: int = 4, val_bs: int = 4,
                optim: str = "paged_adamw_32bit", save_steps: int = 25,
@@ -384,18 +386,15 @@ def main_qlora(new_model_name: str, file_examples: Path, folder_out: Path, model
     if not train_path.exists() or not valid_path.exists():
         with open(file_examples, "r") as f:
             d = json.load(f)
-        idx_tr, idx_val = train_test_split(np.arange(len(d)), train_size=train_size)
+        idx_tr, idx_val = train_test_split(np.arange(len(d)), train_size=train_size) #type: ignore
         idx_tr = set(idx_tr)
         idx_val = set(idx_val)
         with open(train_path, "w") as f:
-            json.dump([e for i,e in enumerate(d) if i in idx_tr],f)
+            json.dump([{"text":e[input_field]} for i,e in enumerate(d) if i in idx_tr],f)
         with open(valid_path, "w") as f:
-            json.dump([e for i,e in enumerate(d) if i in idx_val],f)
+            json.dump([{"text":e[input_field]} for i,e in enumerate(d) if i in idx_val],f)
     train_dataset = load_dataset('json', data_files=str(train_path.resolve()), split="train") #type: ignore
     valid_dataset = load_dataset('json', data_files=str(valid_path.resolve()), split="train") #type: ignore
-    extract_in_out = lambda examples: {'text': examples['trunc_text']}
-    train_dataset = train_dataset.map(extract_in_out, batched=True)
-    valid_dataset = valid_dataset.map(extract_in_out, batched=True)
     # Set supervised fine-tuning parameters
     print("Set supervised fine-tuning parameters")
     trainer = SFTTrainer( #type: ignore
@@ -624,29 +623,39 @@ class DataoutDict(TypedDict):
     binary_severity: int
 
 if __name__ == "__main__":
-    # logging.basicConfig(filename='/project/def-aloise/rmoine/log-severity.log', level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    # logger = logging.getLogger('severity')
-    # main("TinyPixel/Llama-2-7B-bf16-sharded")
-    # preprocess_data("eclipse_clear.json", Path("data"),few_shots=False,id="")
-    # preprocess_data("eclipse_clear.json", Path("data"),few_shots=True,id="_few_shots")
-    # path_data = Path("/project/def-aloise/andressa/eclipse_with_text.json")
-    path_data = Path("/project/def-aloise/rmoine/data/predictions/")# /project/def-aloise/rmoine
-    
-    # get_max_tokens(path_data,token="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",start=0,end=24225)
-    # get_max_tokens(path_data,token="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",start=24225,end=48450)
-    # get_max_tokens(path_data,token="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",start=48450,end=72676)
-    # main(path_data,token="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",start=0,end=24225)
-    # main(path_data,token="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",start=24225,end=48450)
-    # main(path_data,token="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",start=48450,end=72676)
-    # for pred_field,input_field in zip(["severity_pred","severity_pred2"],["text","trunc_text"]):
-    #     path_out = path_data / f"out_{pred_field}"
-    #     path_out.mkdir(parents=True, exist_ok=True)
-    #     compute_metrics(path_data, path_out, pred_field=pred_field,input_text_field=input_field)
-    
-    #     path_in = Path(path_out / "representants.json")
-    #     folder_out = path_in.parent / f"representants_{pred_field}_explain"
-    #     # main_shap(path_in, folder_out, token="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")
-    path_examples = path_data / "predictions_v100l_chunk_0.json"
-    folder_out = path_data.parent.parent / "out_qlora"
-    folder_out.mkdir(exist_ok=True)
-    main_qlora("llama-13b-finetune",path_examples,folder_out,token="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")
+    parser = argparse.ArgumentParser(description="Select LLM script to run")
+    def path_check(p: str):
+        path = Path(p)
+        if path.exists():
+            return path.resolve()
+        else:
+            raise Exception(f"{p} is not a path to a directory")
+    algorithms_choices = ["inference","max_tokens", "compute_metrics", "explain", "finetune"]
+    parser.add_argument("-path_data_json", type=path_check, help="Path to the json data file", default="/project/def-aloise/rmoine/data/predictions_v100l.json")
+    parser.add_argument("-path_data_folder", type=path_check, help="Root path to the main data folder", default="/project/def-aloise/rmoine/data/")
+    parser.add_argument("-algorithm", choices=algorithms_choices, help="Algorithm to execute", default="inference")
+    parser.add_argument("-token", choices=algorithms_choices, help="Token to huggingface", default="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")
+    args = parser.parse_args()
+    if args.algorithm == "max_tokens":
+        get_max_tokens(args.path_data_json,token=args.token,start=0,end=24225)
+        get_max_tokens(args.path_data_json,token=args.token,start=24225,end=48450)
+        get_max_tokens(args.path_data_json,token=args.token,start=48450,end=72676)
+    elif args.algorithm == "inference":
+        main_inference(args.path_data_json,token=args.token,start=0,end=24225)
+        main_inference(args.path_data_json,token=args.token,start=24225,end=48450)
+        main_inference(args.path_data_json,token=args.token,start=48450,end=72676)
+    elif args.algorithm == "compute_metrics":
+        for pred_field,input_field in zip(["severity_pred","severity_pred2"],["text","trunc_text"]):
+            path_out = args.path_data_folder / f"out_{pred_field}"
+            path_out.mkdir(parents=True, exist_ok=True)
+            compute_metrics(args.path_data_folder, path_out, pred_field=pred_field,input_text_field=input_field)
+    elif args.algorithm == "explain":
+        for pred_field,input_field in zip(["severity_pred","severity_pred2"],["text","trunc_text"]):
+            path_out = args.path_data_folder / f"out_{pred_field}"
+            path_in = Path(path_out / "representants.json")
+            folder_out = path_in.parent / f"representants_{pred_field}_explain"
+            main_shap(path_in, folder_out, token=args.token)
+    elif args.algorithm == "finetune":
+        folder_out = args.path_data_folder / "out_qlora"
+        folder_out.mkdir(exist_ok=True)
+        main_qlora("llama-13b-finetune",args.path_data_json,folder_out,token=args.token)
