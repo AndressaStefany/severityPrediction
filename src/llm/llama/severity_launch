@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=v100l:1 # on cedar choose one v100l gpu but can be also p100l
+#SBATCH --gpus-per-node=v100l:4 # on cedar choose one v100l gpu but can be also p100l
 #SBATCH --cpus-per-task=1 # change this parameter to 2,4,6,... and increase "--num_workers" accordingly to see the effect on performance
 #SBATCH --time=00:30:00           # duration (JJ-HH:MM:SS)
 #SBATCH --output=log-%x-%j.out
