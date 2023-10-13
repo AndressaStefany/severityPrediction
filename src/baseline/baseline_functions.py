@@ -178,6 +178,9 @@ def preprocess_text(dataframe, col_to_process='description'):
     """
     bug_reports_copy = dataframe.copy()
     
+    # Check for empty descriptions or empty lists and remove those rows
+    bug_reports_copy = bug_reports_copy[bug_reports_copy[col_to_process].apply(lambda x: isinstance(x, str) and len(x.strip()) > 0)]
+    
     tokens = bug_reports_copy[col_to_process].apply(word_tokenize)
     
     # Get the set of stopwords
@@ -199,6 +202,9 @@ def preprocess_text(dataframe, col_to_process='description'):
         filtered_tokens = [stemmer.stem(token) for token in tokens if token.lower() not in stop_words and token not in special_characters]
         filtered_texts.append(' '.join(filtered_tokens))
     bug_reports_copy['preprocess_desc'] = filtered_texts
+    
+    # Remove rows where preprocess_desc is empty or a list is empty
+    bug_reports_copy = bug_reports_copy[bug_reports_copy['preprocess_desc'].apply(lambda x: isinstance(x, str) and len(x.strip()) > 0)]
     
     return bug_reports_copy
 
