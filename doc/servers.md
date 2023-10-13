@@ -1,19 +1,15 @@
 We advice to use CEDAR to have GPUs with bigger vram and internet access
 If no internet access is needed, beluga can be tested too
 
-- [[#Pipeline setup|Pipeline setup]]
 - [[#1. Choose GPU server|1. Choose GPU server]]
-	- [[#1. Choose GPU server#Cedar|Cedar]]
-	- [[#1. Choose GPU server#Beluga|Beluga]]
 - [[#2. Setup SSH access|2. Setup SSH access]]
 - [[#3. Adapt your script pathes|3. Adapt your script pathes]]
 - [[#4. Copy files in the correct directory (see above)|4. Copy files in the correct directory (see above)]]
 - [[#5. Connect & launch & check status|5. Connect & launch & check status]]
-	- [[#5. Connect & launch & check status#5.1 Launch|5.1 Launch]]
-	- [[#5. Connect & launch & check status#5.2 Check the status of the job|5.2 Check the status of the job]]
-		- [[#5.2 Check the status of the job#5.2.1 ⚠ Pending job|5.2.1 ⚠ Pending job]]
-	- [[#5. Connect & launch & check status#5.2.2 Stopping a task|5.2.2 Stopping a task]]
-- [[#Annex: slurm status|Annex: slurm status]]
+- [[#Annex 1: slurm status|Annex 1: slurm status]]
+- [[#Annex 2: Check usage on the cluster|Annex 2: Check usage on the cluster]]
+- [[#Annex 3: Jobs following another|Annex 3: Jobs following another]]
+
 ## 1. Choose GPU server
 
 ### Cedar
@@ -147,7 +143,7 @@ If mistake, to not use too computing time (limited to group)
 scancel JOBID
 
 JOBID that you get with squeue (sq -u $USER)
-## Annex: slurm status
+## Annex 1: slurm status
 
 Jobs typically pass through several states in the course of their execution. The typical states are PENDING, RUNNING, SUSPENDED, COMPLETING, and COMPLETED. An explanation of each state follows.
 BF BOOT_FAIL
@@ -199,7 +195,55 @@ Job has an allocation, but execution has been suspended and CPUs have been relea
 TO TIMEOUT
 Job terminated upon reaching its time limit.
 
+## Annex 2: Check usage on the cluster
+Show all user usage jobs
+```
+squeue
+```
+Show number of jobs using jobs
+```
+partition-stats
+```
+The utility `partition-stats` shows
 
+- how many jobs are waiting to run ("queued") in each partition,
+- how many jobs are currently running,
+- how many nodes are currently idle, and
+- how many nodes are assigned to each partition.
+```
+Node type |                     Max walltime
+          |   3 hr   |  12 hr  |  24 hr  |  72 hr  |  168 hr |  672 hr |
+----------|-------------------------------------------------------------
+       Number of Queued Jobs by partition Type (by node:by core)
+----------|-------------------------------------------------------------
+Regular   |   72:786 |  17:18  | 127:282 |  12:88  |  52:49  |   0:0   |
+Large Mem |    1:1   |   1:576 |   5:122 |   4:205 |  11:34  |   0:0   |
+GPU       |    0:0   |   0:0   |   0:0   |   3:0   |  27:0   |   0:0   |
+----------|-------------------------------------------------------------
+      Number of Running Jobs by partition Type (by node:by core)
+----------|-------------------------------------------------------------
+Regular   |   15:131 |  13:59  |  11:1392|  73:316 |  48:1591|   0:0   |
+Large Mem |    0:6   |   0:112 |   1:14  |   2:41  |   8:71  |   0:0   |
+GPU       |    0:8   |   1:38  |   4:65  |  11:98  |  12:135 |   0:0   |
+----------|-------------------------------------------------------------
+        Number of Idle nodes by partition Type (by node:by core)
+----------|-------------------------------------------------------------
+Regular   |    3:0   |   3:0   |   3:0   |   3:0   |   3:0   |   0:0   |
+Large Mem |    0:0   |   0:0   |   0:0   |   0:0   |   0:0   |   0:0   |
+GPU       |    0:9   |   0:9   |   0:9   |   0:9   |   0:9   |   0:0   |
+----------|-------------------------------------------------------------
+       Total Number of nodes by partition Type (by node:by core)
+----------|-------------------------------------------------------------
+Regular   | 1147:671 |1147:671 |1147:671 |1091:615 |1035:455 |   0:0   |
+Large Mem |   35:29  |  35:29  |  34:28  |  34:27  |  33:26  |   0:0   |
+GPU       |  152:141 | 152:141 | 150:139 | 148:137 | 115:104 |   0:0   |
+----------|-------------------------------------------------------------
+```
+## Annex 3: Jobs following another
 
-
-
+- after:jobid[:jobid...]	job can begin after the specified jobs have started
+- afterany:jobid[:jobid...]	job can begin after the specified jobs have terminated
+- afternotok:jobid[:jobid...]	job can begin after the specified jobs have failed
+- afterok:jobid[:jobid...]	job can begin after the specified jobs have run to completion with an exit code of zero (see the user guide for caveats).
+- singleton	jobs can begin execution after all previously launched jobs with the same name and user have ended. This is useful to collate results of a swarm or to send a notification at the end of a swarm.
+Example: `sbatch --dependency=afterok:11254323 job2.sh`

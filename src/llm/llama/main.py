@@ -1,13 +1,23 @@
-from transformers import AutoTokenizer
+import json
+import numpy as np
+import multiprocessing
+from typing import *
+import re
 import transformers
 try:
     import torch
 except Exception:
     pass
 from huggingface_hub import login
-from nltk.tokenize import word_tokenize
+try:
+    from nltk.tokenize import word_tokenize
+except Exception:
+    pass
 from pathlib import Path
-import pandas as pd
+try:
+    import pandas as pd
+except Exception:
+    pass
 try:
     from src.baseline.baseline_functions import *
 except Exception:
@@ -16,21 +26,42 @@ try:
     from rich.progress import track
 except Exception:
     pass
-import json
-import numpy as np
-import multiprocessing
-from typing import *
-import re
-import matplotlib.pyplot as plt
-import matplotlib
-from sklearn.metrics import confusion_matrix, accuracy_score, recall_score, f1_score, precision_score
+try:
+    from datasets import load_dataset
+except Exception:
+    pass
+try:
+    import matplotlib.pyplot as plt
+    import matplotlib
+except Exception:
+    pass
+try:
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import confusion_matrix, accuracy_score, recall_score, f1_score, precision_score
+except Exception:
+    pass
 import datetime
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    pipeline,
-    BitsAndBytesConfig,
-)
+try:
+    from transformers import (
+        AutoTokenizer,
+        AutoModelForCausalLM,
+        pipeline,
+        BitsAndBytesConfig,
+        BitsAndBytesConfig,
+        HfArgumentParser,
+        TrainingArguments,
+        logging,
+    )
+except Exception:
+    pass
+try:
+    from peft import LoraConfig, PeftModel
+except Exception:
+    pass
+try:
+    from trl import SFTTrainer
+except Exception:
+    pass
 import gc
 import os
 import math
@@ -42,7 +73,23 @@ try:
     import shap
 except Exception:
     pass
+import sys
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
+
+def check_packages(*packages: str):
+    def decorator(func):
+        def inner_check(*args,**kwargs):
+            missing = []
+            for p in packages:
+                if p not in sys.modules:
+                    missing.append(p)
+            if len(missing) > 0:
+                raise Exception(f"{', '.join(missing)} are missing")
+            
+            return func(*args,**kwargs)
+        return inner_check
+    return decorator
+
 
 def preprocess_data(file_name: str, data_folder: Path, few_shots: bool = True, id: str = ""):
     """Takes the csv file as input, apply the preprocessings and write the resulting data to files"""
@@ -156,7 +203,7 @@ def get_max_tokens(path_descriptions: Path, model_name: str = "meta-llama/Llama-
             "number_of_tokens": token_lengths
         },f)
 
-def main(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", start: int = 0, end: int = -1, limit_tokens: int = 7364):
+def main_inference(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", start: int = 0, end: int = -1, limit_tokens: int = 7364):
     if token != "":
         login(token=token)
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
@@ -238,32 +285,163 @@ def extract_fields_from_json(folder_path: Path, fields: List[str], allow_nan: bo
                     fields_data[f].append(d[f])
     return fields_data
 
+def main_qlora(new_model_name: str, file_examples: Path, folder_out: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "",
+               lora_alpha: float = 16, lora_dropout: float = 0.1, lora_r: int = 64, 
+               num_train_epochs: int = 1, tr_bs: int = 4, val_bs: int = 4,
+               optim: str = "paged_adamw_32bit", save_steps: int = 25,
+               logging_steps: int = 25, learning_rate: float = 2e-4, weight_decay: float = 0.001, 
+               fp16: bool = False, bf16: bool = False, max_grad_norm: float = 0.3, max_steps: int = -1, warmup_ratio: float = 0.03,
+               group_by_length: bool = True, lr_scheduler_type: str = "constant", eval_steps: int = 20,
+               train_size: float = 0.3
+               ):
+    """
+    Perform training and fine-tuning of a model for causal reasoning using LoRA.
+    Doc: https://miro.medium.com/v2/resize:fit:4800/format:webp/1*rOW5plKBuMlGgpD0SO8nZA.png
+
+    # Arguments
+        - new_model_name: str, name of the new model pretrained
+        - file_examples: Path, a file path to input data.
+        - folder_out: Path, a Path object representing the output folder for the results.
+        - model_name: str, the name or path of the pretrained model to use. Default: "meta-llama/Llama-2-13b-chat-hf"
+        - token: str, a token string. Default: ""
+        - lora_alpha: float, scaling factor for the weight matrices. alpha is a scaling factor that adjusts the magnitude of the combined result (base model output + low-rank adaptation). Default: 16
+        - lora_dropout: float, dropout probability of the LoRA layers. This parameter is used to avoid overfitting. Default: 0.1
+        - lora_r: int, this is the dimension of the low-rank matrix. Default: 64. It means for a layer initialy of size d_in x d_out we will have 2 lora layers of size d_in x r and r x d_out reducing the number of parameters
+        - num_train_epochs: int, the number of training epochs. Default: 1
+        - tr_bs: int, batch size for training. Default: 4
+        - val_bs: int, batch size for validation. Default: 4
+        - optim: str, optimization method. Possible values include "paged_adamw_32bit" and other optimization methods specific to the project. Default: "paged_adamw_32bit"
+        - save_steps: int, the frequency of saving model checkpoints during training. Default: 25
+        - logging_steps: int, the frequency of logging training progress. Default: 25
+        - learning_rate: float, the learning rate for training. Default: 2e-4
+        - weight_decay: float, the weight decay value for regularization. Default: 0.001
+        - fp16: bool, whether to use mixed-precision training with 16-bit floats. Default: False
+        - bf16: bool, whether to use 16-bit bfloat16 format. Default: False
+        - max_grad_norm: float, the maximum gradient norm for gradient clipping. Default: 0.3
+        - max_steps: int, the maximum number of training steps. Default: -1 (unlimited)
+        - warmup_ratio: float, the warmup ratio for learning rate scheduling. Default: 0.03
+        - group_by_length: bool, a flag to group data by sequence length. Default: True
+        - lr_scheduler_type: str, type of learning rate scheduler. Default: "constant"
+        - eval_steps: int, the frequency of evaluating the model during training. Default: 20
+        - train_size: float = 0.3, the size of the training dataset
+    """
+    print("main_qlora")
+    if not folder_out.exists():
+        folder_out.mkdir(parents=True)
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    double_quant_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype="float16"
+    )
+    n_gpus = torch.cuda.device_count() #type: ignore
+    max_memory = f'{32}GB'
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, 
+        quantization_config=double_quant_config,
+        max_memory = {i: max_memory for i in range(n_gpus)},
+    )
+    
+    model.config.use_cache = False
+    model.config.pretraining_tp = 1
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
+    peft_config = LoraConfig( #type: ignore
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        r=lora_r,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    # Set training parameters
+    training_arguments = TrainingArguments(
+        output_dir=str(folder_out.resolve()),
+        num_train_epochs=num_train_epochs,
+        per_device_train_batch_size=tr_bs,
+        gradient_accumulation_steps=val_bs,
+        optim=optim,
+        save_steps=save_steps,
+        logging_steps=logging_steps,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        fp16=fp16,
+        bf16=bf16,
+        max_grad_norm=max_grad_norm,
+        max_steps=max_steps,
+        warmup_ratio=warmup_ratio,
+        group_by_length=group_by_length,
+        lr_scheduler_type=lr_scheduler_type,
+        report_to="all", #type: ignore
+        evaluation_strategy="steps",
+        eval_steps=eval_steps
+    )
+    # create datasets
+    print("Create datasets")
+    train_path = folder_out / "train.json"
+    valid_path = folder_out / "valid.json"
+    if not train_path.exists() or not valid_path.exists():
+        with open(file_examples, "r") as f:
+            d = json.load(f)
+        idx_tr, idx_val = train_test_split(np.arange(len(d)), train_size=train_size)
+        idx_tr = set(idx_tr)
+        idx_val = set(idx_val)
+        with open(train_path, "w") as f:
+            json.dump([e for i,e in enumerate(d) if i in idx_tr],f)
+        with open(valid_path, "w") as f:
+            json.dump([e for i,e in enumerate(d) if i in idx_val],f)
+    train_dataset = load_dataset('json', data_files=str(train_path.resolve()), split="train") #type: ignore
+    valid_dataset = load_dataset('json', data_files=str(valid_path.resolve()), split="train") #type: ignore
+    extract_in_out = lambda examples: {'text': examples['trunc_text']}
+    train_dataset = train_dataset.map(extract_in_out, batched=True)
+    valid_dataset = valid_dataset.map(extract_in_out, batched=True)
+    # Set supervised fine-tuning parameters
+    print("Set supervised fine-tuning parameters")
+    trainer = SFTTrainer( #type: ignore
+        model=model,
+        train_dataset=train_dataset,
+        eval_dataset=valid_dataset,  # Pass validation dataset here
+        peft_config=peft_config,
+        dataset_text_field="text",
+        max_seq_length=1024,
+        tokenizer=tokenizer,
+        args=training_arguments,
+        packing=False,
+    )
+    print("Starting training QLORA")
+    trainer.train()
+    print("Saving trained QLORA model")
+    trainer.model.save_pretrained(new_model_name)
+    
+    
+@check_packages("torch", "shap")
 def main_shap(file_examples: Path, folder_out: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = ""):
+    print("main_shap")
     if not folder_out.exists():
         folder_out.mkdir(parents=True)
     # open sentences
     with open(file_examples) as f:
         representants = json.load(f)
-        mapping = representants['mapping']
         representants = {eval(k):v for k,v in representants['samples'].items()} 
+    print("data loaded")
     if token != "":
         login(token=token)
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    print("loading model")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
     double_quant_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_use_double_quant=True,
     )
+    n_gpus = torch.cuda.device_count() #type: ignore
+    max_memory = f'{32}GB'
     model = AutoModelForCausalLM.from_pretrained(
         model_name, 
-        quantization_config=double_quant_config
-    )
-    pipeline = transformers.pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
+        quantization_config=double_quant_config,
+        max_memory = {i: max_memory for i in range(n_gpus)},
         device_map="auto"
     )
-    pipeline.config.task_specific_params["text-generation"] = dict(
+    gen_dict = dict(
         do_sample=True,
         top_k=1,
         num_return_sequences=1,
@@ -271,14 +449,32 @@ def main_shap(file_examples: Path, folder_out: Path, model_name: str = "meta-lla
         max_length=1024,
         return_full_text=False
     )
+    model.config.task_specific_params = dict()
+    model.config.task_specific_params["text-generation"] = gen_dict
+    pipeline = transformers.pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        device_map="auto"   
+    )
+    teacher_forcing_model = shap.models.TeacherForcing(model, tokenizer) #type: ignore
+    masker = shap.maskers.Text(tokenizer, mask_token="...", collapse_mask_token=True) #type: ignore
+    explainer = shap.Explainer(teacher_forcing_model, masker) #type: ignore
+    # explainer = shap.Explainer(model, tokenizer) #type: ignore
     print("Starting inference")
     for k,Ltext in representants.items():
         for i,text in enumerate(Ltext):
-            explainer = shap.Explainer(pipeline, tokenizer)
-            shap_values = explainer([text])
+            gc.collect()
+            torch.cuda.empty_cache()
+            text = text['input']
+            x = [text,text]
+            y = ["0","1"]
+            print("Prediction for ")
+            print(text)
+            shap_values = explainer(x,y)
             with open(folder_out / f"shap_pred_{k[0]}_true_{k[1]}_sample_{i}.html","w") as f:
-                f.write(shap.plots.text(shap_values, display=False))
-def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None, pred_field: str = "severity_pred", mapping_dict: Optional[dict] = None, limit_tokens: int = 7364):
+                f.write(shap.plots.text(shap_values, display=False)) #type: ignore
+def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None, input_text_field: str = "text", pred_field: str = "severity_pred", mapping_dict: Optional[dict] = None, limit_tokens: int = 7364):
     """Taking the path of the predictions folder, it computes the statistics with the predictions (confusion matrix, precision, recall, f1-score). The confusion matrix is plotted into a png file
     
     # Arguments
@@ -291,7 +487,7 @@ def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None,
     """
     if folder_out is None:
         folder_out = folder_predictions
-    fields_data = extract_fields_from_json(folder_predictions, fields=["bug_id", "binary_severity", pred_field, "description"], allow_nan=True, allow_incoherent=True)
+    fields_data = extract_fields_from_json(folder_predictions, fields=["bug_id", "binary_severity", pred_field, "description",input_text_field], allow_nan=True, allow_incoherent=True)
     # Replace Nan by -2
     pred = [-2 if np.isnan(e) else e for e in fields_data[pred_field] ]
     true = [-2 if pred[i] == -2 else fields_data['binary_severity'][i] for i in range(len(fields_data['binary_severity']))]
@@ -336,7 +532,8 @@ def compute_metrics(folder_predictions: Path, folder_out: Optional[Path] = None,
         mapping_dict=mapping_dict,
         limit_tokens=limit_tokens,
         poss=possibilities_pred,
-        pred_field=pred_field
+        pred_field=pred_field,
+        input_text_field=input_text_field
     )
     
 def plot_confusion(conf_matrix: np.ndarray, folder_path: Optional[Path] = None, mapping_dict: Optional[Dict] = None, unique_values: Optional[List] = None, backend = Optional[Literal['agg']], limit_tokens: int = 7366):
@@ -377,7 +574,7 @@ def custom_encoder(obj):
     """Allow to encode into json file tuple keys"""
     return str(obj)
 
-def find_representant(data: Union[Path,Dict[str,List[int]]], path_out: Path, poss: List[int], pred_field: str = "severity_pred", n_samples: int = 5, mapping_dict: Optional[Dict] = None, limit_tokens: int = 7366):
+def find_representant(data: Union[Path,Dict[str,List[int]]], path_out: Path, poss: List[int], input_text_field: str, pred_field: str = "severity_pred", n_samples: int = 5, mapping_dict: Optional[Dict] = None, limit_tokens: int = 7366):
     """Find representants for each cell of the confusion matrix
     
     # Arguments
@@ -392,21 +589,23 @@ def find_representant(data: Union[Path,Dict[str,List[int]]], path_out: Path, pos
     if mapping_dict is None:
         mapping_dict = {-2: f"Too big >={limit_tokens}", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
     if isinstance(data, Path) or isinstance(data, str):
-        data = extract_fields_from_json(data, fields=["binary_severity",pred_field,"description"], allow_nan=True, allow_incoherent=True) #type: ignore
+        data = extract_fields_from_json(data, fields=["binary_severity",pred_field,"description",input_text_field], allow_nan=True, allow_incoherent=True) #type: ignore
         
     samples = {}
     for i,j in product(poss,poss):
         samples[str((i,j))] = []
-    for bug_id,true,pred,description in zip(data["bug_id"],data["binary_severity"],data[pred_field],data["description"]):
+    for bug_id,true,pred,description,input_field in zip(data["bug_id"],data["binary_severity"],data[pred_field],data["description"],data[input_text_field]):
         pred = pred if not np.isnan(pred) else -2
-        if len(samples[str((pred,true))]) < n_samples:
-            samples[str((pred,true))].append({"bug_id":bug_id,"true":true,"pred":pred,"description":description})
-        else:
-            all_full = True
-            for k in samples:
-                all_full = all_full and (len(samples[k]) >= n_samples)
-            if all_full:
-                break
+        
+        if len(samples[str((pred,true))]) < n_samples and len(description.strip())>0:
+            samples[str((pred,true))].append({"bug_id":bug_id,"true":true,"pred":pred,"description":description,"input":input_field})
+            samples[str((pred,true))].sort(key=lambda x:len(x["description"]), reverse=True)
+        elif len(samples[str((pred,true))]) >= n_samples and len(samples[str((pred,true))][0]["description"])>len(description) and len(description.strip()) > 0:
+            samples[str((pred,true))].pop(0)
+            samples[str((pred,true))].append({"bug_id":bug_id,"true":true,"pred":pred,"description":description,"input":input_field})
+            samples[str((pred,true))].sort(key=lambda x:len(x["description"]), reverse=True)
+            
+            
     for (true_pred),Lsamples in tqdm(samples.items(), total=len(samples)):
         true,pred =eval(true_pred)
         print("-"*10,f"true: {true} ; pred: {pred}","-"*10)
@@ -431,19 +630,23 @@ if __name__ == "__main__":
     # preprocess_data("eclipse_clear.json", Path("data"),few_shots=False,id="")
     # preprocess_data("eclipse_clear.json", Path("data"),few_shots=True,id="_few_shots")
     # path_data = Path("/project/def-aloise/andressa/eclipse_with_text.json")
-    path_data = Path("/scratch/rmoine/severityPrediction2/data/predictions/")
-    # model="TheBloke/Llama-2-13B-GPTQ"
+    path_data = Path("/project/def-aloise/rmoine/data/predictions/")# /project/def-aloise/rmoine
+    
     # get_max_tokens(path_data,token="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",start=0,end=24225)
     # get_max_tokens(path_data,token="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",start=24225,end=48450)
     # get_max_tokens(path_data,token="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",start=48450,end=72676)
     # main(path_data,token="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",start=0,end=24225)
     # main(path_data,token="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",start=24225,end=48450)
     # main(path_data,token="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",start=48450,end=72676)
-    for pred_field in ["severity_pred","severity_pred2"]:
-        path_out = path_data / f"out_{pred_field}"
-        path_out.mkdir(parents=True, exist_ok=True)
-        compute_metrics(path_out, path_data, pred_field=pred_field)
+    # for pred_field,input_field in zip(["severity_pred","severity_pred2"],["text","trunc_text"]):
+    #     path_out = path_data / f"out_{pred_field}"
+    #     path_out.mkdir(parents=True, exist_ok=True)
+    #     compute_metrics(path_data, path_out, pred_field=pred_field,input_text_field=input_field)
     
-        path_in = Path(path_out / "representants.json")
-        folder_out = path_in.parent / f"representants_{pred_field}_explain"
-        main_shap(path_in, folder_out, token="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")
+    #     path_in = Path(path_out / "representants.json")
+    #     folder_out = path_in.parent / f"representants_{pred_field}_explain"
+    #     # main_shap(path_in, folder_out, token="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")
+    path_examples = path_data / "predictions_v100l_chunk_0.json"
+    folder_out = path_data.parent.parent / "out_qlora"
+    folder_out.mkdir(exist_ok=True)
+    main_qlora("llama-13b-finetune",path_examples,folder_out,token="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")

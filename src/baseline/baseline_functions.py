@@ -540,9 +540,9 @@ if __name__ == "__main__":
     if args.algorithm == "bayesian":
         hyperparameter_search("bayesian-networks",["BernoulliNB","ComplementNB","GaussianNB","MultinomialNB"],n_jobs=1)
     elif args.algorithm == "SVC":
-        hyperparameter_search("svc",["SVC"],n_jobs=2)
+        hyperparameter_search("svc",["SVC"],n_jobs=2, num_rep=1)
     elif args.algorithm == "KNN":
-        hyperparameter_search("knn",["KNeighborsClassifier"],n_jobs=2)
+        hyperparameter_search("knn",["KNeighborsClassifier"],n_jobs=2, num_rep=1)
     else:
         raise Exception
     # reproduce_best(data_path)
