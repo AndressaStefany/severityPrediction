@@ -660,5 +660,5 @@ if __name__ == "__main__":
     elif args.algorithm == "finetune":
         folder_out = args.path_data_folder / "out_qlora"
         folder_out.mkdir(exist_ok=True)
-        main_qlora("llama-13b-finetune",args.path_data_json,folder_out,token=args.token)
+        main_qlora("llama-13b-finetune",args.path_data_json,folder_out,token=args.token,lora_r=1)
         
