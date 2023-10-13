@@ -44,33 +44,6 @@ except Exception:
     pass
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 
-def preprocess_data(file_name: str, data_folder: Path, few_shots: bool = True, id: str = ""):
-    """Takes the csv file as input, apply the preprocessings and write the resulting data to files"""
-    print("Starting preprocessing")
-    # open json file
-    with open(data_folder / file_name) as f:
-        data: List[str] = f.readlines()
-    add_instructions = ""
-    if few_shots:
-        add_instructions = build_few_shot(data)
-    data_processed = []
-    for i,d in track(enumerate(data),total=len(data)):
-        result = process(d,add_instructions=add_instructions)
-        if result is not None:
-            data_processed.append(result)
-    # with multiprocessing.Pool() as p:
-    #     data_processed: List[dict] = [e for e in p.map(partial(process,add_instructions=add_instructions), data) if e is not None]
-    for i in range(len(data_processed)):
-        data_processed[i]['idx'] = i
-    data_out = data_processed
-    # write to a file
-    folder = data_folder / "llm"
-    folder.mkdir(exist_ok=True)
-    print("saving...")
-    ## save everything in a metadata file
-    with open(folder / f"llm_data{id}.json", "w") as f:
-        json.dump(data_out, f, indent=2)
-
 def classify(answer: str) -> int:
     """Return 0 if not severe, 1 if severe and -1 if unknown"""
     pattern_severe = "[sS][eE][vV][eE][rR][eE]"
