@@ -9,15 +9,7 @@ class TestPreprocessText(unittest.TestCase):
         return preprocess_text(df)
     def submit_single(self, text: str) -> pd.DataFrame:
         return self.submit([{"description": text}])
-    def test_empty(self):
-        tests = [""," ","   "," \n ","-","_","!",";",",",""]
-        for t in tests:
-            df = self.submit_single()
-    def test_trailing_back_to_line(self):
-        text = "hello\n\n"
-        df = self.submit_single(data)
-        # check size
-        self.assertEqual(len(df),1)
+    def check_fields(self, df: pd.DataFrame):
         # check all correct fields
         fields_expected = ["description","text"]
         missing = set()
@@ -25,10 +17,27 @@ class TestPreprocessText(unittest.TestCase):
             if f not in df.columns:
                 missing.add(f)
         self.assertEqual(len(missing),0,msg=f"Required field(s) {missing} are missing. Seeing fields {set(df.columns)}")
+    def test_empty(self):
+        tests = [""," ","   "," \n ","-","_","!",";",",",""]
+        for t in tests:
+            df = self.submit_single(t)
+            # check fields
+            self.check_fields(df)
+            # check empty because empty description
+            self.assertEqual(len(df),1,msg=f"Expecting no value in dataframe with text {t}\n{df}")
+            
+    def test_trailing_back_to_line(self):
+        text = "hello\n\n"
+        df = self.submit_single(text)
+        # check size
+        self.assertEqual(len(df),1)
+        # check all correct fields
+        self.check_fields(df)
         # check that the trailing back to lines are removed
         self.assertEqual(df.iloc[0]["description"],"hello")
     
-        
+    def test_single_word(self):
+        tests = ["major","Critical!!!"]
 class TestURLRemoval(unittest.TestCase):
     def setUp(self):
         # Sample data for URL removal
