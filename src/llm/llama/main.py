@@ -452,14 +452,15 @@ if __name__ == "__main__":
     assert args.n_chunks is not None, "Expecting n_chunks"
     n_intervals = args.n_chunks
     intervals = [[i * (n_data // n_intervals), (i + 1) * (n_data // n_intervals)] for i in range(n_intervals)]
+    intervals[-1][1] += 1
     if args.algorithm == "max_tokens":
         assert args.interval_idx is not None, "Expecting interval id"
         interval = intervals[args.interval_idx]
-        get_max_tokens(args.path_data_json,token=args.token,start=interval[0],end=interval[1]+1)
+        get_max_tokens(args.path_data_json,token=args.token,start=interval[0],end=interval[1])
     elif args.algorithm == "inference":
         assert args.interval_idx is not None, "Expecting interval id"
         interval = intervals[args.interval_idx]
-        main_inference(args.path_data_json,token=args.token,start=interval[0],end=interval[1]+1,model_name="meta-llama/Llama-2-13b-chat-hf",id_pred="_trunc")
+        main_inference(args.path_data_json,token=args.token,start=interval[0],end=interval[1],model_name="meta-llama/Llama-2-13b-chat-hf",id_pred="_trunc")
     elif args.algorithm == "compute_metrics":
         for pred_field,input_field in zip(["severity_pred","severity_pred2"],["text","trunc_text"]):
             path_out = args.path_data_folder / f"out_{pred_field}"
