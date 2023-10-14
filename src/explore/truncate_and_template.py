@@ -10,7 +10,7 @@ from transformers import (
     AutoTokenizer,
 )
 
-PREPROMPT = 'Always anwer with one token. Do not give any explanation. Use only 0 or 1 and one token. Skip any politeness answer. You have only one word available.\nBelow is an instruction that describes a task. Write a response that appropriately completes the request.'
+PREPROMPT = 'Always answer with one token. Do not give any explanation. Use only 0 or 1 and one token. Skip any politeness answer. You have only one word available.\nBelow is an instruction that describes a task. Write a response that appropriately completes the request.'
 INSTRUCTIONS = 'Categorize the bug report into one of 2 categories:\n\n0 = NOT SEVERE\n1 = SEVERE\n'
 
 
@@ -59,6 +59,7 @@ def truncate_and_transform(data, model_name = "meta-llama/Llama-2-13b-chat-hf", 
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
         
     for i, d in tqdm(enumerate(data)):
+        print("Tokenizing",d)
         tokenized_desc = tokenizer.encode_plus(
             d['description'],
             max_length=7000,
@@ -70,6 +71,7 @@ def truncate_and_transform(data, model_name = "meta-llama/Llama-2-13b-chat-hf", 
         truncated_text = tokenizer.decode(truncated_token[0], skip_special_tokens=True)
         
         d['trunc_description'] = truncated_text
+        d['truncated_token'] = [t for t in tokenizer.convert_ids_to_tokens(truncated_token[0]) if t != "[PAD]"]
         d['trunc_text'] = get_template(description = truncated_text)
 
 
