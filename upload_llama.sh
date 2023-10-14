@@ -1,6 +1,6 @@
 #/bin/bash
 server=cedar
-root=/scratch
+root=/project/def-aloise
 user=rmoine
 
 echo ""
