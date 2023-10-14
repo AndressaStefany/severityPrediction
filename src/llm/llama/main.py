@@ -42,6 +42,7 @@ try:
     import shap
 except Exception:
     pass
+import argparse
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 
 def classify(answer: str) -> int:
@@ -129,7 +130,7 @@ def get_max_tokens(path_descriptions: Path, model_name: str = "meta-llama/Llama-
             "number_of_tokens": token_lengths
         },f)
 
-def main(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", start: int = 0, end: int = -1, limit_tokens: int = 7364):
+def main_inference(path_data_preprocessed: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", start: int = 0, end: int = -1, limit_tokens: int = 7364, id_pred: str = ""):
     if token != "":
         login(token=token)
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
@@ -147,22 +148,25 @@ def main(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat
         tokenizer=tokenizer,
         device_map="auto"
     )
-    with open(path_descriptions) as f:
-        data = json.load(f)
+    with open(path_data_preprocessed) as f:
+        data_preprocessed = json.load(f)
+    data = data_preprocessed["data"]
+    template = data_preprocessed["template"]
     if end == -1:
         end = len(data)
     data = data[start:end]
     responses = []
+    folder_predictions = path_data_preprocessed.parent / "predictions"
+    folder_predictions.mkdir(exist_ok=True,parents=True)
     for i, d in tqdm(enumerate(data)):
         gc.collect()
         torch.cuda.empty_cache()
         answer = float('nan')
         severity = float('nan')
-        text = d['text']
-        n_tokens = len(tokenizer.tokenize(text))
-
+        n_tokens = len(d["llama_tokenized_description"])
+        text = " ".join(d['llama_tokenized_description'])
         if n_tokens < limit_tokens:
-            [answer] = pipeline(
+            [answer] = pipeline( #type: ignore
                 text,
                 do_sample=True,
                 top_k=1,
@@ -171,18 +175,18 @@ def main(path_descriptions: Path, model_name: str = "meta-llama/Llama-2-13b-chat
                 max_length=1024,
                 return_full_text=False
             )
-            answer = answer['generated_text']
+            answer = answer['generated_text'] #type: ignore
             if not isinstance(answer, str):
                 raise Exception("Unknown result answer: "+str(answer))
             severity = classify(answer)
 
-        responses.append({**d, "answer": answer, "severity_pred": severity})
+        responses.append({**d, "answer": answer, f"severity_pred{id_pred}": severity})
         if i%5==0:
-            with open(path_descriptions.parent / f"predictions/predictions_v100l_chunk_{start}.json", "w") as f:
+            with open(folder_predictions / f"predictions_v100l_chunk_{start}.json", "w") as f:
                 json.dump(responses,f)
         
-    with open(path_descriptions.parent / f"predictions/predictions_v100l_chunk_{start}.json", "w") as f:
-        json.dump(responses,f)
+    with open(folder_predictions / f"predictions/predictions_v100l_chunk_{start}.json", "w") as f:
+        json.dump(responses,f,indent=2)
 
 def extract_fields_from_json(folder_path: Path, fields: List[str], allow_nan: bool = False, allow_incoherent: bool = False):
     """Aggregates every predictions and true value stored in each json file stored in folder_path with possibility to choose which fields to return
@@ -398,25 +402,40 @@ class DataoutDict(TypedDict):
     binary_severity: int
 
 if __name__ == "__main__":
-    # logging.basicConfig(filename='/project/def-aloise/rmoine/log-severity.log', level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    # logger = logging.getLogger('severity')
-    # main("TinyPixel/Llama-2-7B-bf16-sharded")
-    # preprocess_data("eclipse_clear.json", Path("data"),few_shots=False,id="")
-    # preprocess_data("eclipse_clear.json", Path("data"),few_shots=True,id="_few_shots")
-    # path_data = Path("/project/def-aloise/andressa/eclipse_with_text.json")
-    path_data = Path("/scratch/rmoine/severityPrediction2/data/predictions/")
-    # model="TheBloke/Llama-2-13B-GPTQ"
-    # get_max_tokens(path_data,token="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",start=0,end=24225)
-    # get_max_tokens(path_data,token="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",start=24225,end=48450)
-    # get_max_tokens(path_data,token="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",start=48450,end=72676)
-    # main(path_data,token="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",start=0,end=24225)
-    # main(path_data,token="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",start=24225,end=48450)
-    # main(path_data,token="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",start=48450,end=72676)
-    for pred_field in ["severity_pred","severity_pred2"]:
-        path_out = path_data / f"out_{pred_field}"
-        path_out.mkdir(parents=True, exist_ok=True)
-        compute_metrics(path_out, path_data, pred_field=pred_field)
-    
-        path_in = Path(path_out / "representants.json")
-        folder_out = path_in.parent / f"representants_{pred_field}_explain"
-        main_shap(path_in, folder_out, token="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")
+    parser = argparse.ArgumentParser(description="Select LLM script to run")
+    def path_check(p: str):
+        path = Path(p)
+        if path.exists():
+            return path.resolve()
+        else:
+            raise Exception(f"{p} is not a path to a directory")
+    algorithms_choices = ["inference","max_tokens", "compute_metrics", "explain", "finetune"]
+    parser.add_argument("-path_data_json", type=path_check, help="Path to the json data file", default="/project/def-aloise/rmoine/data/data_preprocessed_tokens_v2.json")
+    parser.add_argument("-path_data_folder", type=path_check, help="Root path to the main data folder", default="/project/def-aloise/rmoine/data/")
+    parser.add_argument("-algorithm", choices=algorithms_choices, help="Algorithm to execute", default="inference")
+    parser.add_argument("-token", choices=algorithms_choices, help="Token to huggingface", default="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")
+    parser.add_argument("-interval_idx", type=int, help="Choice of the interval for inference", default=0)
+    args = parser.parse_args()
+    print(args)
+    n_data = 22302
+    n_intervals = 3
+    intervals = [[i * (n_data // n_intervals), (i + 1) * (n_data // n_intervals)] for i in range(n_intervals)]
+    if args.algorithm == "max_tokens":
+        assert args.interval_idx is not None, "Expecting interval id"
+        interval = intervals[args.interval_idx]
+        get_max_tokens(args.path_data_json,token=args.token,start=interval[0],end=interval[1]+1)
+    elif args.algorithm == "inference":
+        assert args.interval_idx is not None, "Expecting interval id"
+        interval = intervals[args.interval_idx]
+        main_inference(args.path_data_json,token=args.token,start=interval[0],end=interval[1]+1)
+    elif args.algorithm == "compute_metrics":
+        for pred_field,input_field in zip(["severity_pred","severity_pred2"],["text","trunc_text"]):
+            path_out = args.path_data_folder / f"out_{pred_field}"
+            path_out.mkdir(parents=True, exist_ok=True)
+            compute_metrics(args.path_data_folder, path_out, pred_field=pred_field)
+    elif args.algorithm == "explain":
+        for pred_field,input_field in zip(["severity_pred","severity_pred2"],["text","trunc_text"]):
+            path_out = args.path_data_folder / f"out_{pred_field}"
+            path_in = Path(path_out / "representants.json")
+            folder_out = path_in.parent / f"representants_{pred_field}_explain"
+            main_shap(path_in, folder_out, token=args.token)
