@@ -24,7 +24,9 @@ pip install pandas scikit-learn nltk bitsandbytes sentencepiece protobuf --no-in
 pip install tqdm --no-index
 # Execution of the script: replace by python path_to_your_script
 # Do not forget to change the pathes to absolute pathes (dont hesitate to use $USER variable)
-python /project/def-aloise/$USER/main.py -path_data_json /project/def-aloise/$USER/data/data_preprocessed_tokens_v2.json -path_data_folder /project/def-aloise/$USER/data/ -algorithm inference -interval_idx 0 -n_chunks 4
+interval_idx=0
+
+python /project/def-aloise/$USER/main.py -path_data_json /project/def-aloise/$USER/data/data_preprocessed_tokens_v2.json -path_data_folder /project/def-aloise/$USER/data/ -algorithm inference -interval_idx $interval_idx -n_chunks 4
 
 
 # Capture the end time
