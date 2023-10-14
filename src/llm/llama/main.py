@@ -185,7 +185,7 @@ def main_inference(path_data_preprocessed: Path, model_name: str = "meta-llama/L
     folder_predictions.mkdir(exist_ok=True,parents=True)
     for i, d in tqdm(enumerate(data)):
         gc.collect()
-        torch.cuda.empty_cache()
+        torch.cuda.empty_cache() #type: ignore
         answer = float('nan')
         severity = float('nan')
         text,tokenized_full_text = build_prompt(
