@@ -183,7 +183,7 @@ def main_inference(path_data_preprocessed: Path, model_name: str = "meta-llama/L
     responses = []
     folder_predictions = path_data_preprocessed.parent / "predictions"
     folder_predictions.mkdir(exist_ok=True,parents=True)
-    for i, d in tqdm(enumerate(data)):
+    for i, d in tqdm(enumerate(data), total=len(data)):
         gc.collect()
         torch.cuda.empty_cache() #type: ignore
         answer = float('nan')
