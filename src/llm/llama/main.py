@@ -45,6 +45,16 @@ except Exception:
 import argparse
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 
+
+def print_args(func):
+    def inner(*args,**kwargs):
+        print("*"*100)
+        print("Start",func.__name__)
+        print("With *args",args)
+        print("With **kwargs",kwargs)
+        print("-"*100)
+        return func(*args,**kwargs)
+    return inner
 def classify(answer: str) -> int:
     """Return 0 if not severe, 1 if severe and -1 if unknown"""
     pattern_severe = "[sS][eE][vV][eE][rR][eE]"
@@ -130,6 +140,21 @@ def get_max_tokens(path_descriptions: Path, model_name: str = "meta-llama/Llama-
             "number_of_tokens": token_lengths
         },f)
 
+def build_prompt(llama_tokenized_template: List[str], llama_tokenized_description: List[str], template_index_insert: int, tokenizer) -> Tuple[str,List[str]]:
+    """We put the template and the description together using the insertion point specified in description_index_insert"""
+    ## First make a copy
+    tokenized_full_text = llama_tokenized_template[:]
+    ## Then remove the <s> token from the description
+    description = llama_tokenized_description[1:]
+    ## Then insert the description inside the template at the position indicated (after input)
+    tokenized_full_text[template_index_insert:template_index_insert] = description
+    ## And remove the start token (as it will be put again by the tokenizer)
+    tokenized_full_text.pop(0)
+    ## Convert back into a sentence
+    text = tokenizer.decode(tokenizer.convert_tokens_to_ids(tokenized_full_text))
+    return text,tokenized_full_text
+
+@print_args
 def main_inference(path_data_preprocessed: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", start: int = 0, end: int = -1, limit_tokens: int = 7364, id_pred: str = ""):
     if token != "":
         login(token=token)
@@ -163,8 +188,13 @@ def main_inference(path_data_preprocessed: Path, model_name: str = "meta-llama/L
         torch.cuda.empty_cache()
         answer = float('nan')
         severity = float('nan')
-        n_tokens = len(d["llama_tokenized_description"])
-        text = " ".join(d['llama_tokenized_description'])
+        text,tokenized_full_text = build_prompt(
+            d["llama_tokenized_template"],
+            template["llama_tokenized_description"],
+            template["template_index_insert"],
+            tokenizer
+        )
+        n_tokens = len(tokenized_full_text)
         if n_tokens < limit_tokens:
             [answer] = pipeline( #type: ignore
                 text,
@@ -180,7 +210,7 @@ def main_inference(path_data_preprocessed: Path, model_name: str = "meta-llama/L
                 raise Exception("Unknown result answer: "+str(answer))
             severity = classify(answer)
 
-        responses.append({**d, "answer": answer, f"severity_pred{id_pred}": severity})
+        responses.append({**d, "answer": answer, f"severity_pred{id_pred}": severity, f"input{id_pred}": text})
         if i%5==0:
             with open(folder_predictions / f"predictions_v100l_chunk_{start}.json", "w") as f:
                 json.dump(responses,f)
@@ -414,11 +444,13 @@ if __name__ == "__main__":
     parser.add_argument("-path_data_folder", type=path_check, help="Root path to the main data folder", default="/project/def-aloise/rmoine/data/")
     parser.add_argument("-algorithm", choices=algorithms_choices, help="Algorithm to execute", default="inference")
     parser.add_argument("-token", choices=algorithms_choices, help="Token to huggingface", default="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")
-    parser.add_argument("-interval_idx", type=int, help="Choice of the interval for inference", default=0)
+    parser.add_argument("-interval_idx", type=int, help="Choice of the interval for inference and max tokens", default=0)
+    parser.add_argument("-n_chunks", type=int, help="Number of chunks to do for inference and max tokens", default=3)
     args = parser.parse_args()
     print(args)
     n_data = 22302
-    n_intervals = 3
+    assert args.n_chunks is not None, "Expecting n_chunks"
+    n_intervals = args.n_chunks
     intervals = [[i * (n_data // n_intervals), (i + 1) * (n_data // n_intervals)] for i in range(n_intervals)]
     if args.algorithm == "max_tokens":
         assert args.interval_idx is not None, "Expecting interval id"
@@ -427,7 +459,7 @@ if __name__ == "__main__":
     elif args.algorithm == "inference":
         assert args.interval_idx is not None, "Expecting interval id"
         interval = intervals[args.interval_idx]
-        main_inference(args.path_data_json,token=args.token,start=interval[0],end=interval[1]+1)
+        main_inference(args.path_data_json,token=args.token,start=interval[0],end=interval[1]+1,model_name="meta-llama/Llama-2-13b-chat-hf",id_pred="_trunc")
     elif args.algorithm == "compute_metrics":
         for pred_field,input_field in zip(["severity_pred","severity_pred2"],["text","trunc_text"]):
             path_out = args.path_data_folder / f"out_{pred_field}"
