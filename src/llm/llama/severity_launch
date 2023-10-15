@@ -22,11 +22,13 @@ pip install torch  --no-index
 pip install transformers accelerate huggingface_hub xformers --no-index
 pip install pandas scikit-learn nltk bitsandbytes sentencepiece protobuf --no-index
 pip install tqdm --no-index
+pip install seaborn --no-index
+pip install matplotlib --no-index
 # Execution of the script: replace by python path_to_your_script
 # Do not forget to change the pathes to absolute pathes (dont hesitate to use $USER variable)
-interval_idx=0
-
-python /project/def-aloise/$USER/main.py -path_data_json /project/def-aloise/$USER/data/data_preprocessed_tokens_v2.json -path_data_folder /project/def-aloise/$USER/data/ -algorithm inference -interval_idx $interval_idx -n_chunks 4
+seed_start=0
+seed_end=-1
+python /project/def-aloise/$USER/main.py -path_data_json /project/def-aloise/$USER/data/data_preprocessed_tokens_v2.json -path_data_folder /project/def-aloise/$USER/data/ -algorithm inference -seed_start $seed_start -seed_end $seed_end
 
 
 # Capture the end time

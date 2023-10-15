@@ -189,8 +189,8 @@ def main_inference(path_data_preprocessed: Path, model_name: str = "meta-llama/L
         answer = float('nan')
         severity = float('nan')
         text,tokenized_full_text = build_prompt(
-            d["llama_tokenized_template"],
-            template["llama_tokenized_description"],
+            template["llama_tokenized_template"],
+            d["llama_tokenized_description"],
             template["template_index_insert"],
             tokenizer
         )
@@ -446,21 +446,26 @@ if __name__ == "__main__":
     parser.add_argument("-token", choices=algorithms_choices, help="Token to huggingface", default="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")
     parser.add_argument("-interval_idx", type=int, help="Choice of the interval for inference and max tokens", default=0)
     parser.add_argument("-n_chunks", type=int, help="Number of chunks to do for inference and max tokens", default=3)
+    parser.add_argument("-seed_start", type=int, help="Seed start for inference", default=0)
+    parser.add_argument("-seed_end", type=int, help="Seed end for inference (included)", default=-1)
     args = parser.parse_args()
     print(args)
     n_data = 22302
-    assert args.n_chunks is not None, "Expecting n_chunks"
-    n_intervals = args.n_chunks
-    intervals = [[i * (n_data // n_intervals), (i + 1) * (n_data // n_intervals)] for i in range(n_intervals)]
-    intervals[-1][1] += 1
+    assert args.n_chunks is not None or (args.seed_start is not None and args.seed_end is not None), "Expecting n_chunks or seed start and seed end"
+    if args.n_chunks is not None:
+        assert args.interval_idx is not None, "Expecting interval id"
+        assert args.interval_idx is not None, "Expecting interval id"
+        
+        n_intervals = args.n_chunks
+        intervals = [[i * (n_data // n_intervals), (i + 1) * (n_data // n_intervals)] for i in range(n_intervals)]
+        intervals[-1][1] += 1
+        [seed_start,seed_end] = intervals[args.interval_idx]
+    else:
+        [seed_start,seed_end] = [args.seed_start,args.seed_end]
     if args.algorithm == "max_tokens":
-        assert args.interval_idx is not None, "Expecting interval id"
-        interval = intervals[args.interval_idx]
-        get_max_tokens(args.path_data_json,token=args.token,start=interval[0],end=interval[1])
+        get_max_tokens(args.path_data_json,token=args.token,start=seed_start,end=seed_end)
     elif args.algorithm == "inference":
-        assert args.interval_idx is not None, "Expecting interval id"
-        interval = intervals[args.interval_idx]
-        main_inference(args.path_data_json,token=args.token,start=interval[0],end=interval[1],model_name="meta-llama/Llama-2-13b-chat-hf",id_pred="_trunc")
+        main_inference(args.path_data_json,token=args.token,start=seed_start,end=seed_end,model_name="meta-llama/Llama-2-13b-chat-hf",id_pred="_trunc")
     elif args.algorithm == "compute_metrics":
         for pred_field,input_field in zip(["severity_pred","severity_pred2"],["text","trunc_text"]):
             path_out = args.path_data_folder / f"out_{pred_field}"
