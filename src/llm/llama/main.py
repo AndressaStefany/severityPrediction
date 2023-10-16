@@ -242,10 +242,10 @@ def main_inference(
     folder_predictions = path_data_preprocessed.parent / "predictions"
     folder_predictions.mkdir(exist_ok=True, parents=True)
     with open(folder_predictions / f"metadata.meta", "w") as f:
-        json.dump({"data_path":path_data_preprocessed.resolve()}, f, indent=2)
+        json.dump({"data_path":str(path_data_preprocessed.resolve())}, f, indent=2)
     for i, d in tqdm(enumerate(data), total=len(data)):
-        gc.collect()
-        torch.cuda.empty_cache()  # type: ignore
+        # gc.collect()
+        # torch.cuda.empty_cache()  # type: ignore
         answer = float("nan")
         severity = float("nan")
         text, tokenized_full_text = build_prompt(
@@ -265,7 +265,6 @@ def main_inference(
                     num_return_sequences=1,
                     eos_token_id=tokenizer.eos_token_id,
                     return_full_text=False,
-                    max_new_tokens=1,
                 )
                 answer = answer["generated_text"]  # type: ignore
                 if not isinstance(answer, str):
@@ -284,11 +283,11 @@ def main_inference(
         )
         if i % 5 == 0:
             with open(
-                folder_predictions / f"predictions_v100l_chunk_{start}.json", "w"
+                folder_predictions / f"predictions_v100l_chunk_{start}_{id_pred}.json", "w"
             ) as f:
                 json.dump(responses, f)
 
-    with open(folder_predictions / f"predictions_v100l_chunk_{start}.json", "w") as f:
+    with open(folder_predictions / f"predictions_v100l_chunk_{start}_{id_pred}.json", "w") as f:
         json.dump(responses, f, indent=2)
 
 
@@ -773,6 +772,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "-n_data", type=int, help="Total number of data in the dataset", default=22302
     )
+    parser.add_argument(
+        "-id", type=str, help="Id to put on the files to save", default="_trunc"
+    )
     args = parser.parse_args()
     print(args)
     n_data = args.n_data
@@ -803,7 +805,7 @@ if __name__ == "__main__":
             start=seed_start,
             end=seed_end,
             model_name="meta-llama/Llama-2-13b-chat-hf",
-            id_pred="_trunc",
+            id_pred=args.id,
         )
     elif args.algorithm == "compute_metrics":
         path_out = args.path_data_folder / f"out_{args.pred_field}"

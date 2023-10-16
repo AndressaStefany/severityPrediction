@@ -24,6 +24,7 @@ def generate_inference(clear: bool = False):
                     id=i,
                     n_chunks=n_chunks,
                     path_data_json="/project/def-aloise/$USER/data/data_preprocessed_tokens_v3.json",
+                    id_name=id
                 )
             )
     with open(path_file.parent / f"launch{id}_all_inference", "w") as f:
