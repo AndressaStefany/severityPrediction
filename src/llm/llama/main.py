@@ -503,7 +503,7 @@ def find_representant(
 
 @print_args
 def main_qlora(
-    new_model_name: str, file_examples: Path, folder_out: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", field_label: str  = "binary_severity",
+    new_model_name: str, file_examples: Path, folder_out: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", field_label: str  = "binary_severity", field_input: str = "llama_tokenized_description",
                lora_alpha: float = 16, lora_dropout: float = 0.1, lora_r: int = 64, 
                num_train_epochs: int = 1, tr_bs: int = 4, val_bs: int = 4,
                optim: str = "paged_adamw_32bit", save_steps: int = 25,
@@ -601,17 +601,18 @@ def main_qlora(
     print("Create datasets")
     train_path = folder_out / f"train_max_{limit_tokens}.json"
     valid_path = folder_out / f"valid_max_{limit_tokens}.json"
+    full_path = folder_out / f"full_max_{limit_tokens}.json"
     if not train_path.exists() or not valid_path.exists():
         with open(file_examples) as f:
             data_preprocessed = json.load(f)
         data = data_preprocessed["data"]
         template = data_preprocessed["template"]
         L = []
-        for d in data:
-            template["llama_tokenized_template"] = template["llama_tokenized_template"]+"\n"+str(d[field_label])
+        for d in data[:50]:
+            template["llama_tokenized_template"] = template["llama_tokenized_template"]+["<0x0A>",str(d[field_label])]
             text, tokenized_full_text = build_prompt(
                 template["llama_tokenized_template"],
-                d["llama_tokenized_description"],
+                d[field_input],
                 template["template_index_insert"],
                 tokenizer,
                 limit_tokens=limit_tokens
@@ -620,6 +621,8 @@ def main_qlora(
         idx_tr, idx_val = train_test_split(np.arange(len(L)), train_size=train_size) #type: ignore
         idx_tr = set(idx_tr)
         idx_val = set(idx_val)
+        with open(full_path, "w") as f:
+            json.dump(L,f)
         with open(train_path, "w") as f:
             json.dump([{"text":e["text"]} for i,e in enumerate(L) if i in idx_tr],f)
         with open(valid_path, "w") as f:
@@ -774,6 +777,7 @@ if __name__ == "__main__":
             end=seed_end,
             model_name=args.model_name,
             id_pred=args.id,
+            limit_tokens=args.n_tokens_infered_max
         )
     elif args.algorithm == "compute_metrics":
         path_out = args.path_data_folder / f"out_{args.pred_field}"
@@ -789,7 +793,7 @@ if __name__ == "__main__":
             n_tokens_show_max=args.n_tokens_show_max,
         )
     elif args.algorithm == "finetune":
-        path_out = args.path_data_folder / f"qlora_finetune"
+        path_out = args.path_data_folder / f"qlora_finetune_{args.id}"
         path_out.mkdir(parents=True,exist_ok=True)
         main_qlora(
             model_name=args.model_name,
@@ -798,7 +802,9 @@ if __name__ == "__main__":
             folder_out=path_out,
             token=args.token,
             field_label="binary_severity",
+            field_input=args.input_field,
             lora_alpha=args.qlora_alpha,
             lora_dropout=args.qlora_dropout,
             lora_r=args.qlora_r,
+            limit_tokens=args.n_tokens_infered_max
         )
