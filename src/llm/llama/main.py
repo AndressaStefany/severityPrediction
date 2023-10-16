@@ -312,52 +312,6 @@ def extract_fields_from_json(
         L.extend(data)
     return L
 
-
-def main_shap(
-    file_examples: Path,
-    folder_out: Path,
-    model_name: str = "meta-llama/Llama-2-13b-chat-hf",
-    token: str = "",
-):
-    if not folder_out.exists():
-        folder_out.mkdir(parents=True)
-    # open sentences
-    with open(file_examples) as f:
-        representants = json.load(f)
-        mapping = representants["mapping"]
-        representants = {eval(k): v for k, v in representants["samples"].items()}
-    if token != "":
-        login(token=token)
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-    double_quant_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-    )
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, quantization_config=double_quant_config
-    )
-    pipeline = transformers.pipeline(
-        "text-generation", model=model, tokenizer=tokenizer, device_map="auto"
-    )
-    pipeline.config.task_specific_params["text-generation"] = dict(
-        do_sample=True,
-        top_k=1,
-        num_return_sequences=1,
-        eos_token_id=tokenizer.eos_token_id,
-        max_length=1024,
-        return_full_text=False,
-    )
-    print("Starting inference")
-    for k, Ltext in representants.items():
-        for i, text in enumerate(Ltext):
-            explainer = shap.Explainer(pipeline, tokenizer)
-            shap_values = explainer([text])
-            with open(
-                folder_out / f"shap_pred_{k[0]}_true_{k[1]}_sample_{i}.html", "w"
-            ) as f:
-                f.write(shap.plots.text(shap_values, display=False))
-
-
 def compute_metrics(
     folder_predictions: Path,
     folder_out: Optional[Path] = None,
