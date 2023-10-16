@@ -18,6 +18,14 @@ try:
     from rich.progress import track
 except Exception:
     pass
+try:
+    from peft import LoraConfig, PeftModel
+except Exception:
+    pass
+try:
+    from trl import SFTTrainer
+except Exception:
+    pass
 import json
 import numpy as np
 import multiprocessing
@@ -38,6 +46,7 @@ from transformers import (
     AutoModelForCausalLM,
     pipeline,
     BitsAndBytesConfig,
+    TrainingArguments,
 )
 import gc
 import os
@@ -539,6 +548,147 @@ def find_representant(
         json.dump({"samples": samples, "mapping": mapping_dict}, f)
     return samples
 
+@print_args
+def main_qlora(
+    new_model_name: str, file_examples: Path, folder_out: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", field_input: str = "trunc_text", field_label: str  = "binary_severity",
+               input_field: str = "trunc_text",
+               lora_alpha: float = 16, lora_dropout: float = 0.1, lora_r: int = 64, 
+               num_train_epochs: int = 1, tr_bs: int = 4, val_bs: int = 4,
+               optim: str = "paged_adamw_32bit", save_steps: int = 25,
+               logging_steps: int = 25, learning_rate: float = 2e-4, weight_decay: float = 0.001, 
+               fp16: bool = False, bf16: bool = False, max_grad_norm: float = 0.3, max_steps: int = -1, warmup_ratio: float = 0.03,
+               group_by_length: bool = True, lr_scheduler_type: str = "constant", eval_steps: int = 20,
+               train_size: float = 0.3, limit_tokens: int = 7364,
+               ):
+    """
+    Perform training and fine-tuning of a model for causal reasoning using LoRA.
+    Doc: https://miro.medium.com/v2/resize:fit:4800/format:webp/1*rOW5plKBuMlGgpD0SO8nZA.png
+
+    # Arguments
+        - new_model_name: str, name of the new model pretrained
+        - file_examples: Path, a file path to input data.
+        - folder_out: Path, a Path object representing the output folder for the results.
+        - model_name: str, the name or path of the pretrained model to use. Default: "meta-llama/Llama-2-13b-chat-hf"
+        - token: str, a token string. Default: ""
+        - lora_alpha: float, scaling factor for the weight matrices. alpha is a scaling factor that adjusts the magnitude of the combined result (base model output + low-rank adaptation). Default: 16
+        - lora_dropout: float, dropout probability of the LoRA layers. This parameter is used to avoid overfitting. Default: 0.1
+        - lora_r: int, this is the dimension of the low-rank matrix. Default: 64. It means for a layer initialy of size d_in x d_out we will have 2 lora layers of size d_in x r and r x d_out reducing the number of parameters
+        - num_train_epochs: int, the number of training epochs. Default: 1
+        - tr_bs: int, batch size for training. Default: 4
+        - val_bs: int, batch size for validation. Default: 4
+        - optim: str, optimization method. Possible values include "paged_adamw_32bit" and other optimization methods specific to the project. Default: "paged_adamw_32bit"
+        - save_steps: int, the frequency of saving model checkpoints during training. Default: 25
+        - logging_steps: int, the frequency of logging training progress. Default: 25
+        - learning_rate: float, the learning rate for training. Default: 2e-4
+        - weight_decay: float, the weight decay value for regularization. Default: 0.001
+        - fp16: bool, whether to use mixed-precision training with 16-bit floats. Default: False
+        - bf16: bool, whether to use 16-bit bfloat16 format. Default: False
+        - max_grad_norm: float, the maximum gradient norm for gradient clipping. Default: 0.3
+        - max_steps: int, the maximum number of training steps. Default: -1 (unlimited)
+        - warmup_ratio: float, the warmup ratio for learning rate scheduling. Default: 0.03
+        - group_by_length: bool, a flag to group data by sequence length. Default: True
+        - lr_scheduler_type: str, type of learning rate scheduler. Default: "constant"
+        - eval_steps: int, the frequency of evaluating the model during training. Default: 20
+        - train_size: float = 0.3, the size of the training dataset
+    """
+    print("main_qlora")
+    if token != "":
+        login(token=token)
+    if not folder_out.exists():
+        folder_out.mkdir(parents=True)
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    double_quant_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype="float16"
+    )
+    n_gpus = torch.cuda.device_count() #type: ignore
+    max_memory = f'{32}GB'
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, 
+        quantization_config=double_quant_config,
+        max_memory = {i: max_memory for i in range(n_gpus)},
+    )
+    
+    model.config.use_cache = False
+    model.config.pretraining_tp = 1
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
+    peft_config = LoraConfig( #type: ignore
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        r=lora_r,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    # Set training parameters
+    training_arguments = TrainingArguments(
+        output_dir=str(folder_out.resolve()),
+        num_train_epochs=num_train_epochs,
+        per_device_train_batch_size=tr_bs,
+        gradient_accumulation_steps=val_bs,
+        optim=optim,
+        save_steps=save_steps,
+        logging_steps=logging_steps,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        fp16=fp16,
+        bf16=bf16,
+        max_grad_norm=max_grad_norm,
+        max_steps=max_steps,
+        warmup_ratio=warmup_ratio,
+        group_by_length=group_by_length,
+        lr_scheduler_type=lr_scheduler_type,
+        report_to="all", #type: ignore
+        evaluation_strategy="steps",
+        eval_steps=eval_steps
+    )
+    # create datasets
+    print("Create datasets")
+    train_path = folder_out / f"train_max_{limit_tokens}.json"
+    valid_path = folder_out / f"valid_max_{limit_tokens}.json"
+    if not train_path.exists() or not valid_path.exists():
+        with open(file_examples) as f:
+            data_preprocessed = json.load(f)
+        data = data_preprocessed["data"]
+        template = data_preprocessed["template"]
+        L = []
+        for d in data:
+            text, tokenized_full_text = build_prompt(
+                template["llama_tokenized_template"],
+                d["llama_tokenized_description"],
+                template["template_index_insert"],
+                tokenizer,
+                limit_tokens=limit_tokens
+            )
+            L.append({**d,"text":text,"tokenized_full_text":tokenized_full_text})
+        idx_tr, idx_val = train_test_split(np.arange(len(L)), train_size=train_size) #type: ignore
+        idx_tr = set(idx_tr)
+        idx_val = set(idx_val)
+        with open(train_path, "w") as f:
+            json.dump([{"text":e["text"]} for i,e in enumerate(L) if i in idx_tr],f)
+        with open(valid_path, "w") as f:
+            json.dump([{"text":e["text"]} for i,e in enumerate(L) if i in idx_val],f)
+    train_dataset = load_dataset('json', data_files=str(train_path.resolve()), split="train") #type: ignore
+    valid_dataset = load_dataset('json', data_files=str(valid_path.resolve()), split="train") #type: ignore
+    # Set supervised fine-tuning parameters
+    print("Set supervised fine-tuning parameters")
+    trainer = SFTTrainer( #type: ignore
+        model=model,
+        train_dataset=train_dataset,
+        eval_dataset=valid_dataset,  # Pass validation dataset here
+        peft_config=peft_config,
+        dataset_text_field="text",
+        tokenizer=tokenizer,
+        args=training_arguments,
+        packing=False,
+    )
+    print("Starting training QLORA")
+    trainer.train()
+    print("Saving trained QLORA model")
+    trainer.model.save_pretrained(new_model_name)
 
 class DataoutDict(TypedDict):
     bug_id: str
