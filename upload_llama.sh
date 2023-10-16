@@ -11,6 +11,7 @@ echo "scp -r $root_project/src/llm/llama/*.py rmoine@$server.computecanada.ca:$r
 echo "scp $root_project/src/llm/llama/severity_launch rmoine@$server.computecanada.ca:$root/$user/"
 echo "scp $root_project/src/llm/llama/inference_* rmoine@$server.computecanada.ca:$root/$user/"
 echo "scp $root_project/src/llm/llama/launch_* rmoine@$server.computecanada.ca:$root/$user/"
+echo "scp $root_project/src/llm/llama/finetune* rmoine@$server.computecanada.ca:$root/$user/"
 
 echo 'ssh rmoine@$server.computecanada.ca" "cd $root/$user/&&mkdir data&&mkdir data/"'
 
