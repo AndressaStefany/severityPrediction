@@ -232,6 +232,8 @@ def main_inference(
     responses = []
     folder_predictions = path_data_preprocessed.parent / "predictions"
     folder_predictions.mkdir(exist_ok=True, parents=True)
+    with open(folder_predictions / f"metadata.meta", "w") as f:
+        json.dump({"data_path":path_data_preprocessed.resolve()}, f, indent=2)
     for i, d in tqdm(enumerate(data), total=len(data)):
         gc.collect()
         torch.cuda.empty_cache()  # type: ignore
@@ -242,6 +244,7 @@ def main_inference(
             d["llama_tokenized_description"],
             template["template_index_insert"],
             tokenizer,
+            limit_tokens=limit_tokens
         )
         n_tokens = len(tokenized_full_text)
         if n_tokens < limit_tokens:
@@ -617,9 +620,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "-n_tokens_show_max", type=int, help="Minimum number of tokens shown in the statistics", default=7364
     )
+    parser.add_argument(
+        "-n_data", type=int, help="Total number of data in the dataset", default=22302
+    )
     args = parser.parse_args()
     print(args)
-    n_data = 22302
+    n_data = args.n_data
     assert args.n_chunks is not None or (
         args.seed_start is not None and args.seed_end is not None
     ), "Expecting n_chunks or seed start and seed end"
