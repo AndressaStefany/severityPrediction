@@ -503,8 +503,7 @@ def find_representant(
 
 @print_args
 def main_qlora(
-    new_model_name: str, file_examples: Path, folder_out: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", field_input: str = "trunc_text", field_label: str  = "binary_severity",
-               input_field: str = "trunc_text",
+    new_model_name: str, file_examples: Path, folder_out: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", field_label: str  = "binary_severity",
                lora_alpha: float = 16, lora_dropout: float = 0.1, lora_r: int = 64, 
                num_train_epochs: int = 1, tr_bs: int = 4, val_bs: int = 4,
                optim: str = "paged_adamw_32bit", save_steps: int = 25,
@@ -609,6 +608,7 @@ def main_qlora(
         template = data_preprocessed["template"]
         L = []
         for d in data:
+            template["llama_tokenized_template"] = template["llama_tokenized_template"]+"\n"+str(d[field_label])
             text, tokenized_full_text = build_prompt(
                 template["llama_tokenized_template"],
                 d["llama_tokenized_description"],
@@ -665,7 +665,6 @@ if __name__ == "__main__":
         "inference",
         "max_tokens",
         "compute_metrics",
-        "explain",
         "finetune",
     ]
     parser.add_argument(
@@ -729,6 +728,21 @@ if __name__ == "__main__":
     parser.add_argument(
         "-id", type=str, help="Id to put on the files to save", default="_trunc"
     )
+    parser.add_argument(
+        "-model_name", type=str, help="Name of the huggingface model to use", default="meta-llama/Llama-2-13b-chat-hf"
+    )
+    parser.add_argument(
+        "-new_model_name", type=str, help="Name of the huggingface model to use", default="meta-llama/Finetune-Llama-2-13b-chat-hf"
+    )
+    parser.add_argument(
+        "-qlora_alpha", type=float, help="Ponderation of the QLORA finetuning", default=8
+    )
+    parser.add_argument(
+        "-qlora_dropout", type=str, help="Dropout applied to the QLORA finetuning", default=0.1
+    )
+    parser.add_argument(
+        "-qlora_r", type=str, help="Rank of the matrices of the QLORA finetuning", default=8
+    )
     args = parser.parse_args()
     print(args)
     n_data = args.n_data
@@ -758,7 +772,7 @@ if __name__ == "__main__":
             token=args.token,
             start=seed_start,
             end=seed_end,
-            model_name="meta-llama/Llama-2-13b-chat-hf",
+            model_name=args.model_name,
             id_pred=args.id,
         )
     elif args.algorithm == "compute_metrics":
@@ -774,11 +788,17 @@ if __name__ == "__main__":
             n_tokens_show_min=args.n_tokens_show_min,
             n_tokens_show_max=args.n_tokens_show_max,
         )
-    elif args.algorithm == "explain":
-        for pred_field, input_field in zip(
-            ["severity_pred", "severity_pred2"], ["text", "trunc_text"]
-        ):
-            path_out = args.path_data_folder / f"out_{pred_field}"
-            path_in = Path(path_out / "representants.json")
-            folder_out = path_in.parent / f"representants_{pred_field}_explain"
-            main_shap(path_in, folder_out, token=args.token)
+    elif args.algorithm == "finetune":
+        path_out = args.path_data_folder / f"qlora_finetune"
+        path_out.mkdir(parents=True,exist_ok=True)
+        main_qlora(
+            model_name=args.model_name,
+            file_examples=args.path_data_json,
+            new_model_name=args.new_model_name,
+            folder_out=path_out,
+            token=args.token,
+            field_label="binary_severity",
+            lora_alpha=args.qlora_alpha,
+            lora_dropout=args.qlora_dropout,
+            lora_r=args.qlora_r,
+        )
