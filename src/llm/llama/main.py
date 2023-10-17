@@ -87,11 +87,11 @@ def classify(answer: str) -> int:
     """Return 0 if not severe, 1 if severe and -1 if unknown"""
     pattern_severe = "[sS][eE][vV][eE][rR][eE]"
     pattern_not_severe = "[nN][oO][tT] *" + pattern_severe
-    if re.match(pattern_not_severe, answer) is not None or (
+    if re.search(pattern_not_severe, answer) is not None or (
         "0" in answer and "1" not in answer
     ):
         return 0
-    elif re.match(pattern_severe, answer) is not None or (
+    elif re.search(pattern_severe, answer) is not None or (
         "1" in answer and "0" not in answer
     ):
         return 1
