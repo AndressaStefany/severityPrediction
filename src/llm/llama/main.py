@@ -918,7 +918,7 @@ def get_data_embeddings(folder_embeddings: Path, layer_id: int = -1, base_name: 
             for line in json_file:
                 # Load and process each line as JSON data.
                 try:
-                    data = json.loads(line[:-1]) #-1 to remove the coma
+                    data = eval(line[:-2]) #-1 to remove the coma
                     # Now you can work with the JSON data.
                     yield data
                 except json.JSONDecodeError as e:
@@ -1084,7 +1084,7 @@ if __name__ == "__main__":
             [i * (n_data // n_intervals), (i + 1) * (n_data // n_intervals)]
             for i in range(n_intervals)
         ]
-        intervals[-1][1] += 1
+        intervals[-1][1] = n_data
         [seed_start, seed_end] = intervals[args.interval_idx]
     else:
         [seed_start, seed_end] = [args.seed_start, args.seed_end]
