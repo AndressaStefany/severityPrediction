@@ -956,6 +956,42 @@ def train_embeddings_fnn(
             }
         )
 
+class EmbeddingDict(TypedDict, total=False):
+    """Contains especially
+    - description: str, the field that has been used to generate the embeddings. Could have been truncated
+    - layer_id: int, the id of the layer that have been taken into hidden_representation
+    - hidden_state: List, to conver to array or torch Tensor, the actual hidden representation of shape (seq_length, vocab_size)
+    - text: str, the text that has been sent to llama2 before tokenization and limiting the number of tokens
+    - tokenized: List[int], the list of tokens ids after llama2 tokenizer and truncation
+    - bug_id: int, the id of the bug
+    - true: int, the true value of the severity (1 SEVERE 0 NON SEVERE)
+    """
+    description: str
+    layer_id: int
+    hidden_state: List[List[float]]
+    text: str
+    tokenized: List[int]
+    bug_id: int
+    true: int
+
+
+    
+def get_data_embeddings(folder_embeddings: Path, layer_id: int = -1, base_name: str = "embeddings_chunk__trunc_") -> Generator:
+    sorted_path = list(folder_embeddings.rglob(f"{base_name}layer_-1_*.json"))
+    sorted_path = sorted(sorted_path,key=lambda x:int(x.name.split(".")[0].split("_")[-1]))
+    for p in sorted_path:
+        print("Reading ",p)
+        with open(p, 'r') as json_file:
+            for line in json_file:
+                # Load and process each line as JSON data.
+                try:
+                    data = json.loads(line[:-1]) #-1 to remove the coma
+                    # Now you can work with the JSON data.
+                    yield data
+                except json.JSONDecodeError as e:
+                    print(f"Error decoding JSON: {e}")
+        
+    
 
 class DataoutDict(TypedDict):
     bug_id: str
@@ -982,7 +1018,8 @@ if __name__ == "__main__":
         "compute_metrics",
         "finetune",
         "embeddings_gen",
-        "embeddings_max_tokens"
+        "embeddings_max_tokens",
+        "nn_embedding"
     ]
     parser.add_argument(
         "-path_data_json",
@@ -1093,6 +1130,12 @@ if __name__ == "__main__":
         help="Layers ids for the embedding to take",
         default="(0,)",
     )
+    parser.add_argument(
+        "-base_name",
+        type=str,
+        help="Base name of the json file with the layer id for get_data_embeddings (ex: embeddings_chunk__trunc_layer_-1_4460.json will give embeddings_chunk__trunc_)",
+        default="(0,)",
+    )
     args = parser.parse_args()
     print(args)
     n_data = args.n_data
@@ -1193,6 +1236,16 @@ if __name__ == "__main__":
     elif args.algorithm == "embeddings_max_tokens":
         (max_work, min_not_work) = get_max_tokens_embeddings(args.model_name,0,7000)
         print(f"{max_work=},{min_not_work=}")
+        
     elif args.algorithm == "nn_embedding":
-        pass
+        folder_embeddings = Path(args.path_data_folder) / "embeddings"
+        layer_id: Tuple[int] = eval(args.layers_ids)
+        if len(layer_id) > 1:
+            raise ValueError(f"Expecting just one layer id not {len(layer_id)}")
+        for i,d in enumerate(get_data_embeddings(
+            folder_embeddings=folder_embeddings,
+            layer_id=layer_id[0],
+            base_name=args.base_name,
+        )):
+            print(i)
         
