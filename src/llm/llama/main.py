@@ -897,7 +897,6 @@ class EmbeddingDict(TypedDict, total=False):
     - text: str, the text that has been sent to llama2 before tokenization and limiting the number of tokens
     - tokenized: List[int], the list of tokens ids after llama2 tokenizer and truncation
     - bug_id: int, the id of the bug
-    - true: int, the true value of the severity (1 SEVERE 0 NON SEVERE)
     """
     description: str
     layer_id: int
@@ -905,7 +904,6 @@ class EmbeddingDict(TypedDict, total=False):
     text: str
     tokenized: List[int]
     bug_id: int
-    true: int
 
 
     
