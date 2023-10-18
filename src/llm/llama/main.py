@@ -918,7 +918,7 @@ def get_data_embeddings(folder_embeddings: Path, layer_id: int = -1, base_name: 
             for line in json_file:
                 # Load and process each line as JSON data.
                 try:
-                    data = eval(line[:-2]) #-1 to remove the coma
+                    data = eval(line[:-2]) #-2 to remove the coma and the back to line
                     # Now you can work with the JSON data.
                     yield data
                 except json.JSONDecodeError as e:
