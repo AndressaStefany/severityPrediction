@@ -889,73 +889,6 @@ def get_llama2_embeddings(
                     })+",\n")
 
 
-def train_embeddings_fnn(
-    folder_embeddings: Path,
-    layer_id: int,
-    pooling_op: Literal["max", "avg", "sum"],
-    id_pred: str = "",
-):
-    # create train and valid datasets
-    data = []
-    for f_path in folder_embeddings.rglob("*.json"):
-        with open(f_path) as f:
-            data.extend(json.load(f))
-    pooling = lambda x: x
-    if pooling_op == "max":
-        pooling = lambda x: np.max(x, axis=0)
-    elif pooling_op == "avg":
-        pooling = lambda x: np.mean(x, axis=0)
-    elif pooling_op == "sum":
-        pooling = lambda x: np.sum(x, axis=0)
-    else:
-        raise ValueError(f"{pooling_op} is not a valid pooling operation (max,avg,sum)")
-    for d in data:
-        d["input"] = pooling(d["layers"][layer_id])
-    n = data[0]["input"].shape[0]
-    # split tr and valid
-    data_tr, data_val = train_test_split(data, train_size=train_size)  # type: ignore
-    # Extract input vectors and target values
-    x_train = torch.Tensor([sample["input"] for sample in data_tr])
-    y_train = torch.Tensor([sample["binary_severity"] for sample in data_tr])
-
-    x_val = torch.Tensor([sample["input"] for sample in data_val])
-    y_val = torch.Tensor([sample["binary_severity"] for sample in data_val])
-    # create the model# Define a simple neural network
-    model = nn.Sequential(
-        nn.Linear(n, 64),  # Assuming n is the size of your input vectors
-        nn.ReLU(),
-        nn.Linear(64, 1),
-        nn.Sigmoid(),
-    )
-    # Define loss function and optimizer
-    criterion = nn.BCELoss()  # Binary Cross-Entropy Loss
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-    # Training loop
-    for epoch in range(1):  # Adjust the number of epochs as needed
-        optimizer.zero_grad()
-        outputs = model(x_train)
-        loss = criterion(outputs, y_train)
-        loss.backward()
-        optimizer.step()
-
-    # Validation
-    with torch.no_grad():
-        val_outputs = model(x_val)
-        val_predictions = (val_outputs >= 0.5).float()
-        accuracy = (val_predictions == y_val).sum().item() / len(y_val)
-        print(f"Validation Accuracy: {accuracy:.2f}")
-    responses = []
-    for d, answer in zip(data_val, val_outputs.tolist()):
-        responses.append(
-            {
-                **d,
-                "answer": answer,
-                f"severity_pred{id_pred}": answer,
-                f"input{id_pred}": d["input"],
-            }
-        )
-
 class EmbeddingDict(TypedDict, total=False):
     """Contains especially
     - description: str, the field that has been used to generate the embeddings. Could have been truncated
@@ -976,7 +909,7 @@ class EmbeddingDict(TypedDict, total=False):
 
 
     
-def get_data_embeddings(folder_embeddings: Path, layer_id: int = -1, base_name: str = "embeddings_chunk__trunc_") -> Generator:
+def get_data_embeddings(folder_embeddings: Path, layer_id: int = -1, base_name: str = "embeddings_chunk__trunc_") -> Generator[EmbeddingDict,None,None]:
     sorted_path = list(folder_embeddings.rglob(f"{base_name}layer_-1_*.json"))
     sorted_path = sorted(sorted_path,key=lambda x:int(x.name.split(".")[0].split("_")[-1]))
     for p in sorted_path:
