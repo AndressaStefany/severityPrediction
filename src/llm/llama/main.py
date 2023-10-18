@@ -908,7 +908,7 @@ class EmbeddingDict(TypedDict, total=False):
 
     
 def get_data_embeddings(folder_embeddings: Path, layer_id: int = -1, base_name: str = "embeddings_chunk__trunc_") -> Generator[EmbeddingDict,None,None]:
-    sorted_path = list(folder_embeddings.rglob(f"{base_name}layer_-1_*.json"))
+    sorted_path = list(folder_embeddings.rglob(f"{base_name}layer_{layer_id}_*.json"))
     sorted_path = sorted(sorted_path,key=lambda x:int(x.name.split(".")[0].split("_")[-1]))
     for p in sorted_path:
         print("Reading ",p)
@@ -1179,4 +1179,5 @@ if __name__ == "__main__":
             base_name=args.base_name,
         )):
             print(i)
+            break
         
