@@ -3,9 +3,13 @@ import transformers
 
 try:
     import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    from torch.utils.data import DataLoader, TensorDataset
 except Exception:
     pass
 from huggingface_hub import login
+
 from nltk.tokenize import word_tokenize
 from pathlib import Path
 import pandas as pd
@@ -40,6 +44,7 @@ from sklearn.metrics import (
     f1_score,
     precision_score,
 )
+from sklearn.model_selection import train_test_split
 import datetime
 from transformers import (
     AutoTokenizer,
@@ -48,10 +53,12 @@ from transformers import (
     BitsAndBytesConfig,
     TrainingArguments,
 )
+from transformers.modeling_outputs import BaseModelOutputWithPast
 import gc
 import os
 import math
 from tqdm import tqdm
+
 try:
     from pretty_confusion_matrix import pp_matrix
 except Exception:
@@ -62,6 +69,10 @@ except Exception:
 from itertools import product
 from textwrap import wrap
 
+try:
+    from datasets import load_dataset
+except Exception:
+    pass
 try:
     import shap
 except Exception:
@@ -107,6 +118,35 @@ def get_tokens(data, tokenizer):
         n_tokens = len(tokenizer.tokenize(text))
         Ltokens.append(n_tokens)
     return Ltokens
+
+
+def cpy_get_max_mix(min_token_length: int, max_token_length: int, tokenizer, pipeline):
+    max_work = 0
+    min_not_work = float("inf")
+
+    while min_token_length < max_token_length:
+        gc.collect()
+        torch.cuda.empty_cache()
+        mid_token_length = (min_token_length + max_token_length) // 2
+        text = "hello " * mid_token_length  # Create a test text of the desired length
+        try:
+            [answer] = pipeline(
+                text,
+                do_sample=True,
+                top_k=1,
+                num_return_sequences=1,
+                eos_token_id=tokenizer.eos_token_id,
+                max_length=1024,
+            )
+            del answer
+            # If the code above works, update max_work and adjust the search range
+            max_work = mid_token_length
+            min_token_length = mid_token_length + 1
+        except Exception as e:
+            # If the code above raises an exception, update min_not_work and adjust the search range
+            min_not_work = mid_token_length
+            max_token_length = mid_token_length - 1
+    return (max_work, min_not_work)
 
 
 def get_max_mix(token_lengths, tokenizer, pipeline):
@@ -188,7 +228,7 @@ def build_prompt(
     llama_tokenized_description: List[str],
     template_index_insert: int,
     tokenizer,
-    limit_tokens: int
+    limit_tokens: int,
 ) -> Tuple[str, List[str]]:
     """We put the template and the description together using the insertion point specified in description_index_insert"""
     ## First make a copy
@@ -196,7 +236,7 @@ def build_prompt(
     ## Then remove the <s> token from the description
     description = llama_tokenized_description[1:]
     # limit the number of tokens of the description
-    n_tokens_descr_max = limit_tokens-len(tokenized_full_text)
+    n_tokens_descr_max = limit_tokens - len(tokenized_full_text)
     description = description[:n_tokens_descr_max]
     ## Then insert the description inside the template at the position indicated (after input)
     tokenized_full_text[template_index_insert:template_index_insert] = description
@@ -242,7 +282,7 @@ def main_inference(
     folder_predictions = path_data_preprocessed.parent / "predictions"
     folder_predictions.mkdir(exist_ok=True, parents=True)
     with open(folder_predictions / f"metadata.meta", "w") as f:
-        json.dump({"data_path":str(path_data_preprocessed.resolve())}, f, indent=2)
+        json.dump({"data_path": str(path_data_preprocessed.resolve())}, f, indent=2)
     for i, d in tqdm(enumerate(data), total=len(data)):
         # gc.collect()
         # torch.cuda.empty_cache()  # type: ignore
@@ -253,25 +293,25 @@ def main_inference(
             d["llama_tokenized_description"],
             template["template_index_insert"],
             tokenizer,
-            limit_tokens=limit_tokens
+            limit_tokens=limit_tokens,
         )
         n_tokens = len(tokenized_full_text)
-        if n_tokens < limit_tokens:
-            try:
-                [answer] = pipeline(  # type: ignore
-                    text,
-                    do_sample=True,
-                    top_k=1,
-                    num_return_sequences=1,
-                    eos_token_id=tokenizer.eos_token_id,
-                    return_full_text=False,
-                )
-                answer = answer["generated_text"]  # type: ignore
-                if not isinstance(answer, str):
-                    raise Exception("Unknown result answer: " + str(answer))
-                severity = classify(answer)
-            except Exception:
-                severity = -2
+        assert n_tokens < limit_tokens
+        try:
+            [answer] = pipeline(  # type: ignore
+                text,
+                do_sample=True,
+                top_k=1,
+                num_return_sequences=1,
+                eos_token_id=tokenizer.eos_token_id,
+                return_full_text=False,
+            )
+            answer = answer["generated_text"]  # type: ignore
+            if not isinstance(answer, str):
+                raise Exception("Unknown result answer: " + str(answer))
+            severity = classify(answer)
+        except Exception:
+            severity = -2
 
         responses.append(
             {
@@ -283,17 +323,18 @@ def main_inference(
         )
         if i % 5 == 0:
             with open(
-                folder_predictions / f"predictions_v100l_chunk_{start}_{id_pred}.json", "w"
+                folder_predictions / f"predictions_v100l_chunk_{start}_{id_pred}.json",
+                "w",
             ) as f:
                 json.dump(responses, f)
 
-    with open(folder_predictions / f"predictions_v100l_chunk_{start}_{id_pred}.json", "w") as f:
+    with open(
+        folder_predictions / f"predictions_v100l_chunk_{start}_{id_pred}.json", "w"
+    ) as f:
         json.dump(responses, f, indent=2)
 
 
-def extract_fields_from_json(
-    folder_path: Path
-) -> List[Dict]:
+def extract_fields_from_json(folder_path: Path) -> List[Dict]:
     """Aggregates every predictions and true value stored in each json file stored in folder_path with possibility to choose which fields to return
 
     # Arguments
@@ -311,6 +352,7 @@ def extract_fields_from_json(
             data: List[DataoutDict] = json.load(f)
         L.extend(data)
     return L
+
 
 def compute_metrics(
     folder_predictions: Path,
@@ -338,13 +380,11 @@ def compute_metrics(
         login(token=token)
     if folder_out is None:
         folder_out = folder_predictions
-    fields_data = extract_fields_from_json(
-        folder_predictions
-    )
+    fields_data = extract_fields_from_json(folder_predictions)
     data = pd.DataFrame(fields_data)
     # Count number of tokens
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-    data["n_tokens"] = data[input_field].apply(lambda x: len(tokenizer(x)['input_ids']))#type: ignore
+    data["n_tokens"] = data[input_field].apply(lambda x: len(tokenizer(x)["input_ids"]))  # type: ignore
     # Filter by limit of tokens
     data = data.query(
         f"n_tokens < {n_tokens_show_max} & n_tokens >= {n_tokens_show_min}"
@@ -379,7 +419,7 @@ def compute_metrics(
 
     # Compute F1-score
     f1: np.ndarray = f1_score(true, pred, average=None)  # type: ignore
-    data.to_json(folder_out / "data.json",orient="records",indent=4)
+    data.to_json(folder_out / "data.json", orient="records", indent=4)
     with open(folder_out / "metrics.json", "w") as f:
         json.dump(
             {
@@ -392,7 +432,13 @@ def compute_metrics(
             },
             f,
         )
-    possibilities_pred = sorted(list(set(data["pred"].unique().tolist()).union(set(data["true"].unique().tolist()))))
+    possibilities_pred = sorted(
+        list(
+            set(data["pred"].unique().tolist()).union(
+                set(data["true"].unique().tolist())
+            )
+        )
+    )
     id = f"_field_{pred_field}_shown_{n_tokens_show_min}_{n_tokens_show_max}_trunc_{n_tokens_infered_max}"
     plot_confusion(
         conf_matrix=conf_matrix,
@@ -453,7 +499,7 @@ def plot_confusion(
     df_conf_matrix = pd.DataFrame(conf_matrix, index=values, columns=values)
     if backend is not None:
         matplotlib.use("agg")
-    pp_matrix(# type: ignor
+    pp_matrix(  # type: ignor
         df_conf_matrix,
         cmap="coolwarm",
         fz=11,
@@ -501,17 +547,38 @@ def find_representant(
         json.dump({"samples": samples, "mapping": mapping_dict}, f)
     return samples
 
+
 @print_args
 def main_qlora(
-    new_model_name: str, file_examples: Path, folder_out: Path, model_name: str = "meta-llama/Llama-2-13b-chat-hf", token: str = "", field_label: str  = "binary_severity", field_input: str = "llama_tokenized_description",
-               lora_alpha: float = 16, lora_dropout: float = 0.1, lora_r: int = 64, 
-               num_train_epochs: int = 1, tr_bs: int = 4, val_bs: int = 4,
-               optim: str = "paged_adamw_32bit", save_steps: int = 25,
-               logging_steps: int = 25, learning_rate: float = 2e-4, weight_decay: float = 0.001, 
-               fp16: bool = False, bf16: bool = False, max_grad_norm: float = 0.3, max_steps: int = -1, warmup_ratio: float = 0.03,
-               group_by_length: bool = True, lr_scheduler_type: str = "constant", eval_steps: int = 20,
-               train_size: float = 0.3, limit_tokens: int = 7364,
-               ):
+    new_model_name: str,
+    file_examples: Path,
+    folder_out: Path,
+    model_name: str = "meta-llama/Llama-2-13b-chat-hf",
+    token: str = "",
+    field_label: str = "binary_severity",
+    field_input: str = "llama_tokenized_description",
+    lora_alpha: float = 16,
+    lora_dropout: float = 0.1,
+    lora_r: int = 64,
+    num_train_epochs: int = 1,
+    tr_bs: int = 4,
+    val_bs: int = 4,
+    optim: str = "paged_adamw_32bit",
+    save_steps: int = 25,
+    logging_steps: int = 25,
+    learning_rate: float = 2e-4,
+    weight_decay: float = 0.001,
+    fp16: bool = False,
+    bf16: bool = False,
+    max_grad_norm: float = 0.3,
+    max_steps: int = -1,
+    warmup_ratio: float = 0.03,
+    group_by_length: bool = True,
+    lr_scheduler_type: str = "constant",
+    eval_steps: int = 20,
+    train_size: float = 0.3,
+    limit_tokens: int = 7364,
+):
     """
     Perform training and fine-tuning of a model for causal reasoning using LoRA.
     Doc: https://miro.medium.com/v2/resize:fit:4800/format:webp/1*rOW5plKBuMlGgpD0SO8nZA.png
@@ -548,27 +615,24 @@ def main_qlora(
         login(token=token)
     if not folder_out.exists():
         folder_out.mkdir(parents=True)
-    
+
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     double_quant_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_use_double_quant=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype="float16"
+        bnb_4bit_compute_dtype="float16",
     )
-    n_gpus = torch.cuda.device_count() #type: ignore
-    max_memory = f'{32}GB'
     model = AutoModelForCausalLM.from_pretrained(
-        model_name, 
+        model_name,
         quantization_config=double_quant_config,
-        max_memory = {i: max_memory for i in range(n_gpus)},
     )
-    
+
     model.config.use_cache = False
     model.config.pretraining_tp = 1
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
-    peft_config = LoraConfig( #type: ignore
+    peft_config = LoraConfig(  # type: ignore
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
         r=lora_r,
@@ -593,9 +657,9 @@ def main_qlora(
         warmup_ratio=warmup_ratio,
         group_by_length=group_by_length,
         lr_scheduler_type=lr_scheduler_type,
-        report_to="all", #type: ignore
+        report_to="all",  # type: ignore
         evaluation_strategy="steps",
-        eval_steps=eval_steps
+        eval_steps=eval_steps,
     )
     # create datasets
     print("Create datasets")
@@ -609,29 +673,31 @@ def main_qlora(
         template = data_preprocessed["template"]
         L = []
         for d in data[:50]:
-            template["llama_tokenized_template"] = template["llama_tokenized_template"]+["<0x0A>",str(d[field_label])]
+            template["llama_tokenized_template"] = template[
+                "llama_tokenized_template"
+            ] + ["<0x0A>", str(d[field_label])]
             text, tokenized_full_text = build_prompt(
                 template["llama_tokenized_template"],
                 d[field_input],
                 template["template_index_insert"],
                 tokenizer,
-                limit_tokens=limit_tokens
+                limit_tokens=limit_tokens,
             )
-            L.append({**d,"text":text,"tokenized_full_text":tokenized_full_text})
-        idx_tr, idx_val = train_test_split(np.arange(len(L)), train_size=train_size) #type: ignore
+            L.append({**d, "text": text, "tokenized_full_text": tokenized_full_text})
+        idx_tr, idx_val = train_test_split(np.arange(len(L)), train_size=train_size)  # type: ignore
         idx_tr = set(idx_tr)
         idx_val = set(idx_val)
         with open(full_path, "w") as f:
-            json.dump(L,f)
+            json.dump(L, f)
         with open(train_path, "w") as f:
-            json.dump([{"text":e["text"]} for i,e in enumerate(L) if i in idx_tr],f)
+            json.dump([{"text": e["text"]} for i, e in enumerate(L) if i in idx_tr], f)
         with open(valid_path, "w") as f:
-            json.dump([{"text":e["text"]} for i,e in enumerate(L) if i in idx_val],f)
-    train_dataset = load_dataset('json', data_files=str(train_path.resolve()), split="train") #type: ignore
-    valid_dataset = load_dataset('json', data_files=str(valid_path.resolve()), split="train") #type: ignore
+            json.dump([{"text": e["text"]} for i, e in enumerate(L) if i in idx_val], f)
+    train_dataset = load_dataset("json", data_files=str(train_path.resolve()), split="train")  # type: ignore
+    valid_dataset = load_dataset("json", data_files=str(valid_path.resolve()), split="train")  # type: ignore
     # Set supervised fine-tuning parameters
     print("Set supervised fine-tuning parameters")
-    trainer = SFTTrainer( #type: ignore
+    trainer = SFTTrainer(  # type: ignore
         model=model,
         train_dataset=train_dataset,
         eval_dataset=valid_dataset,  # Pass validation dataset here
@@ -645,6 +711,251 @@ def main_qlora(
     trainer.train()
     print("Saving trained QLORA model")
     trainer.model.save_pretrained(new_model_name)
+
+def get_max_tokens_embeddings(model_name:str, min_token_length: int = 0, max_token_length = 5000):
+    """Heavily inspired by get_max_mix"""
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    double_quant_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype="float16",
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_name,
+        quantization_config=double_quant_config,
+        return_dict=True,
+        output_hidden_states=True,
+    )
+    
+    min_token_length += 1 # because start token
+    max_work = 0
+    min_not_work = float("inf")
+
+    while min_token_length < max_token_length:
+        gc.collect()
+        torch.cuda.empty_cache()#type: ignore
+        [t1,t2] = tokenizer("hello")["input_ids"]#type:ignore
+        mid_token_length = (min_token_length + max_token_length) // 2
+        try:
+            tokenized_full_text = [t1]+[t2]*(mid_token_length-1)
+            embeddings = model(torch.tensor([tokenized_full_text], dtype=torch.int32)) #type:ignore
+            del embeddings
+            # If the code above works, update max_work and adjust the search range
+            max_work = mid_token_length
+            min_token_length = mid_token_length + 1
+        except Exception as e:
+            print(e)
+            # If the code above raises an exception, update min_not_work and adjust the search range
+            min_not_work = mid_token_length
+            max_token_length = mid_token_length - 1
+    return (max_work-1, min_not_work-1)
+
+def get_max_tokens_finetuning(model_name:str, min_token_length: int = 0, max_token_length = 5000):
+    """Heavily inspired by get_max_mix"""
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    double_quant_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype="float16",
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        quantization_config=double_quant_config,
+    )
+    model.config.use_cache = False
+    model.config.pretraining_tp = 1
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
+    peft_config = LoraConfig(  # type: ignore
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        r=lora_r,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    # Set training parameters
+    training_arguments = TrainingArguments(
+        output_dir=str(folder_out.resolve()),
+        num_train_epochs=num_train_epochs,
+        per_device_train_batch_size=tr_bs,
+        gradient_accumulation_steps=val_bs,
+        optim=optim,
+        save_steps=save_steps,
+        logging_steps=logging_steps,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        fp16=fp16,
+        bf16=bf16,
+        max_grad_norm=max_grad_norm,
+        max_steps=max_steps,
+        warmup_ratio=warmup_ratio,
+        group_by_length=group_by_length,
+        lr_scheduler_type=lr_scheduler_type,
+        report_to="all",  # type: ignore
+        evaluation_strategy="steps",
+        eval_steps=eval_steps,
+    )
+    
+    min_token_length += 1 # because start token
+    max_work = 0
+    min_not_work = float("inf")
+
+    while min_token_length < max_token_length:
+        gc.collect()
+        torch.cuda.empty_cache()#type: ignore
+        [t1,t2] = tokenizer("hello")["input_ids"]#type:ignore
+        mid_token_length = (min_token_length + max_token_length) // 2
+        try:
+            tokenized_full_text = [t1]+[t2]*(mid_token_length-1)
+            embeddings = model(torch.tensor([tokenized_full_text], dtype=torch.int32)) #type:ignore
+            del embeddings
+            # If the code above works, update max_work and adjust the search range
+            max_work = mid_token_length
+            min_token_length = mid_token_length + 1
+        except Exception as e:
+            print(e)
+            # If the code above raises an exception, update min_not_work and adjust the search range
+            min_not_work = mid_token_length
+            max_token_length = mid_token_length - 1
+    return (max_work-1, min_not_work-1)
+
+@print_args
+def get_llama2_embeddings(
+    model_name: str,
+    path_data_preprocessed: Path,
+    layers_ids: Optional[Tuple[int]] = None,
+    start: int = 0,
+    end: int = -1,
+    limit_tokens: int = 7364,
+    id_pred: str = "",
+):
+    if layers_ids is None:
+        layers_ids = (0,)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    double_quant_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype="float16",
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_name,
+        quantization_config=double_quant_config,
+        return_dict=True,
+        output_hidden_states=True,
+    )
+    with open(path_data_preprocessed) as f:
+        data_preprocessed = json.load(f)
+    data = data_preprocessed["data"]
+    template = data_preprocessed["template"]
+    if end == -1:
+        end = len(data)
+    data = data[start:end]
+    print(f"Running for {start=} {end=}")
+    folder_predictions = path_data_preprocessed.parent / "embeddings"
+    folder_predictions.mkdir(exist_ok=True, parents=True)
+    
+    for idx_layer in layers_ids:
+        with open(
+            folder_predictions / f"embeddings_chunk_{id_pred}_layer_{idx_layer}_{start}.json",
+            "w",
+        ) as f:
+            f.write("")
+    for i, d in tqdm(enumerate(data), total=len(data)):
+        try:
+            del embeddings
+            gc.collect()
+            torch.cuda.empty_cache()  # type: ignore
+        except Exception:
+            pass
+        text = d["description"]
+        tokenized_full_text = tokenizer.encode(text)
+        tokenized_full_text = tokenized_full_text[:limit_tokens]
+        embeddings = model(torch.tensor([tokenized_full_text], dtype=torch.int32))  # type: ignore
+        for idx_layer in layers_ids:
+            with open(
+                folder_predictions / f"embeddings_chunk_{id_pred}_layer_{idx_layer}_{start}.json",
+                "a",
+            ) as f:
+                f.write(str({
+                    **d,
+                    "layer_id":idx_layer,
+                    "hidden_state":embeddings.hidden_states[idx_layer].tolist()[0],
+                    "text":text,
+                    "tokenized": tokenizer.convert_ids_to_tokens(tokenized_full_text)
+                    })+",\n")
+
+
+def train_embeddings_fnn(
+    folder_embeddings: Path,
+    layer_id: int,
+    pooling_op: Literal["max", "avg", "sum"],
+    id_pred: str = "",
+):
+    # create train and valid datasets
+    data = []
+    for f_path in folder_embeddings.rglob("*.json"):
+        with open(f_path) as f:
+            data.extend(json.load(f))
+    pooling = lambda x: x
+    if pooling_op == "max":
+        pooling = lambda x: np.max(x, axis=0)
+    elif pooling_op == "avg":
+        pooling = lambda x: np.mean(x, axis=0)
+    elif pooling_op == "sum":
+        pooling = lambda x: np.sum(x, axis=0)
+    else:
+        raise ValueError(f"{pooling_op} is not a valid pooling operation (max,avg,sum)")
+    for d in data:
+        d["input"] = pooling(d["layers"][layer_id])
+    n = data[0]["input"].shape[0]
+    # split tr and valid
+    data_tr, data_val = train_test_split(data, train_size=train_size)  # type: ignore
+    # Extract input vectors and target values
+    x_train = torch.Tensor([sample["input"] for sample in data_tr])
+    y_train = torch.Tensor([sample["binary_severity"] for sample in data_tr])
+
+    x_val = torch.Tensor([sample["input"] for sample in data_val])
+    y_val = torch.Tensor([sample["binary_severity"] for sample in data_val])
+    # create the model# Define a simple neural network
+    model = nn.Sequential(
+        nn.Linear(n, 64),  # Assuming n is the size of your input vectors
+        nn.ReLU(),
+        nn.Linear(64, 1),
+        nn.Sigmoid(),
+    )
+    # Define loss function and optimizer
+    criterion = nn.BCELoss()  # Binary Cross-Entropy Loss
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+    # Training loop
+    for epoch in range(1):  # Adjust the number of epochs as needed
+        optimizer.zero_grad()
+        outputs = model(x_train)
+        loss = criterion(outputs, y_train)
+        loss.backward()
+        optimizer.step()
+
+    # Validation
+    with torch.no_grad():
+        val_outputs = model(x_val)
+        val_predictions = (val_outputs >= 0.5).float()
+        accuracy = (val_predictions == y_val).sum().item() / len(y_val)
+        print(f"Validation Accuracy: {accuracy:.2f}")
+    responses = []
+    for d, answer in zip(data_val, val_outputs.tolist()):
+        responses.append(
+            {
+                **d,
+                "answer": answer,
+                f"severity_pred{id_pred}": answer,
+                f"input{id_pred}": d["input"],
+            }
+        )
+
 
 class DataoutDict(TypedDict):
     bug_id: str
@@ -667,8 +978,11 @@ if __name__ == "__main__":
     algorithms_choices = [
         "inference",
         "max_tokens",
+        "max_tokens2",
         "compute_metrics",
         "finetune",
+        "embeddings_gen",
+        "embeddings_max_tokens"
     ]
     parser.add_argument(
         "-path_data_json",
@@ -711,19 +1025,31 @@ if __name__ == "__main__":
         "-seed_end", type=int, help="Seed end for inference (included)", default=-1
     )
     parser.add_argument(
-        "-pred_field", type=str, help="Predicted field to use", default="severity_pred_trunc"
+        "-pred_field",
+        type=str,
+        help="Predicted field to use",
+        default="severity_pred_trunc",
     )
     parser.add_argument(
         "-input_field", type=str, help="Predicted field to use", default="description"
     )
     parser.add_argument(
-        "-n_tokens_infered_max", type=int, help="Number of maximum infered tokens", default=7364
+        "-n_tokens_infered_max",
+        type=int,
+        help="Number of maximum infered tokens",
+        default=7364,
     )
     parser.add_argument(
-        "-n_tokens_show_min", type=int, help="Maximum number of tokens tokens in the statistics", default=0
+        "-n_tokens_show_min",
+        type=int,
+        help="Maximum number of tokens tokens in the statistics",
+        default=0,
     )
     parser.add_argument(
-        "-n_tokens_show_max", type=int, help="Minimum number of tokens shown in the statistics", default=7364
+        "-n_tokens_show_max",
+        type=int,
+        help="Minimum number of tokens shown in the statistics",
+        default=7364,
     )
     parser.add_argument(
         "-n_data", type=int, help="Total number of data in the dataset", default=22302
@@ -732,19 +1058,40 @@ if __name__ == "__main__":
         "-id", type=str, help="Id to put on the files to save", default="_trunc"
     )
     parser.add_argument(
-        "-model_name", type=str, help="Name of the huggingface model to use", default="meta-llama/Llama-2-13b-chat-hf"
+        "-model_name",
+        type=str,
+        help="Name of the huggingface model to use",
+        default="meta-llama/Llama-2-13b-chat-hf",
     )
     parser.add_argument(
-        "-new_model_name", type=str, help="Name of the huggingface model to use", default="meta-llama/Finetune-Llama-2-13b-chat-hf"
+        "-new_model_name",
+        type=str,
+        help="Name of the huggingface model to use",
+        default="meta-llama/Finetune-Llama-2-13b-chat-hf",
     )
     parser.add_argument(
-        "-qlora_alpha", type=float, help="Ponderation of the QLORA finetuning", default=8
+        "-qlora_alpha",
+        type=float,
+        help="Ponderation of the QLORA finetuning",
+        default=8,
     )
     parser.add_argument(
-        "-qlora_dropout", type=str, help="Dropout applied to the QLORA finetuning", default=0.1
+        "-qlora_dropout",
+        type=float,
+        help="Dropout applied to the QLORA finetuning",
+        default=0.1,
     )
     parser.add_argument(
-        "-qlora_r", type=str, help="Rank of the matrices of the QLORA finetuning", default=8
+        "-qlora_r",
+        type=int,
+        help="Rank of the matrices of the QLORA finetuning",
+        default=8,
+    )
+    parser.add_argument(
+        "-layers_ids",
+        type=str,
+        help="Layers ids for the embedding to take",
+        default="(0,)",
     )
     args = parser.parse_args()
     print(args)
@@ -769,6 +1116,7 @@ if __name__ == "__main__":
         get_max_tokens(
             args.path_data_json, token=args.token, start=seed_start, end=seed_end
         )
+
     elif args.algorithm == "inference":
         main_inference(
             args.path_data_json,
@@ -777,10 +1125,10 @@ if __name__ == "__main__":
             end=seed_end,
             model_name=args.model_name,
             id_pred=args.id,
-            limit_tokens=args.n_tokens_infered_max
+            limit_tokens=args.n_tokens_infered_max,
         )
     elif args.algorithm == "compute_metrics":
-        path_out = args.path_data_folder / f"out_{args.pred_field}"
+        path_out = args.path_data_folder / f"out_{args.pred_field}{args.id}"
         path_out.mkdir(parents=True, exist_ok=True)
         compute_metrics(
             args.path_data_folder,
@@ -794,7 +1142,7 @@ if __name__ == "__main__":
         )
     elif args.algorithm == "finetune":
         path_out = args.path_data_folder / f"qlora_finetune_{args.id}"
-        path_out.mkdir(parents=True,exist_ok=True)
+        path_out.mkdir(parents=True, exist_ok=True)
         main_qlora(
             model_name=args.model_name,
             file_examples=args.path_data_json,
@@ -806,5 +1154,45 @@ if __name__ == "__main__":
             lora_alpha=args.qlora_alpha,
             lora_dropout=args.qlora_dropout,
             lora_r=args.qlora_r,
-            limit_tokens=args.n_tokens_infered_max
+            limit_tokens=args.n_tokens_infered_max,
         )
+    elif args.algorithm == "max_tokens2":
+        tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=True)
+        double_quant_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype="float16",
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_name,
+            quantization_config=double_quant_config,
+        )
+        pipeline = transformers.pipeline(
+            "text-generation", model=model, tokenizer=tokenizer, device_map="auto"
+        )
+        (max_work, min_not_work) = cpy_get_max_mix(
+            min_token_length=147,
+            max_token_length=7364,
+            tokenizer=tokenizer,
+            pipeline=pipeline,
+        )
+        print(f"{max_work=},{min_not_work=}")
+
+    elif args.algorithm == "embeddings_gen":
+        layers_ids = eval(args.layers_ids)
+        get_llama2_embeddings(
+            model_name=args.model_name,
+            path_data_preprocessed=args.path_data_json,
+            layers_ids=layers_ids,
+            start=seed_start,
+            end=seed_end,
+            id_pred=args.id,
+            limit_tokens=args.n_tokens_infered_max,
+        )
+    elif args.algorithm == "embeddings_max_tokens":
+        (max_work, min_not_work) = get_max_tokens_embeddings(args.model_name,0,7000)
+        print(f"{max_work=},{min_not_work=}")
+    elif args.algorithm == "nn_embedding":
+        pass
+        
