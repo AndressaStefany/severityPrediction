@@ -96,7 +96,7 @@ def get_tokens(data, tokenizer):
         Ltokens.append(n_tokens)
     return Ltokens
 
-def generate_text_with_n_tokens(n: int, base_text: str = "hello") -> List[int]:
+def generate_text_with_n_tokens(tokenizer, n: int, base_text: str = "hello") -> List[int]:
     gc.collect()
     torch.cuda.empty_cache()#type: ignore
     [t1,t2] = tokenizer(base_text)["input_ids"]#type:ignore
@@ -115,17 +115,17 @@ class PipelineMaxTokens(MaxTokensEvaluator):
         super().__init__()
         self.tokenizer, model = initialize_model_inference(model_name, token=token) #type: ignore
         self.pipeline = trf.pipeline(
-            "text-generation", model=model, tokenizer=tokenizer, device_map="auto"
+            "text-generation", model=model, tokenizer=self.tokenizer, device_map="auto"
         )
     def eval(self, n_tokens: int):
-        token_ids = generate_text_with_n_tokens(n_tokens)
+        token_ids = generate_text_with_n_tokens(self.tokenizer, n_tokens)
         text = self.tokenizer.decode(token_ids[1:]) # 1: to remove the start token
-        [answer] = pipeline( #type: ignore
+        [answer] = self.pipeline( #type: ignore
                 text,
                 do_sample=True,
                 top_k=1,
                 num_return_sequences=1,
-                eos_token_id=tokenizer.eos_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
                 max_length=1024,
         )
         del answer
@@ -135,19 +135,20 @@ class PipelineMaxTokens(MaxTokensEvaluator):
 class EmbeddingsMaxTokens(MaxTokensEvaluator):
     def __init__(self, model_name: str, token: str) -> None:
         super().__init__()
-        _, self.model = initialize_model_inference(model_name, token=token, hidden_states=True) #type: ignore
+        self.tokenizer, self.model = initialize_model_inference(model_name, token=token, hidden_states=True) #type: ignore
     def eval(self, n_tokens: int):
-        token_ids = generate_text_with_n_tokens(n_tokens)
+        token_ids = generate_text_with_n_tokens(self.tokenizer, n_tokens)
         embeddings = self.model(torch.tensor([token_ids], dtype=torch.int32)) #type:ignore
         del embeddings
         gc.collect()
         torch.cuda.empty_cache()
 
 class FinetuneMaxTokens(MaxTokensEvaluator):
-    def __init__(self, token: str, max_n_tokens: int, base_file_data: Path, n_samples: int = 100, **kwargs_train) -> None:
+    def __init__(self, model_name: str, token: str, max_n_tokens: int, base_file_data: Path, n_samples: int = 100, **kwargs_train) -> None:
         super().__init__()
-        self.kwargs = {"token":token, **kwargs_train}
-        token_ids = generate_text_with_n_tokens(max_n_tokens)
+        tokenizer = get_tokenizer(token, model_name)
+        self.kwargs = {"model_name": model_name, "token":token, **kwargs_train}
+        token_ids = generate_text_with_n_tokens(tokenizer, max_n_tokens)
         token_names = tokenizer.convert_ids_to_tokens(token_ids)
         with open(base_file_data) as f:
             data_preprocessed = json.load(f)
@@ -209,10 +210,14 @@ def get_max_mix(token_lengths, tokenizer: 'LlamaTokenizer', pipeline: 'trf.Pipel
             max_token_length = mid_token_length - 1
     return (max_work, min_not_work)
 
+def get_tokenizer(token: str, model_name: str) -> 'LlamaTokenizer':
+    huggingface_hub.login(token=token)
+    tokenizer: 'LlamaTokenizer' = trf.AutoTokenizer.from_pretrained(model_name, use_fast=True)#type: ignore
+    return tokenizer
 
 def initialize_model_inference(model_name: str, token: str, return_model: bool = True, hidden_states: bool = False) -> Union[Tuple['LlamaTokenizer', 'LlamaModel'],'LlamaTokenizer']:
     huggingface_hub.login(token=token)
-    tokenizer: 'LlamaTokenizer' = trf.AutoTokenizer.from_pretrained(model_name, use_fast=True)#type: ignore
+    tokenizer = get_tokenizer(token=token, model_name=model_name)
     if return_model:
         double_quant_config = trf.BitsAndBytesConfig(
             load_in_4bit=True,
@@ -702,7 +707,10 @@ def main_qlora(
         trainer.model.save_pretrained(new_model_name)
 
 def get_max_tokens(evaluator: MaxTokensEvaluator, min_token_length: int = 0, max_token_length: int = 5000):
-    """Heavily inspired by get_max_mix"""
+    """
+    The main algorithm comes from get_max_mix. 
+    However dependency injection allows to provide the specific element to evaluate with MaxTokensEvaluator
+    """
     
     min_token_length = max(1,min_token_length) # because start token
     max_work = 0
@@ -780,7 +788,7 @@ class EmbeddingDict(TypedDict, total=False):
     - description: str, the field that has been used to generate the embeddings. Could have been truncated
     - layer_id: int, the id of the layer that have been taken into hidden_representation
     - hidden_state: List, to conver to array or torch Tensor, the actual hidden representation of shape (seq_length, vocab_size)
-    - text: str, the text that has been sent to llama2 before tokenization and limiting the number of tokens
+    - text: str, same field as description, the text that has been sent to llama2 before tokenization and limiting the number of tokens
     - tokenized: List[int], the list of tokens ids after llama2 tokenizer and truncation
     - bug_id: int, the id of the bug
     """
@@ -828,12 +836,12 @@ if __name__ == "__main__":
 
     algorithms_choices = [
         "inference",
-        "max_tokens",
-        "max_tokens2",
+        "max_tokens_pipeline",
+        "max_tokens_embeddings",
+        "max_tokens_finetuning",
         "compute_metrics",
         "finetune",
         "embeddings_gen",
-        "embeddings_max_tokens",
         "nn_embedding"
     ]
     parser.add_argument(
@@ -1021,19 +1029,42 @@ if __name__ == "__main__":
             lora_r=args.qlora_r,
             limit_tokens=args.n_tokens_infered_max,
         )
-    elif args.algorithm == "max_tokens2":
-        tokenizer, model = initialize_model_inference(args.model_name, token=args.token) #type: ignore
-        pipeline = trf.pipeline(
-            "text-generation", model=model, tokenizer=tokenizer, device_map="auto"
-        )
-        (max_work, min_not_work) = cpy_get_max_mix(
-            min_token_length=147,
-            max_token_length=7364,
-            tokenizer=tokenizer,
-            pipeline=pipeline,
+    elif args.algorithm == "max_tokens_pipeline":
+        (max_work, min_not_work) = get_max_tokens(
+            PipelineMaxTokens(
+                model_name=args.model_name,
+                token=args.token
+            ),
+            min_token_length=1,
+            max_token_length=10000
         )
         print(f"{max_work=},{min_not_work=}")
-
+    elif args.algorithm == "max_tokens_embeddings":
+        (max_work, min_not_work) = get_max_tokens(
+            EmbeddingsMaxTokens(
+                model_name=args.model_name,
+                token=args.token
+            ),
+            min_token_length=1,
+            max_token_length=10000
+        )
+        print(f"{max_work=},{min_not_work=}")
+    elif args.algorithm == "max_tokens_finetuning":
+        max_n_tokens = 10000
+        (max_work, min_not_work) = get_max_tokens(
+            FinetuneMaxTokens(
+                model_name=args.model_name,
+                token=args.token,
+                max_n_tokens=max_n_tokens,
+                base_file_data=args.path_data_json,
+                lora_alpha=args.qlora_alpha,
+                lora_dropout=args.qlora_dropout,
+                lora_r=args.qlora_r,
+            ),
+            min_token_length=1,
+            max_token_length=max_n_tokens
+        )
+        print(f"{max_work=},{min_not_work=}")
     elif args.algorithm == "embeddings_gen":
         layers_ids = eval(args.layers_ids)
         get_llama2_embeddings(
@@ -1045,10 +1076,6 @@ if __name__ == "__main__":
             id_pred=args.id,
             limit_tokens=args.n_tokens_infered_max,
         )
-    elif args.algorithm == "embeddings_max_tokens":
-        (max_work, min_not_work) = get_max_tokens_embeddings(args.model_name,0,7000)
-        print(f"{max_work=},{min_not_work=}")
-        
     elif args.algorithm == "nn_embedding":
         folder_embeddings = Path(args.path_data_folder) / "embeddings"
         layer_id: Tuple[int] = eval(args.layers_ids)
