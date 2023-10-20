@@ -9,6 +9,7 @@ import os
 from itertools import product
 from textwrap import wrap
 import argparse
+import abc
 
 # typehint imports
 if TYPE_CHECKING:
@@ -95,33 +96,86 @@ def get_tokens(data, tokenizer):
         Ltokens.append(n_tokens)
     return Ltokens
 
+def generate_text_with_n_tokens(n: int, base_text: str = "hello") -> List[int]:
+    gc.collect()
+    torch.cuda.empty_cache()#type: ignore
+    [t1,t2] = tokenizer(base_text)["input_ids"]#type:ignore
+    if n == 0:
+        return [t1]
+    else:
+        return [t1]+[t2]*(n-1)
+    
+class MaxTokensEvaluator(abc.ABC):
+    @abc.abstractmethod
+    def eval(self, n_tokens: int):
+        pass
 
-def cpy_get_max_mix(min_token_length: int, max_token_length: int, tokenizer: 'LlamaTokenizer', pipeline: 'trf.Pipeline'):
-    max_work = 0
-    min_not_work = float("inf")
-    while min_token_length < max_token_length:
-        gc.collect()
-        torch.cuda.empty_cache()
-        mid_token_length = (min_token_length + max_token_length) // 2
-        text = "hello " * mid_token_length  # Create a test text of the desired length
-        try:
-            [answer] = pipeline( #type: ignore
+class PipelineMaxTokens(MaxTokensEvaluator):
+    def __init__(self, model_name: str, token: str) -> None:
+        super().__init__()
+        self.tokenizer, model = initialize_model_inference(model_name, token=token) #type: ignore
+        self.pipeline = trf.pipeline(
+            "text-generation", model=model, tokenizer=tokenizer, device_map="auto"
+        )
+    def eval(self, n_tokens: int):
+        token_ids = generate_text_with_n_tokens(n_tokens)
+        text = self.tokenizer.decode(token_ids[1:]) # 1: to remove the start token
+        [answer] = pipeline( #type: ignore
                 text,
                 do_sample=True,
                 top_k=1,
                 num_return_sequences=1,
                 eos_token_id=tokenizer.eos_token_id,
                 max_length=1024,
-            )
-            del answer
-            # If the code above works, update max_work and adjust the search range
-            max_work = mid_token_length
-            min_token_length = mid_token_length + 1
-        except Exception as e:
-            # If the code above raises an exception, update min_not_work and adjust the search range
-            min_not_work = mid_token_length
-            max_token_length = mid_token_length - 1
-    return (max_work, min_not_work)
+        )
+        del answer
+        gc.collect()
+        torch.cuda.empty_cache()
+        
+class EmbeddingsMaxTokens(MaxTokensEvaluator):
+    def __init__(self, model_name: str, token: str) -> None:
+        super().__init__()
+        _, self.model = initialize_model_inference(model_name, token=token, hidden_states=True) #type: ignore
+    def eval(self, n_tokens: int):
+        token_ids = generate_text_with_n_tokens(n_tokens)
+        embeddings = self.model(torch.tensor([token_ids], dtype=torch.int32)) #type:ignore
+        del embeddings
+        gc.collect()
+        torch.cuda.empty_cache()
+
+class FinetuneMaxTokens(MaxTokensEvaluator):
+    def __init__(self, token: str, max_n_tokens: int, base_file_data: Path, n_samples: int = 100, **kwargs_train) -> None:
+        super().__init__()
+        self.kwargs = {"token":token, **kwargs_train}
+        token_ids = generate_text_with_n_tokens(max_n_tokens)
+        token_names = tokenizer.convert_ids_to_tokens(token_ids)
+        with open(base_file_data) as f:
+            data_preprocessed = json.load(f)
+        template = data_preprocessed["template"]
+        data_sample = {
+            "llama_tokenized_template":token_names,
+            "binary_severity": 0
+        }
+        with open('./tmp.json', 'w') as f:
+            json.dump(
+            {
+                "template": template,
+                "data": [data_sample for _ in range(n_samples)]
+            }    
+            ,f)
+    def eval(self, n_tokens: int):
+        folder_out = Path("./out_tmp/")
+        if folder_out.exists():
+            folder_out.rmdir()
+        folder_out.mkdir(parents=True,exist_ok=True)
+        main_qlora(
+            Path("./tmp.json"),
+            folder_out=folder_out,
+            field_label="binary_severity",
+            field_input="llama_tokenized_description",
+            limit_tokens=n_tokens,
+            **self.kwargs
+        )
 
 
 def get_max_mix(token_lengths, tokenizer: 'LlamaTokenizer', pipeline: 'trf.Pipeline'):
@@ -679,23 +733,19 @@ def main_qlora(
     if new_model_name == "":
         trainer.model.save_pretrained(new_model_name)
 
-def get_max_tokens_embeddings(model_name:str, min_token_length: int = 0, max_token_length = 5000):
+def get_max_tokens(evaluator: MaxTokensEvaluator, min_token_length: int = 0, max_token_length: int = 5000):
     """Heavily inspired by get_max_mix"""
     
-    
-    min_token_length += 1 # because start token
+    min_token_length = max(1,min_token_length) # because start token
     max_work = 0
     min_not_work = float("inf")
 
     while min_token_length < max_token_length:
         gc.collect()
         torch.cuda.empty_cache()#type: ignore
-        [t1,t2] = tokenizer("hello")["input_ids"]#type:ignore
         mid_token_length = (min_token_length + max_token_length) // 2
         try:
-            tokenized_full_text = [t1]+[t2]*(mid_token_length-1)
-            embeddings = model(torch.tensor([tokenized_full_text], dtype=torch.int32)) #type:ignore
-            del embeddings
+            evaluator.eval(mid_token_length)
             # If the code above works, update max_work and adjust the search range
             max_work = mid_token_length
             min_token_length = mid_token_length + 1
@@ -704,68 +754,7 @@ def get_max_tokens_embeddings(model_name:str, min_token_length: int = 0, max_tok
             # If the code above raises an exception, update min_not_work and adjust the search range
             min_not_work = mid_token_length
             max_token_length = mid_token_length - 1
-    return (max_work-1, min_not_work-1)
-
-def get_max_tokens_finetuning(model_name:str, min_token_length: int = 0, max_token_length = 5000, token: str = ""):
-    """Heavily inspired by get_max_mix"""
-    
-    tokenizer, model = initialize(model_name, token)#type: ignore
-    model.config.use_cache = False
-    model.config.pretraining_tp = 1
-    tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right"
-    peft_config = peft.LoraConfig(  # type: ignore
-        lora_alpha=lora_alpha,
-        lora_dropout=lora_dropout,
-        r=lora_r,
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
-    # Set training parameters
-    training_arguments = trf.TrainingArguments(
-        output_dir=str(folder_out.resolve()),
-        num_train_epochs=num_train_epochs,
-        per_device_train_batch_size=tr_bs,
-        gradient_accumulation_steps=val_bs,
-        optim=optim,
-        save_steps=save_steps,
-        logging_steps=logging_steps,
-        learning_rate=learning_rate,
-        weight_decay=weight_decay,
-        fp16=fp16,
-        bf16=bf16,
-        max_grad_norm=max_grad_norm,
-        max_steps=max_steps,
-        warmup_ratio=warmup_ratio,
-        group_by_length=group_by_length,
-        lr_scheduler_type=lr_scheduler_type,
-        report_to="all",  # type: ignore
-        evaluation_strategy="steps",
-        eval_steps=eval_steps,
-    )
-    
-    min_token_length += 1 # because start token
-    max_work = 0
-    min_not_work = float("inf")
-
-    while min_token_length < max_token_length:
-        gc.collect()
-        torch.cuda.empty_cache()#type: ignore
-        [t1,t2] = tokenizer("hello")["input_ids"]#type:ignore
-        mid_token_length = (min_token_length + max_token_length) // 2
-        try:
-            tokenized_full_text = [t1]+[t2]*(mid_token_length-1)
-            embeddings = model(torch.tensor([tokenized_full_text], dtype=torch.int32)) #type:ignore
-            del embeddings
-            # If the code above works, update max_work and adjust the search range
-            max_work = mid_token_length
-            min_token_length = mid_token_length + 1
-        except Exception as e:
-            print(e)
-            # If the code above raises an exception, update min_not_work and adjust the search range
-            min_not_work = mid_token_length
-            max_token_length = mid_token_length - 1
-    return (max_work-1, min_not_work-1)
+    return (max_work, min_not_work)
 
 @print_args
 def get_llama2_embeddings(
