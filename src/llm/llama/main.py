@@ -637,7 +637,7 @@ def main_qlora(
         data = data_preprocessed["data"]
         template = data_preprocessed["template"]
         L = []
-        for d in data[:50]:
+        for d in data:
             template["llama_tokenized_template"] = template[
                 "llama_tokenized_template"
             ] + ["<0x0A>", str(d[field_label])]
