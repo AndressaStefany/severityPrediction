@@ -156,7 +156,7 @@ def get_max_mix(token_lengths, tokenizer: 'LlamaTokenizer', pipeline: 'trf.Pipel
     return (max_work, min_not_work)
 
 
-def initialize(model_name: str, token: str, return_model: bool = True, hidden_states: bool = False) -> Union[Tuple['LlamaTokenizer', 'LlamaModel'],'LlamaTokenizer']:
+def initialize_model_inference(model_name: str, token: str, return_model: bool = True, hidden_states: bool = False) -> Union[Tuple['LlamaTokenizer', 'LlamaModel'],'LlamaTokenizer']:
     huggingface_hub.login(token=token)
     tokenizer: 'LlamaTokenizer' = trf.AutoTokenizer.from_pretrained(model_name, use_fast=True)#type: ignore
     if return_model:
@@ -242,7 +242,7 @@ def main_inference(
     limit_tokens: int = 7364,
     id_pred: str = "",
 ):
-    tokenizer, model = initialize(model_name,token) #type: ignore
+    tokenizer, model = initialize_model_inference(model_name,token) #type: ignore
     pipeline = trf.pipeline(
         "text-generation", model=model, tokenizer=tokenizer, device_map="auto"
     )
@@ -352,7 +352,7 @@ def compute_metrics(
     # Return
         None
     """
-    tokenizer = initialize(model_name,token,return_model=False) #type: ignore
+    tokenizer = initialize_model_inference(model_name,token,return_model=False) #type: ignore
     if folder_out is None:
         folder_out = folder_predictions
     fields_data = extract_fields_from_json(folder_predictions)
@@ -591,7 +591,7 @@ def main_qlora(
     if not folder_out.exists():
         folder_out.mkdir(parents=True)
 
-    tokenizer, model = initialize(model_name, token) #type: ignore
+    tokenizer, model = initialize_model_inference(model_name, token) #type: ignore
 
     model.config.use_cache = False
     model.config.pretraining_tp = 1
@@ -777,7 +777,7 @@ def get_llama2_embeddings(
 ):
     if layers_ids is None:
         layers_ids = (0,)
-    tokenizer, model = initialize(model_name, token, hidden_states=True)#type: ignore
+    tokenizer, model = initialize_model_inference(model_name, token, hidden_states=True)#type: ignore
     with open(path_data_preprocessed) as f:
         data_preprocessed = json.load(f)
     data = data_preprocessed["data"]
@@ -1063,7 +1063,7 @@ if __name__ == "__main__":
             limit_tokens=args.n_tokens_infered_max,
         )
     elif args.algorithm == "max_tokens2":
-        tokenizer, model = initialize(args.model_name, token=args.token) #type: ignore
+        tokenizer, model = initialize_model_inference(args.model_name, token=args.token) #type: ignore
         pipeline = trf.pipeline(
             "text-generation", model=model, tokenizer=tokenizer, device_map="auto"
         )
