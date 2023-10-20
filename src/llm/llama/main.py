@@ -1,83 +1,60 @@
-from transformers import AutoTokenizer
-import transformers
 
-try:
-    import torch
-    import torch.nn as nn
-    import torch.optim as optim
-    from torch.utils.data import DataLoader, TensorDataset
-except Exception:
-    pass
-from huggingface_hub import login
-
-from nltk.tokenize import word_tokenize
 from pathlib import Path
-import pandas as pd
-
-try:
-    from src.baseline.baseline_functions import *
-except Exception:
-    pass
-try:
-    from rich.progress import track
-except Exception:
-    pass
-try:
-    from peft import LoraConfig, PeftModel
-except Exception:
-    pass
-try:
-    from trl import SFTTrainer
-except Exception:
-    pass
+from typing import *#type: ignore
 import json
-import numpy as np
-import multiprocessing
-from typing import *
 import re
-import matplotlib.pyplot as plt
-import matplotlib
-from sklearn.metrics import (
-    confusion_matrix,
-    accuracy_score,
-    recall_score,
-    f1_score,
-    precision_score,
-)
-from sklearn.model_selection import train_test_split
 import datetime
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    pipeline,
-    BitsAndBytesConfig,
-    TrainingArguments,
-)
-from transformers.modeling_outputs import BaseModelOutputWithPast
 import gc
 import os
-import math
-from tqdm import tqdm
-
-try:
-    from pretty_confusion_matrix import pp_matrix
-except Exception:
-    try:
-        from src.llm.llama.pretty_confusion_matrix import pp_matrix
-    except Exception:
-        pass
 from itertools import product
 from textwrap import wrap
-
-try:
-    from datasets import load_dataset
-except Exception:
-    pass
-try:
-    import shap
-except Exception:
-    pass
 import argparse
+import abc
+
+# typehint imports
+if TYPE_CHECKING:
+    import transformers as trf
+    import torch
+    import huggingface_hub
+    import pandas as pd
+    import numpy as np
+    import peft
+    import trl
+    import matplotlib.pyplot as plt
+    import matplotlib
+    import sklearn.metrics as skMetr
+    import sklearn.model_selection as skMsel
+    import tqdm
+    import datasets
+    LlamaTokenizer = Union[trf.LlamaTokenizer,trf.LlamaTokenizerFast]
+    LlamaModel = trf.LlamaForCausalLM
+
+imports = [
+    "import transformers as trf",
+    "import torch",
+    "import huggingface_hub",
+    "import pandas as pd",
+    "import numpy as np",
+    "import peft",
+    "import trl",
+    "import matplotlib.pyplot as plt",
+    "import matplotlib",
+    "import sklearn.metrics as skMetr",
+    "import sklearn.model_selection as skMsel",
+    "import tqdm",
+    "import datasets",
+]
+for i in imports:
+    try:
+        exec(i)
+    except ImportError:
+        print(f"Import of {i} failed")
+    
+try:
+    from src.baseline.baseline_functions import * #type: ignore
+except Exception:
+    pass
+
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 
@@ -111,7 +88,7 @@ def classify(answer: str) -> int:
 
 def get_tokens(data, tokenizer):
     Ltokens = []
-    for i, d in tqdm(enumerate(data)):
+    for i, d in tqdm.tqdm(enumerate(data)):
         gc.collect()
         torch.cuda.empty_cache()
         text = d["text"]
@@ -119,37 +96,90 @@ def get_tokens(data, tokenizer):
         Ltokens.append(n_tokens)
     return Ltokens
 
+def generate_text_with_n_tokens(tokenizer, n: int, base_text: str = "hello") -> List[int]:
+    gc.collect()
+    torch.cuda.empty_cache()#type: ignore
+    [t1,t2] = tokenizer(base_text)["input_ids"]#type:ignore
+    if n == 0:
+        return [t1]
+    else:
+        return [t1]+[t2]*(n-1)
+    
+class MaxTokensEvaluator(abc.ABC):
+    @abc.abstractmethod
+    def eval(self, n_tokens: int):
+        pass
 
-def cpy_get_max_mix(min_token_length: int, max_token_length: int, tokenizer, pipeline):
-    max_work = 0
-    min_not_work = float("inf")
-
-    while min_token_length < max_token_length:
-        gc.collect()
-        torch.cuda.empty_cache()
-        mid_token_length = (min_token_length + max_token_length) // 2
-        text = "hello " * mid_token_length  # Create a test text of the desired length
-        try:
-            [answer] = pipeline(
+class PipelineMaxTokens(MaxTokensEvaluator):
+    def __init__(self, model_name: str, token: str) -> None:
+        super().__init__()
+        self.tokenizer, model = initialize_model_inference(model_name, token=token) #type: ignore
+        self.pipeline = trf.pipeline(
+            "text-generation", model=model, tokenizer=self.tokenizer, device_map="auto"
+        )
+    def eval(self, n_tokens: int):
+        token_ids = generate_text_with_n_tokens(self.tokenizer, n_tokens)
+        text = self.tokenizer.decode(token_ids[1:]) # 1: to remove the start token
+        [answer] = self.pipeline( #type: ignore
                 text,
                 do_sample=True,
                 top_k=1,
                 num_return_sequences=1,
-                eos_token_id=tokenizer.eos_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
                 max_length=1024,
-            )
-            del answer
-            # If the code above works, update max_work and adjust the search range
-            max_work = mid_token_length
-            min_token_length = mid_token_length + 1
-        except Exception as e:
-            # If the code above raises an exception, update min_not_work and adjust the search range
-            min_not_work = mid_token_length
-            max_token_length = mid_token_length - 1
-    return (max_work, min_not_work)
+        )
+        del answer
+        gc.collect()
+        torch.cuda.empty_cache()
+        
+class EmbeddingsMaxTokens(MaxTokensEvaluator):
+    def __init__(self, model_name: str, token: str) -> None:
+        super().__init__()
+        self.tokenizer, self.model = initialize_model_inference(model_name, token=token, hidden_states=True) #type: ignore
+    def eval(self, n_tokens: int):
+        token_ids = generate_text_with_n_tokens(self.tokenizer, n_tokens)
+        embeddings = self.model(torch.tensor([token_ids], dtype=torch.int32)) #type:ignore
+        del embeddings
+        gc.collect()
+        torch.cuda.empty_cache()
+
+class FinetuneMaxTokens(MaxTokensEvaluator):
+    def __init__(self, model_name: str, token: str, max_n_tokens: int, base_file_data: Path, n_samples: int = 100, **kwargs_train) -> None:
+        super().__init__()
+        tokenizer = get_tokenizer(token, model_name)
+        self.kwargs = {"model_name": model_name, "token":token, **kwargs_train}
+        token_ids = generate_text_with_n_tokens(tokenizer, max_n_tokens)
+        token_names = tokenizer.convert_ids_to_tokens(token_ids)
+        with open(base_file_data) as f:
+            data_preprocessed = json.load(f)
+        template = data_preprocessed["template"]
+        data_sample = {
+            "llama_tokenized_template":token_names,
+            "binary_severity": 0
+        }
+        with open('./tmp.json', 'w') as f:
+            json.dump(
+            {
+                "template": template,
+                "data": [data_sample for _ in range(n_samples)]
+            }    
+            ,f)
+    def eval(self, n_tokens: int):
+        folder_out = Path("./out_tmp/")
+        if folder_out.exists():
+            folder_out.rmdir()
+        folder_out.mkdir(parents=True,exist_ok=True)
+        main_qlora(
+            Path("./tmp.json"),
+            folder_out=folder_out,
+            field_label="binary_severity",
+            field_input="llama_tokenized_description",
+            limit_tokens=n_tokens,
+            **self.kwargs
+        )
 
 
-def get_max_mix(token_lengths, tokenizer, pipeline):
+def get_max_mix(token_lengths, tokenizer: 'LlamaTokenizer', pipeline: 'trf.Pipeline'):
     min_token_length = min(token_lengths)
     max_token_length = max(token_lengths)
 
@@ -162,7 +192,7 @@ def get_max_mix(token_lengths, tokenizer, pipeline):
         mid_token_length = (min_token_length + max_token_length) // 2
         text = "hello " * mid_token_length  # Create a test text of the desired length
         try:
-            [answer] = pipeline(
+            [answer] = pipeline( #type: ignore
                 text,
                 do_sample=True,
                 top_k=1,
@@ -180,47 +210,30 @@ def get_max_mix(token_lengths, tokenizer, pipeline):
             max_token_length = mid_token_length - 1
     return (max_work, min_not_work)
 
+def get_tokenizer(token: str, model_name: str) -> 'LlamaTokenizer':
+    huggingface_hub.login(token=token)
+    tokenizer: 'LlamaTokenizer' = trf.AutoTokenizer.from_pretrained(model_name, use_fast=True)#type: ignore
+    return tokenizer
 
-def get_max_tokens(
-    path_descriptions: Path,
-    model_name: str = "meta-llama/Llama-2-13b-chat-hf",
-    token: str = "",
-    start: int = 0,
-    end: int = -1,
-):
-    print("Start")
-    if token != "":
-        login(token=token)
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-    double_quant_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-    )
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, quantization_config=double_quant_config
-    )
-    pipeline = transformers.pipeline(
-        "text-generation", model=model, tokenizer=tokenizer, device_map="auto"
-    )
-    with open(path_descriptions) as f:
-        data = json.load(f)
-    if end == -1:
-        end = len(data)
-    data = data[start:end]
-
-    token_lengths = get_tokens(data, tokenizer)
-    (max_work, min_not_work) = get_max_mix(token_lengths, tokenizer, pipeline)
-    with open(
-        path_descriptions.parent / f"max_tokens_v100l_chunk_{start}.json", "w"
-    ) as f:
-        json.dump(
-            {
-                "min_not_work": min_not_work,
-                "max_work": max_work,
-                "number_of_tokens": token_lengths,
-            },
-            f,
+def initialize_model_inference(model_name: str, token: str, return_model: bool = True, hidden_states: bool = False) -> Union[Tuple['LlamaTokenizer', 'LlamaModel'],'LlamaTokenizer']:
+    huggingface_hub.login(token=token)
+    tokenizer = get_tokenizer(token=token, model_name=model_name)
+    if return_model:
+        double_quant_config = trf.BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype="float16",
         )
+        model = trf.AutoModelForCausalLM.from_pretrained(
+            args.model_name,
+            quantization_config=double_quant_config,
+            return_dict=hidden_states,
+            output_hidden_states=hidden_states,
+        )
+        return tokenizer, model
+    else:
+        return tokenizer
 
 
 def build_prompt(
@@ -257,18 +270,8 @@ def main_inference(
     limit_tokens: int = 7364,
     id_pred: str = "",
 ):
-    if token != "":
-        login(token=token)
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-    double_quant_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_type=torch.float16,
-    )
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, quantization_config=double_quant_config
-    )
-    pipeline = transformers.pipeline(
+    tokenizer, model = initialize_model_inference(model_name,token) #type: ignore
+    pipeline = trf.pipeline(
         "text-generation", model=model, tokenizer=tokenizer, device_map="auto"
     )
     with open(path_data_preprocessed) as f:
@@ -283,7 +286,7 @@ def main_inference(
     folder_predictions.mkdir(exist_ok=True, parents=True)
     with open(folder_predictions / f"metadata.meta", "w") as f:
         json.dump({"data_path": str(path_data_preprocessed.resolve())}, f, indent=2)
-    for i, d in tqdm(enumerate(data), total=len(data)):
+    for i, d in tqdm.tqdm(enumerate(data), total=len(data)):
         # gc.collect()
         # torch.cuda.empty_cache()  # type: ignore
         answer = float("nan")
@@ -356,6 +359,7 @@ def extract_fields_from_json(folder_path: Path) -> List[Dict]:
 
 def compute_metrics(
     folder_predictions: Path,
+    path_backup_fields: Path,
     folder_out: Optional[Path] = None,
     input_field: str = "input",
     pred_field: str = "severity_pred",
@@ -364,7 +368,7 @@ def compute_metrics(
     n_tokens_show_max: int = 7364,
     n_tokens_show_min: int = 0,
     model_name: str = "meta-llama/Llama-2-13b-chat-hf",
-    token: str = "",
+    token: str = ""
 ):
     """Taking the path of the predictions folder, it computes the statistics with the predictions (confusion matrix, precision, recall, f1-score). The confusion matrix is plotted into a png file
 
@@ -372,18 +376,24 @@ def compute_metrics(
         - folder_predictions: Path, path to the folder where the prediction files are stored
         - folder_out: Path, path to the folder where the statistics will be stored
         - mapping_dict: Optional[Dict], mapping from possible values predicted to name (str or int), default {-2:"Too big query", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"} and -2 replaces all nan
-
+        - path_backup_fields: path to a file where the missing required fields are put. Must contain bug_id to join with the current data
     # Return
         None
     """
-    if token != "":
-        login(token=token)
+    tokenizer = initialize_model_inference(model_name,token,return_model=False) #type: ignore
     if folder_out is None:
         folder_out = folder_predictions
     fields_data = extract_fields_from_json(folder_predictions)
     data = pd.DataFrame(fields_data)
+    # Remove duplicates by bug_id
+    data.drop_duplicates(subset="bug_id",inplace=True)
+    if 'binary_severity' not in data.columns:
+        df_bs = pd.read_json(path_backup_fields)
+        # check that we have the same bug_ids in the two dataframes
+        assert len(data[data['bug_id'].isin(df_bs)]) == len(data), "Expecting to have all bug_ids of predictions in the backup file"
+        data = data.merge(df_bs[['bug_id', 'binary_severity']], on='bug_id', how='left')
+    data.to_json(folder_out / "data.json", orient="records", indent=4)
     # Count number of tokens
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     data["n_tokens"] = data[input_field].apply(lambda x: len(tokenizer(x)["input_ids"]))  # type: ignore
     # Filter by limit of tokens
     data = data.query(
@@ -408,26 +418,15 @@ def compute_metrics(
     true = np.array(data["true"])
     pred = np.array(data["pred"])
     # Compute the confusion matrix
-    conf_matrix = confusion_matrix(true, pred)
-    # Compute accuracy
-    accuracy = accuracy_score(true, pred)
-    # Compute precision
-    precision: np.ndarray = precision_score(true, pred, average=None)  # type: ignore
-
-    # Compute recall
-    recall: np.ndarray = recall_score(true, pred, average=None)  # type: ignore
+    conf_matrix = skMetr.confusion_matrix(true, pred)
 
     # Compute F1-score
-    f1: np.ndarray = f1_score(true, pred, average=None)  # type: ignore
-    data.to_json(folder_out / "data.json", orient="records", indent=4)
+    f1: 'np.ndarray' = skMetr.f1_score(true, pred, average=None)  # type: ignore
     with open(folder_out / "metrics.json", "w") as f:
         json.dump(
             {
                 "date_timestamp": datetime.datetime.now().timestamp(),
                 "confusion_matrix": conf_matrix.tolist(),
-                "accuracy": accuracy,
-                "precision": precision.tolist(),
-                "recall": recall.tolist(),
                 "f1": f1.tolist(),
             },
             f,
@@ -460,7 +459,7 @@ def compute_metrics(
 
 
 def plot_confusion(
-    conf_matrix: np.ndarray,
+    conf_matrix: 'np.ndarray',
     folder_path: Optional[Path] = None,
     mapping_dict: Optional[Dict] = None,
     unique_values: Optional[List] = None,
@@ -476,7 +475,7 @@ def plot_confusion(
     Doc of MATLAB inspired confusion matrix plotted here: https://www.mathworks.com/help/deeplearning/ref/plotconfusion.html;jsessionid=7052c44c75f9529f74ccd8187446
 
     # Arguments
-        - conf_matrix: np.ndarray, confusion matrix
+        - conf_matrix: 'np.ndarray', confusion matrix
         - folder_path: Path, path to the folder where the plot will be saved
         - mapping_dict: Optional[Dict], mapping from possible values predicted to name (str or int), default {-2, "Too big query", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"} and -2 replaces all nan
         - unique_values: Optional[List], list of possible values default [-2, -1, 0, 1]
@@ -499,6 +498,10 @@ def plot_confusion(
     df_conf_matrix = pd.DataFrame(conf_matrix, index=values, columns=values)
     if backend is not None:
         matplotlib.use("agg")
+    try:
+        from pretty_confusion_matrix import pp_matrix
+    except Exception:
+        from src.llm.llama.pretty_confusion_matrix import pp_matrix
     pp_matrix(  # type: ignor
         df_conf_matrix,
         cmap="coolwarm",
@@ -523,7 +526,7 @@ def custom_encoder(obj):
 
 
 def find_representant(
-    df: pd.DataFrame, path_out: Path, mapping_dict: Dict, n_samples: int = 5
+    df: 'pd.DataFrame', path_out: Path, mapping_dict: Dict, n_samples: int = 5
 ):
     """Find representants for each cell of the confusion matrix
 
@@ -550,7 +553,6 @@ def find_representant(
 
 @print_args
 def main_qlora(
-    new_model_name: str,
     file_examples: Path,
     folder_out: Path,
     model_name: str = "meta-llama/Llama-2-13b-chat-hf",
@@ -578,6 +580,7 @@ def main_qlora(
     eval_steps: int = 20,
     train_size: float = 0.3,
     limit_tokens: int = 7364,
+    new_model_name: str = "",
 ):
     """
     Perform training and fine-tuning of a model for causal reasoning using LoRA.
@@ -612,21 +615,11 @@ def main_qlora(
     """
     print("main_qlora")
     if token != "":
-        login(token=token)
+        huggingface_hub.login(token=token)
     if not folder_out.exists():
         folder_out.mkdir(parents=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-    double_quant_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype="float16",
-    )
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        quantization_config=double_quant_config,
-    )
+    tokenizer, model = initialize_model_inference(model_name, token) #type: ignore
 
     model.config.use_cache = False
     model.config.pretraining_tp = 1
@@ -640,7 +633,7 @@ def main_qlora(
         task_type="CAUSAL_LM",
     )
     # Set training parameters
-    training_arguments = TrainingArguments(
+    training_arguments = trf.TrainingArguments(
         output_dir=str(folder_out.resolve()),
         num_train_epochs=num_train_epochs,
         per_device_train_batch_size=tr_bs,
@@ -672,7 +665,7 @@ def main_qlora(
         data = data_preprocessed["data"]
         template = data_preprocessed["template"]
         L = []
-        for d in data[:50]:
+        for d in data:
             template["llama_tokenized_template"] = template[
                 "llama_tokenized_template"
             ] + ["<0x0A>", str(d[field_label])]
@@ -693,14 +686,14 @@ def main_qlora(
             json.dump([{"text": e["text"]} for i, e in enumerate(L) if i in idx_tr], f)
         with open(valid_path, "w") as f:
             json.dump([{"text": e["text"]} for i, e in enumerate(L) if i in idx_val], f)
-    train_dataset = load_dataset("json", data_files=str(train_path.resolve()), split="train")  # type: ignore
-    valid_dataset = load_dataset("json", data_files=str(valid_path.resolve()), split="train")  # type: ignore
+    train_dataset = datasets.load_dataset("json", data_files=str(train_path.resolve()), split="train")  # type: ignore
+    valid_dataset = datasets.load_dataset("json", data_files=str(valid_path.resolve()), split="train")  # type: ignore
     # Set supervised fine-tuning parameters
     print("Set supervised fine-tuning parameters")
-    trainer = SFTTrainer(  # type: ignore
+    trainer = trl.SFTTrainer(  # type: ignore
         model=model,
-        train_dataset=train_dataset,
-        eval_dataset=valid_dataset,  # Pass validation dataset here
+        train_dataset=train_dataset,  #type: ignore
+        eval_dataset=valid_dataset,  #type: ignore
         peft_config=peft_config,
         dataset_text_field="text",
         tokenizer=tokenizer,
@@ -710,37 +703,25 @@ def main_qlora(
     print("Starting training QLORA")
     trainer.train()
     print("Saving trained QLORA model")
-    trainer.model.save_pretrained(new_model_name)
+    if new_model_name == "":
+        trainer.model.save_pretrained(new_model_name)
 
-def get_max_tokens_embeddings(model_name:str, min_token_length: int = 0, max_token_length = 5000):
-    """Heavily inspired by get_max_mix"""
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-    double_quant_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype="float16",
-    )
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_name,
-        quantization_config=double_quant_config,
-        return_dict=True,
-        output_hidden_states=True,
-    )
+def get_max_tokens(evaluator: MaxTokensEvaluator, min_token_length: int = 0, max_token_length: int = 5000):
+    """
+    The main algorithm comes from get_max_mix. 
+    However dependency injection allows to provide the specific element to evaluate with MaxTokensEvaluator
+    """
     
-    min_token_length += 1 # because start token
+    min_token_length = max(1,min_token_length) # because start token
     max_work = 0
     min_not_work = float("inf")
 
     while min_token_length < max_token_length:
         gc.collect()
         torch.cuda.empty_cache()#type: ignore
-        [t1,t2] = tokenizer("hello")["input_ids"]#type:ignore
         mid_token_length = (min_token_length + max_token_length) // 2
         try:
-            tokenized_full_text = [t1]+[t2]*(mid_token_length-1)
-            embeddings = model(torch.tensor([tokenized_full_text], dtype=torch.int32)) #type:ignore
-            del embeddings
+            evaluator.eval(mid_token_length)
             # If the code above works, update max_work and adjust the search range
             max_work = mid_token_length
             min_token_length = mid_token_length + 1
@@ -749,78 +730,7 @@ def get_max_tokens_embeddings(model_name:str, min_token_length: int = 0, max_tok
             # If the code above raises an exception, update min_not_work and adjust the search range
             min_not_work = mid_token_length
             max_token_length = mid_token_length - 1
-    return (max_work-1, min_not_work-1)
-
-def get_max_tokens_finetuning(model_name:str, min_token_length: int = 0, max_token_length = 5000):
-    """Heavily inspired by get_max_mix"""
-    
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-    double_quant_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype="float16",
-    )
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        quantization_config=double_quant_config,
-    )
-    model.config.use_cache = False
-    model.config.pretraining_tp = 1
-    tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right"
-    peft_config = LoraConfig(  # type: ignore
-        lora_alpha=lora_alpha,
-        lora_dropout=lora_dropout,
-        r=lora_r,
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
-    # Set training parameters
-    training_arguments = TrainingArguments(
-        output_dir=str(folder_out.resolve()),
-        num_train_epochs=num_train_epochs,
-        per_device_train_batch_size=tr_bs,
-        gradient_accumulation_steps=val_bs,
-        optim=optim,
-        save_steps=save_steps,
-        logging_steps=logging_steps,
-        learning_rate=learning_rate,
-        weight_decay=weight_decay,
-        fp16=fp16,
-        bf16=bf16,
-        max_grad_norm=max_grad_norm,
-        max_steps=max_steps,
-        warmup_ratio=warmup_ratio,
-        group_by_length=group_by_length,
-        lr_scheduler_type=lr_scheduler_type,
-        report_to="all",  # type: ignore
-        evaluation_strategy="steps",
-        eval_steps=eval_steps,
-    )
-    
-    min_token_length += 1 # because start token
-    max_work = 0
-    min_not_work = float("inf")
-
-    while min_token_length < max_token_length:
-        gc.collect()
-        torch.cuda.empty_cache()#type: ignore
-        [t1,t2] = tokenizer("hello")["input_ids"]#type:ignore
-        mid_token_length = (min_token_length + max_token_length) // 2
-        try:
-            tokenized_full_text = [t1]+[t2]*(mid_token_length-1)
-            embeddings = model(torch.tensor([tokenized_full_text], dtype=torch.int32)) #type:ignore
-            del embeddings
-            # If the code above works, update max_work and adjust the search range
-            max_work = mid_token_length
-            min_token_length = mid_token_length + 1
-        except Exception as e:
-            print(e)
-            # If the code above raises an exception, update min_not_work and adjust the search range
-            min_not_work = mid_token_length
-            max_token_length = mid_token_length - 1
-    return (max_work-1, min_not_work-1)
+    return (max_work, min_not_work)
 
 @print_args
 def get_llama2_embeddings(
@@ -834,23 +744,10 @@ def get_llama2_embeddings(
 ):
     if layers_ids is None:
         layers_ids = (0,)
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-    double_quant_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype="float16",
-    )
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_name,
-        quantization_config=double_quant_config,
-        return_dict=True,
-        output_hidden_states=True,
-    )
+    tokenizer, model = initialize_model_inference(model_name, token, hidden_states=True)#type: ignore
     with open(path_data_preprocessed) as f:
         data_preprocessed = json.load(f)
     data = data_preprocessed["data"]
-    template = data_preprocessed["template"]
     if end == -1:
         end = len(data)
     data = data[start:end]
@@ -864,13 +761,7 @@ def get_llama2_embeddings(
             "w",
         ) as f:
             f.write("")
-    for i, d in tqdm(enumerate(data), total=len(data)):
-        try:
-            del embeddings
-            gc.collect()
-            torch.cuda.empty_cache()  # type: ignore
-        except Exception:
-            pass
+    for i, d in tqdm.tqdm(enumerate(data), total=len(data)):
         text = d["description"]
         tokenized_full_text = tokenizer.encode(text)
         tokenized_full_text = tokenized_full_text[:limit_tokens]
@@ -887,6 +778,9 @@ def get_llama2_embeddings(
                     "text":text,
                     "tokenized": tokenizer.convert_ids_to_tokens(tokenized_full_text)
                     })+",\n")
+        del embeddings
+        gc.collect()
+        torch.cuda.empty_cache()  # type: ignore
 
 
 class EmbeddingDict(TypedDict, total=False):
@@ -894,7 +788,7 @@ class EmbeddingDict(TypedDict, total=False):
     - description: str, the field that has been used to generate the embeddings. Could have been truncated
     - layer_id: int, the id of the layer that have been taken into hidden_representation
     - hidden_state: List, to conver to array or torch Tensor, the actual hidden representation of shape (seq_length, vocab_size)
-    - text: str, the text that has been sent to llama2 before tokenization and limiting the number of tokens
+    - text: str, same field as description, the text that has been sent to llama2 before tokenization and limiting the number of tokens
     - tokenized: List[int], the list of tokens ids after llama2 tokenizer and truncation
     - bug_id: int, the id of the bug
     """
@@ -907,21 +801,19 @@ class EmbeddingDict(TypedDict, total=False):
 
 
     
-def get_data_embeddings(folder_embeddings: Path, layer_id: int = -1, base_name: str = "embeddings_chunk__trunc_") -> Generator[EmbeddingDict,None,None]:
+def get_data_embeddings(folder_embeddings: Path, layer_id: int = -1, base_name: str = "embeddings_chunk__trunc_") -> Generator[EmbeddingDict, None, None]:
     sorted_path = list(folder_embeddings.rglob(f"{base_name}layer_{layer_id}_*.json"))
     sorted_path = sorted(sorted_path,key=lambda x:int(x.name.split(".")[0].split("_")[-1]))
     for p in sorted_path:
         print("Reading ",p)
         with open(p, 'r') as json_file:
-            for line in json_file:
+            for i,(line) in enumerate(json_file):
                 # Load and process each line as JSON data.
                 try:
                     data = eval(line[:-2]) #-2 to remove the coma and the back to line
-                    # Now you can work with the JSON data.
                     yield data
                 except json.JSONDecodeError as e:
                     print(f"Error decoding JSON: {e}")
-        
     
 
 class DataoutDict(TypedDict):
@@ -944,12 +836,12 @@ if __name__ == "__main__":
 
     algorithms_choices = [
         "inference",
-        "max_tokens",
-        "max_tokens2",
+        "max_tokens_pipeline",
+        "max_tokens_embeddings",
+        "max_tokens_finetuning",
         "compute_metrics",
         "finetune",
         "embeddings_gen",
-        "embeddings_max_tokens",
         "nn_embedding"
     ]
     parser.add_argument(
@@ -1067,6 +959,12 @@ if __name__ == "__main__":
         help="Base name of the json file with the layer id for get_data_embeddings (ex: embeddings_chunk__trunc_layer_-1_4460.json will give embeddings_chunk__trunc_)",
         default="(0,)",
     )
+    parser.add_argument(
+        "-path_backup_fields",
+        type=str,
+        help="Allow to add the missing field of binary_severity based on the bug_id common field. Relative path to the data path",
+        default="llm/data_preprocessed_tokens.json",
+    )
     args = parser.parse_args()
     print(args)
     n_data = args.n_data
@@ -1106,6 +1004,7 @@ if __name__ == "__main__":
         path_out.mkdir(parents=True, exist_ok=True)
         compute_metrics(
             args.path_data_folder,
+            args.path_data_folder / args.path_backup_fields,
             path_out,
             pred_field=args.pred_field,
             input_field=args.input_field,
@@ -1130,29 +1029,42 @@ if __name__ == "__main__":
             lora_r=args.qlora_r,
             limit_tokens=args.n_tokens_infered_max,
         )
-    elif args.algorithm == "max_tokens2":
-        tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=True)
-        double_quant_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype="float16",
-        )
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model_name,
-            quantization_config=double_quant_config,
-        )
-        pipeline = transformers.pipeline(
-            "text-generation", model=model, tokenizer=tokenizer, device_map="auto"
-        )
-        (max_work, min_not_work) = cpy_get_max_mix(
-            min_token_length=147,
-            max_token_length=7364,
-            tokenizer=tokenizer,
-            pipeline=pipeline,
+    elif args.algorithm == "max_tokens_pipeline":
+        (max_work, min_not_work) = get_max_tokens(
+            PipelineMaxTokens(
+                model_name=args.model_name,
+                token=args.token
+            ),
+            min_token_length=1,
+            max_token_length=10000
         )
         print(f"{max_work=},{min_not_work=}")
-
+    elif args.algorithm == "max_tokens_embeddings":
+        (max_work, min_not_work) = get_max_tokens(
+            EmbeddingsMaxTokens(
+                model_name=args.model_name,
+                token=args.token
+            ),
+            min_token_length=1,
+            max_token_length=10000
+        )
+        print(f"{max_work=},{min_not_work=}")
+    elif args.algorithm == "max_tokens_finetuning":
+        max_n_tokens = 10000
+        (max_work, min_not_work) = get_max_tokens(
+            FinetuneMaxTokens(
+                model_name=args.model_name,
+                token=args.token,
+                max_n_tokens=max_n_tokens,
+                base_file_data=args.path_data_json,
+                lora_alpha=args.qlora_alpha,
+                lora_dropout=args.qlora_dropout,
+                lora_r=args.qlora_r,
+            ),
+            min_token_length=1,
+            max_token_length=max_n_tokens
+        )
+        print(f"{max_work=},{min_not_work=}")
     elif args.algorithm == "embeddings_gen":
         layers_ids = eval(args.layers_ids)
         get_llama2_embeddings(
@@ -1164,20 +1076,19 @@ if __name__ == "__main__":
             id_pred=args.id,
             limit_tokens=args.n_tokens_infered_max,
         )
-    elif args.algorithm == "embeddings_max_tokens":
-        (max_work, min_not_work) = get_max_tokens_embeddings(args.model_name,0,7000)
-        print(f"{max_work=},{min_not_work=}")
-        
     elif args.algorithm == "nn_embedding":
         folder_embeddings = Path(args.path_data_folder) / "embeddings"
         layer_id: Tuple[int] = eval(args.layers_ids)
         if len(layer_id) > 1:
             raise ValueError(f"Expecting just one layer id not {len(layer_id)}")
-        for i,d in enumerate(get_data_embeddings(
+        print(args.algorithm)
+        for d in get_data_embeddings(
             folder_embeddings=folder_embeddings,
             layer_id=layer_id[0],
             base_name=args.base_name,
-        )):
+        ):
+            # with open("/home/rmoine/tmp.txt","w") as f:
+            #     f.write(str(d))
             line_dict = json.loads(d)
             bug_id = line_dict["bug_id"]
             binary_severity = line_dict["binary_severity"]
