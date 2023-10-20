@@ -1101,3 +1101,13 @@ if __name__ == "__main__":
             mean_aggregated_array = sum_aggregated_array / len(hidden_state)
 
             aggregated_list = mean_aggregated_array.tolist()
+            
+            data = {
+                "bug_id": bug_id,
+                "binary_severity": binary_severity,
+                "from": came_from,
+                "aggregated_list": aggregated_list,
+            }
+            with open('output_file.json', 'a') as outfile:
+                json.dump(data, outfile, indent=4)
+                outfile.write('\n')
