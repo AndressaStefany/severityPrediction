@@ -553,6 +553,7 @@ def main_qlora(
     eval_steps: int = 20,
     train_size: float = 0.3,
     limit_tokens: int = 7364,
+    new_model_name: str = "",
 ):
     """
     Perform training and fine-tuning of a model for causal reasoning using LoRA.
@@ -675,7 +676,8 @@ def main_qlora(
     print("Starting training QLORA")
     trainer.train()
     print("Saving trained QLORA model")
-    trainer.model.save_pretrained(new_model_name)
+    if new_model_name == "":
+        trainer.model.save_pretrained(new_model_name)
 
 def get_max_tokens_embeddings(model_name:str, min_token_length: int = 0, max_token_length = 5000):
     """Heavily inspired by get_max_mix"""
