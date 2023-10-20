@@ -51,7 +51,7 @@ for i in imports:
         print(f"Import of {i} failed")
     
 try:
-    from src.baseline.baseline_functions import *
+    from src.baseline.baseline_functions import * #type: ignore
 except Exception:
     pass
 
@@ -229,37 +229,6 @@ def initialize_model_inference(model_name: str, token: str, return_model: bool =
         return tokenizer, model
     else:
         return tokenizer
-def get_max_tokens(
-    path_descriptions: Path,
-    model_name: str = "meta-llama/Llama-2-13b-chat-hf",
-    token: str = "",
-    start: int = 0,
-    end: int = -1,
-):
-    print("Start")
-    tokenizer, model = initialize(model_name=model_name,token=token) #type: ignore
-    pipeline = trf.pipeline(
-        "text-generation", model=model, tokenizer=tokenizer, device_map="auto"
-    )
-    with open(path_descriptions) as f:
-        data = json.load(f)
-    if end == -1:
-        end = len(data)
-    data = data[start:end]
-
-    token_lengths = get_tokens(data, tokenizer)
-    (max_work, min_not_work) = get_max_mix(token_lengths, tokenizer, pipeline)
-    with open(
-        path_descriptions.parent / f"max_tokens_v100l_chunk_{start}.json", "w"
-    ) as f:
-        json.dump(
-            {
-                "min_not_work": min_not_work,
-                "max_work": max_work,
-                "number_of_tokens": token_lengths,
-            },
-            f,
-        )
 
 
 def build_prompt(
@@ -579,7 +548,6 @@ def find_representant(
 
 @print_args
 def main_qlora(
-    new_model_name: str,
     file_examples: Path,
     folder_out: Path,
     model_name: str = "meta-llama/Llama-2-13b-chat-hf",
