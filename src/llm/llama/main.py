@@ -1,6 +1,6 @@
 
 from pathlib import Path
-from typing import *
+from typing import *#type: ignore
 import json
 import re
 import datetime
