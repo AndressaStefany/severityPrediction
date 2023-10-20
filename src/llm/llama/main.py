@@ -864,7 +864,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-token",
-        choices=algorithms_choices,
+        type=str,
         help="Token to huggingface",
         default="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",
     )
