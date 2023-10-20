@@ -60,6 +60,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 
 
 def print_args(func):
+    print("Current time:",datetime.datetime.now())
     def inner(*args, **kwargs):
         print("*" * 100)
         print("Start", func.__name__)
@@ -126,7 +127,6 @@ class PipelineMaxTokens(MaxTokensEvaluator):
                 top_k=1,
                 num_return_sequences=1,
                 eos_token_id=self.tokenizer.eos_token_id,
-                max_length=1024,
         )
         del answer
         gc.collect()
@@ -559,7 +559,7 @@ def main_qlora(
     token: str = "",
     field_label: str = "binary_severity",
     field_input: str = "llama_tokenized_description",
-    lora_alpha: float = 16,
+    lora_alpha: int = 16,
     lora_dropout: float = 0.1,
     lora_r: int = 64,
     num_train_epochs: int = 1,
@@ -592,7 +592,7 @@ def main_qlora(
         - folder_out: Path, a Path object representing the output folder for the results.
         - model_name: str, the name or path of the pretrained model to use. Default: "meta-llama/Llama-2-13b-chat-hf"
         - token: str, a token string. Default: ""
-        - lora_alpha: float, scaling factor for the weight matrices. alpha is a scaling factor that adjusts the magnitude of the combined result (base model output + low-rank adaptation). Default: 16
+        - lora_alpha: int, scaling factor for the weight matrices. alpha is a scaling factor that adjusts the magnitude of the combined result (base model output + low-rank adaptation). Default: 16
         - lora_dropout: float, dropout probability of the LoRA layers. This parameter is used to avoid overfitting. Default: 0.1
         - lora_r: int, this is the dimension of the low-rank matrix. Default: 64. It means for a layer initialy of size d_in x d_out we will have 2 lora layers of size d_in x r and r x d_out reducing the number of parameters
         - num_train_epochs: int, the number of training epochs. Default: 1
@@ -625,7 +625,7 @@ def main_qlora(
     model.config.pretraining_tp = 1
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
-    peft_config = LoraConfig(  # type: ignore
+    peft_config = peft.LoraConfig(  # type: ignore
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
         r=lora_r,
