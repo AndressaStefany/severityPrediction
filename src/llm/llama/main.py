@@ -1082,11 +1082,33 @@ if __name__ == "__main__":
         if len(layer_id) > 1:
             raise ValueError(f"Expecting just one layer id not {len(layer_id)}")
         print(args.algorithm)
+
         for d in get_data_embeddings(
             folder_embeddings=folder_embeddings,
             layer_id=layer_id[0],
             base_name=args.base_name,
         ):
-            with open("/home/rmoine/tmp.txt","w") as f:
-                f.write(str(d))
-        
+            # with open("/home/rmoine/tmp.txt","w") as f:
+            #     f.write(str(d))
+            line_dict = json.loads(d)
+            bug_id = line_dict["bug_id"]
+            binary_severity = line_dict["binary_severity"]
+            hidden_state = np.array(line_dict["hidden_state"])
+
+            base_name=args.base_name
+            came_from = list(folder_embeddings.rglob(f"{base_name}layer_{layer_id[0]}_*.json"))
+
+            sum_aggregated_array = np.sum(hidden_state, axis=0)
+            mean_aggregated_array = sum_aggregated_array / len(hidden_state)
+
+            aggregated_list = mean_aggregated_array.tolist()
+            
+            data = {
+                "bug_id": bug_id,
+                "binary_severity": binary_severity,
+                "from": came_from,
+                "aggregated_list": aggregated_list,
+            }
+            with open(Path(args.path_data_folder) / 'output_file.json', 'a') as outfile:
+                json.dump(data, outfile)
+                outfile.write('\n')
