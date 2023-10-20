@@ -1082,6 +1082,7 @@ if __name__ == "__main__":
         if len(layer_id) > 1:
             raise ValueError(f"Expecting just one layer id not {len(layer_id)}")
         print(args.algorithm)
+
         for d in get_data_embeddings(
             folder_embeddings=folder_embeddings,
             layer_id=layer_id[0],
@@ -1108,6 +1109,6 @@ if __name__ == "__main__":
                 "from": came_from,
                 "aggregated_list": aggregated_list,
             }
-            with open('output_file.json', 'a') as outfile:
-                json.dump(data, outfile, indent=4)
+            with open(Path(args.path_data_folder) / 'output_file.json', 'a') as outfile:
+                json.dump(data, outfile)
                 outfile.write('\n')
