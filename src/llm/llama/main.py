@@ -1178,6 +1178,15 @@ if __name__ == "__main__":
             layer_id=layer_id[0],
             base_name=args.base_name,
         )):
-            print(i)
-            break
-        
+            line_dict = json.loads(d)
+            bug_id = line_dict["bug_id"]
+            binary_severity = line_dict["binary_severity"]
+            hidden_state = np.array(line_dict["hidden_state"])
+
+            base_name=args.base_name
+            came_from = list(folder_embeddings.rglob(f"{base_name}layer_{layer_id[0]}_*.json"))
+
+            sum_aggregated_array = np.sum(hidden_state, axis=0)
+            mean_aggregated_array = sum_aggregated_array / len(hidden_state)
+
+            aggregated_list = mean_aggregated_array.tolist()
