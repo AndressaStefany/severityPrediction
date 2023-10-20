@@ -10,11 +10,6 @@ from itertools import product
 from textwrap import wrap
 import argparse
 
-def safe_import(module_name):
-    try:
-        exec(module_name)
-    except ImportError:
-        print(f"Import of {module_name} failed")
 # typehint imports
 if TYPE_CHECKING:
     import transformers as trf
@@ -49,7 +44,10 @@ imports = [
     "import datasets",
 ]
 for i in imports:
-    safe_import(i)
+    try:
+        exec(i)
+    except ImportError:
+        print(f"Import of {i} failed")
     
 try:
     from src.baseline.baseline_functions import *
@@ -333,6 +331,7 @@ def extract_fields_from_json(folder_path: Path) -> List[Dict]:
 
 def compute_metrics(
     folder_predictions: Path,
+    path_backup_fields: Path,
     folder_out: Optional[Path] = None,
     input_field: str = "input",
     pred_field: str = "severity_pred",
@@ -341,7 +340,7 @@ def compute_metrics(
     n_tokens_show_max: int = 7364,
     n_tokens_show_min: int = 0,
     model_name: str = "meta-llama/Llama-2-13b-chat-hf",
-    token: str = "",
+    token: str = ""
 ):
     """Taking the path of the predictions folder, it computes the statistics with the predictions (confusion matrix, precision, recall, f1-score). The confusion matrix is plotted into a png file
 
@@ -349,7 +348,7 @@ def compute_metrics(
         - folder_predictions: Path, path to the folder where the prediction files are stored
         - folder_out: Path, path to the folder where the statistics will be stored
         - mapping_dict: Optional[Dict], mapping from possible values predicted to name (str or int), default {-2:"Too big query", -1:"Mixed answer", 0: "NON SEVERE", 1: "SEVERE"} and -2 replaces all nan
-
+        - path_backup_fields: path to a file where the missing required fields are put. Must contain bug_id to join with the current data
     # Return
         None
     """
@@ -358,14 +357,20 @@ def compute_metrics(
         folder_out = folder_predictions
     fields_data = extract_fields_from_json(folder_predictions)
     data = pd.DataFrame(fields_data)
+    # Remove duplicates by bug_id
+    data.drop_duplicates(subset="bug_id",inplace=True)
+    if 'binary_severity' not in data.columns:
+        df_bs = pd.read_json(path_backup_fields)
+        # check that we have the same bug_ids in the two dataframes
+        assert len(data[data['bug_id'].isin(df_bs)]) == len(data), "Expecting to have all bug_ids of predictions in the backup file"
+        data = data.merge(df_bs[['bug_id', 'binary_severity']], on='bug_id', how='left')
+    data.to_json(folder_out / "data.json", orient="records", indent=4)
     # Count number of tokens
     data["n_tokens"] = data[input_field].apply(lambda x: len(tokenizer(x)["input_ids"]))  # type: ignore
     # Filter by limit of tokens
     data = data.query(
         f"n_tokens < {n_tokens_show_max} & n_tokens >= {n_tokens_show_min}"
     )
-    # Remove duplicates by bug_id
-    data.drop_duplicates(subset="bug_id",inplace=True)
     # Replace Nan by -2 in prediction
     data[pred_field] = data[pred_field].apply(lambda x: -2 if np.isnan(x) else int(x))
     data["binary_severity"] = np.where(
@@ -388,8 +393,7 @@ def compute_metrics(
     conf_matrix = skMetr.confusion_matrix(true, pred)
 
     # Compute F1-score
-    f1: 'np.ndarray' = f1_score(true, pred, average=None)  # type: ignore
-    data.to_json(folder_out / "data.json", orient="records", indent=4)
+    f1: 'np.ndarray' = skMetr.f1_score(true, pred, average=None)  # type: ignore
     with open(folder_out / "metrics.json", "w") as f:
         json.dump(
             {
@@ -988,6 +992,12 @@ if __name__ == "__main__":
         help="Base name of the json file with the layer id for get_data_embeddings (ex: embeddings_chunk__trunc_layer_-1_4460.json will give embeddings_chunk__trunc_)",
         default="(0,)",
     )
+    parser.add_argument(
+        "-path_backup_fields",
+        type=str,
+        help="Allow to add the missing field of binary_severity based on the bug_id common field. Relative path to the data path",
+        default="llm/data_preprocessed_tokens.json",
+    )
     args = parser.parse_args()
     print(args)
     n_data = args.n_data
@@ -1027,6 +1037,7 @@ if __name__ == "__main__":
         path_out.mkdir(parents=True, exist_ok=True)
         compute_metrics(
             args.path_data_folder,
+            args.path_data_folder / args.path_backup_fields,
             path_out,
             pred_field=args.pred_field,
             input_field=args.input_field,
