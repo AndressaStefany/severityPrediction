@@ -957,7 +957,7 @@ if __name__ == "__main__":
         "-base_name",
         type=str,
         help="Base name of the json file with the layer id for get_data_embeddings (ex: embeddings_chunk__trunc_layer_-1_4460.json will give embeddings_chunk__trunc_)",
-        default="(0,)",
+        default="embeddings_chunk__trunc_",
     )
     parser.add_argument(
         "-path_backup_fields",
@@ -1090,10 +1090,9 @@ if __name__ == "__main__":
         ):
             # with open("/home/rmoine/tmp.txt","w") as f:
             #     f.write(str(d))
-            line_dict = json.loads(d)
-            bug_id = line_dict["bug_id"]
-            binary_severity = line_dict["binary_severity"]
-            hidden_state = np.array(line_dict["hidden_state"])
+            bug_id = d["bug_id"]
+            binary_severity = d["binary_severity"]
+            hidden_state = np.array(d["hidden_state"])
 
             base_name=args.base_name
             came_from = list(folder_embeddings.rglob(f"{base_name}layer_{layer_id[0]}_*.json"))
