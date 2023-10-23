@@ -223,7 +223,7 @@ def get_max_mix(token_lengths, tokenizer: 'LlamaTokenizer', pipeline: 'trf.Pipel
 def get_tokenizer(token: str, model_name: str) -> 'LlamaTokenizer':
     huggingface_hub.login(token=token)
     tokenizer: 'LlamaTokenizer' = trf.AutoTokenizer.from_pretrained(model_name, use_fast=True,
-        cache_dir="/home/$USER/cache_dir")#type: ignore
+        cache_dir="/scratch/$USER/cache_dir")#type: ignore
     return tokenizer
 def initialize_model(model_name: str, token: str, hidden_states: bool = False, base_class: Any = trf.AutoModelForCausalLM) -> 'LlamaModel':
     huggingface_hub.login(token=token)
@@ -238,7 +238,7 @@ def initialize_model(model_name: str, token: str, hidden_states: bool = False, b
         quantization_config=double_quant_config,
         return_dict=hidden_states,
         output_hidden_states=hidden_states,
-        cache_dir="/home/$USER/cache_dir"
+        cache_dir="/scratch/$USER/cache_dir"
     )
     return model
 def initialize_model_inference(model_name: str, token: str, return_model: bool = True, hidden_states: bool = False) -> Union[Tuple['LlamaTokenizer', 'LlamaModel'],'LlamaTokenizer']:
