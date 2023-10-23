@@ -10,6 +10,7 @@ from itertools import product
 from textwrap import wrap
 import argparse
 import abc
+import shutil
 
 # typehint imports
 if TYPE_CHECKING:
@@ -69,8 +70,8 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 
 
 def print_args(func):
-    print("Current time:",datetime.datetime.now())
     def inner(*args, **kwargs):
+        print("Current time:",datetime.datetime.now())
         print("*" * 100)
         print("Start", func.__name__)
         print("With *args", args)
@@ -163,7 +164,7 @@ class FinetuneMaxTokens(MaxTokensEvaluator):
             data_preprocessed = json.load(f)
         template = data_preprocessed["template"]
         data_sample = {
-            "llama_tokenized_template":token_names,
+            "llama_tokenized_description":token_names,
             "binary_severity": 0
         }
         with open('./tmp.json', 'w') as f:
@@ -176,9 +177,9 @@ class FinetuneMaxTokens(MaxTokensEvaluator):
     def eval(self, n_tokens: int):
         folder_out = Path("./out_tmp/")
         if folder_out.exists():
-            folder_out.rmdir()
+            shutil.rmtree(folder_out)
         folder_out.mkdir(parents=True,exist_ok=True)
-        main_qlora(
+        main_qlora_generation(
             Path("./tmp.json"),
             folder_out=folder_out,
             field_label="binary_severity",
@@ -221,29 +222,33 @@ def get_max_mix(token_lengths, tokenizer: 'LlamaTokenizer', pipeline: 'trf.Pipel
 
 def get_tokenizer(token: str, model_name: str) -> 'LlamaTokenizer':
     huggingface_hub.login(token=token)
-    tokenizer: 'LlamaTokenizer' = trf.AutoTokenizer.from_pretrained(model_name, use_fast=True)#type: ignore
+    tokenizer: 'LlamaTokenizer' = trf.AutoTokenizer.from_pretrained(model_name, use_fast=True,
+        cache_dir="/scratch/$USER/cache_dir")#type: ignore
     return tokenizer
-
+def initialize_model(model_name: str, token: str, hidden_states: bool = False, base_class: Any = trf.AutoModelForCausalLM) -> 'LlamaModel':
+    huggingface_hub.login(token=token)
+    double_quant_config = trf.BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype="float16",
+    )
+    model = base_class.from_pretrained(
+        args.model_name,
+        quantization_config=double_quant_config,
+        return_dict=hidden_states,
+        output_hidden_states=hidden_states,
+        cache_dir="/scratch/$USER/cache_dir"
+    )
+    return model
 def initialize_model_inference(model_name: str, token: str, return_model: bool = True, hidden_states: bool = False) -> Union[Tuple['LlamaTokenizer', 'LlamaModel'],'LlamaTokenizer']:
     huggingface_hub.login(token=token)
     tokenizer = get_tokenizer(token=token, model_name=model_name)
     if return_model:
-        double_quant_config = trf.BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype="float16",
-        )
-        model = trf.AutoModelForCausalLM.from_pretrained(
-            args.model_name,
-            quantization_config=double_quant_config,
-            return_dict=hidden_states,
-            output_hidden_states=hidden_states,
-        )
+        model = initialize_model(model_name, token, hidden_states, trf.AutoModelForCausalLM)
         return tokenizer, model
     else:
         return tokenizer
-
 
 def build_prompt(
     llama_tokenized_template: List[str],
@@ -559,21 +564,227 @@ def find_representant(
         json.dump({"samples": samples, "mapping": mapping_dict}, f)
     return samples
 
+def convert_dict_to_str(data):
+    if isinstance(data, dict):
+        return {key: convert_dict_to_str(value) for key, value in data.items()}
+    elif isinstance(data, list):
+        return [convert_dict_to_str(item) for item in data]
+    elif isinstance(data, int) or isinstance(data, float) or isinstance(data, str):
+        return data
+    else:
+        return str(data)
+class DataInputTrain(TypedDict):
+    bug_id: int
+    binary_severity: int
+    description: str
+    llama_tokenized_description: List[str]
+class TemplateDict(TypedDict):
+    template: str
+    llama_tokenized_template: List[str]
+    template_index_insert: int
+    
+class Evaluator:
+    def __init__(self, *names: str) -> None:
+        self.names: Tuple[str, ...] = names
+        self.reset()
+    def reset(self):
+        self.buffer = {k:[] for k in self.names}
+    def add_samples(self, **kwargs):
+        for k,v in kwargs.items():
+            self.buffer[k].append(v)
 
 @print_args
-def main_qlora(
+def generate_dataset(folder_out: Path, file_examples: Path,  field_label: str, field_input: str, tokenizer, limit_tokens: int, id: str = ""):
+    """Generates the dataset for the finetuning"""
+    print("Create datasets")
+    train_path = folder_out / f"train_max{id}.json"
+    valid_path = folder_out / f"valid_max{id}.json"
+    full_path = folder_out / f"full_max{id}.json"
+    if not train_path.exists() or not valid_path.exists():
+        print("-> Creating cache")
+        with open(file_examples) as f:
+            data_preprocessed = json.load(f)
+        data = data_preprocessed["data"]
+        template = data_preprocessed["template"]
+        L = []
+        for d in data:
+            template["llama_tokenized_template"] = template[
+                    "llama_tokenized_template"
+                ] + ["<0x0A>", str(d[field_label])]
+            text, tokenized_full_text = build_prompt(
+                template["llama_tokenized_template"],
+                d[field_input],
+                template["template_index_insert"],
+                tokenizer,
+                limit_tokens=limit_tokens,
+            )
+            d = {**d, "text": text, "tokenized_full_text": tokenized_full_text}
+            L.append(d)
+        
+        stratify_labels = [d[field_label] for d in L]
+        idx_tr, idx_val = skMsel.train_test_split(np.arange(len(L)), train_size=train_size, stratify=stratify_labels)  # type: ignore
+        idx_tr = set(idx_tr)
+        idx_val = set(idx_val)
+        train_data = [e for i, e in enumerate(L) if i in idx_tr]
+        valid_data = [e for i, e in enumerate(L) if i in idx_val]
+        with open(full_path, "w") as f:
+            json.dump(L, f)
+        with open(train_path, "w") as f:
+            json.dump(train_data, f)
+        with open(valid_path, "w") as f:
+            json.dump(valid_data, f)
+    else:
+        print("-> Reading cache")
+        with open(train_path, "r") as f:
+            train_data = json.load(f)
+        with open(valid_path, "r") as f:
+            valid_data = json.load(f)
+    return train_data, valid_data
+
+@print_args
+def main_qlora_classification(
     file_examples: Path,
     folder_out: Path,
+    lora_alpha: int = 16,
+    lora_dropout: float = 0.1,
+    lora_r: int = 64,
     model_name: str = "meta-llama/Llama-2-13b-chat-hf",
     token: str = "",
     field_label: str = "binary_severity",
     field_input: str = "llama_tokenized_description",
+    num_train_epochs: int = 1,
+    tr_bs: int = 1,
+    val_bs: int = 1,
+    learning_rate: float = 2e-4,
+    train_size: float = 0.3,
+    limit_tokens: int = 7364,
+    new_model_name: str = "",
+):
+    """
+    Perform training and fine-tuning of a model for causal reasoning using LoRA.
+    Doc: https://miro.medium.com/v2/resize:fit:4800/format:webp/1*rOW5plKBuMlGgpD0SO8nZA.png
+
+    # Arguments
+        - new_model_name: str, name of the new model pretrained
+        - file_examples: Path, a file path to input data.
+        - folder_out: Path, a Path object representing the output folder for the results.
+        - model_name: str, the name or path of the pretrained model to use. Default: "meta-llama/Llama-2-13b-chat-hf"
+        - token: str, a token string. Default: ""
+        - lora_alpha: int, scaling factor for the weight matrices. alpha is a scaling factor that adjusts the magnitude of the combined result (base model output + low-rank adaptation). Default: 16
+        - lora_dropout: float, dropout probability of the LoRA layers. This parameter is used to avoid overfitting. Default: 0.1
+        - lora_r: int, this is the dimension of the low-rank matrix. Default: 64. It means for a layer initialy of size d_in x d_out we will have 2 lora layers of size d_in x r and r x d_out reducing the number of parameters
+        - num_train_epochs: int, the number of training epochs. Default: 1
+        - tr_bs: int, batch size for training. Default: 4
+        - val_bs: int, batch size for validation. Default: 4
+        - optim: str, optimization method. Possible values include "paged_adamw_32bit" and other optimization methods specific to the project. Default: "paged_adamw_32bit"
+        - save_steps: int, the frequency of saving model checkpoints during training. Default: 25
+        - logging_steps: int, the frequency of logging training progress. Default: 25
+        - learning_rate: float, the learning rate for training. Default: 2e-4
+        - weight_decay: float, the weight decay value for regularization. Default: 0.001
+        - fp16: bool, whether to use mixed-precision training with 16-bit floats. Default: False
+        - bf16: bool, whether to use 16-bit bfloat16 format. Default: False
+        - max_grad_norm: float, the maximum gradient norm for gradient clipping. Default: 0.3
+        - max_steps: int, the maximum number of training steps. Default: -1 (unlimited)
+        - warmup_ratio: float, the warmup ratio for learning rate scheduling. Default: 0.03
+        - group_by_length: bool, a flag to group data by sequence length. Default: True
+        - lr_scheduler_type: str, type of learning rate scheduler. Default: "constant"
+        - eval_steps: int, the frequency of evaluating the model during training. Default: 20
+        - train_size: float = 0.3, the size of the training dataset
+    """
+    print("main_qlora")
+    if token != "":
+        huggingface_hub.login(token=token)
+    if not folder_out.exists():
+        folder_out.mkdir(parents=True)
+
+    peft_config = peft.LoraConfig(  # type: ignore
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        r=lora_r,
+        bias="none",
+        inference_mode=False,   
+        task_type="CAUSAL_LM",
+    )
+    tokenizer: LlamaTokenizer = initialize_model_inference(model_name, token, return_model=False) #type: ignore
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
+    model = initialize_model(model_name=model_name, token=token, base_class=trf.AutoModelForSequenceClassification)
+    model = peft.get_peft_model(model, peft_config)
+    model.config.use_cache = False
+    model.config.pretraining_tp = 1
+    model.print_trainable_parameters()
+    # create datasets
+    tr_data, val_data = generate_dataset(
+        folder_out=folder_out,
+        file_examples=file_examples,
+        field_label=field_label,
+        field_input=field_input,
+        tokenizer=tokenizer, 
+        limit_tokens=limit_tokens,
+        id=""
+    )
+    print("Building dataloaders")
+    def collate_fn(data: List[dict]):
+        inputs = tokenizer([d['text'] for d in data])
+        outputs = [d[field_label] for d in data]
+        yield inputs,outputs
+    train_dataloader = torch.utils.data.DataLoader(tr_data, shuffle=True, collate_fn=collate_fn, batch_size=tr_bs)
+    eval_dataloader = torch.utils.data.DataLoader(val_data, shuffle=False, collate_fn=collate_fn, batch_size=val_bs)
+    print("Starting training QLORA")
+    optimizer = torch.optim.AdamW(params=model.parameters(), lr=learning_rate)
+
+    # Instantiate scheduler
+    lr_scheduler = trf.get_linear_schedule_with_warmup(
+        optimizer=optimizer,
+        num_warmup_steps=0.06 * (len(train_dataloader) * num_train_epochs),
+        num_training_steps=(len(train_dataloader) * num_train_epochs),
+    )
+    device = "cuda"
+    model.to(device)
+    for epoch in range(num_train_epochs):
+        model.train()
+        for step, (inputs, labels) in enumerate(tqdm.tqdm(train_dataloader)):
+            inputs.to(device)
+            outputs = model(inputs)
+            loss = outputs.loss
+            loss.backward()
+            optimizer.step()
+            lr_scheduler.step()
+            optimizer.zero_grad()
+            break
+
+        model.eval()
+        
+        for step, (inputs, labels) in enumerate(tqdm.tqdm(eval_dataloader)):
+            inputs.to(device)
+            with torch.no_grad():
+                outputs = model(inputs)
+            print(f"{outputs=},{outputs.shape=}")
+            predictions = outputs.logits.argmax(dim=-1)
+            break
+        break
+        # eval_metric = metric.compute()
+        # print(f"epoch {epoch}:", eval_metric)
+    print("Saving trained QLORA model")
+    # if new_model_name != "":
+    #     output_dir = "./trained_model"
+    #     trainer.model.save_pretrained(output_dir)
+    #     trainer.model.push_to_hub(new_model_name)
+
+@print_args
+def main_qlora_generation(
+    file_examples: Path,
+    folder_out: Path,
     lora_alpha: int = 16,
     lora_dropout: float = 0.1,
     lora_r: int = 64,
+    model_name: str = "meta-llama/Llama-2-13b-chat-hf",
+    token: str = "",
+    field_label: str = "binary_severity",
+    field_input: str = "llama_tokenized_description",
     num_train_epochs: int = 1,
-    tr_bs: int = 4,
-    val_bs: int = 4,
+    tr_bs: int = 1,
+    val_bs: int = 1,
     optim: str = "paged_adamw_32bit",
     save_steps: int = 25,
     logging_steps: int = 25,
@@ -628,19 +839,19 @@ def main_qlora(
     if not folder_out.exists():
         folder_out.mkdir(parents=True)
 
-    tokenizer, model = initialize_model_inference(model_name, token) #type: ignore
-
+    tokenizer,model = initialize_model_inference(model_name, token, return_model=True) #type: ignore
     model.config.use_cache = False
     model.config.pretraining_tp = 1
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
-    peft_config = peft.LoraConfig(  # type: ignore
-        lora_alpha=lora_alpha,
-        lora_dropout=lora_dropout,
-        r=lora_r,
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
+    peft_config = peft.LoraConfig(# type: ignore
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            r=lora_r,
+            bias="none",
+            inference_mode=False,   
+            task_type="SEQ_CLS", 
+        )
     # Set training parameters
     training_arguments = trf.TrainingArguments(
         output_dir=str(folder_out.resolve()),
@@ -661,40 +872,18 @@ def main_qlora(
         lr_scheduler_type=lr_scheduler_type,
         report_to="all",  # type: ignore
         evaluation_strategy="steps",
-        eval_steps=eval_steps,
+        eval_steps=eval_steps
     )
     # create datasets
-    print("Create datasets")
-    train_path = folder_out / f"train_max_{limit_tokens}.json"
-    valid_path = folder_out / f"valid_max_{limit_tokens}.json"
-    full_path = folder_out / f"full_max_{limit_tokens}.json"
-    if not train_path.exists() or not valid_path.exists():
-        with open(file_examples) as f:
-            data_preprocessed = json.load(f)
-        data = data_preprocessed["data"]
-        template = data_preprocessed["template"]
-        L = []
-        for d in data:
-            template["llama_tokenized_template"] = template[
-                "llama_tokenized_template"
-            ] + ["<0x0A>", str(d[field_label])]
-            text, tokenized_full_text = build_prompt(
-                template["llama_tokenized_template"],
-                d[field_input],
-                template["template_index_insert"],
-                tokenizer,
-                limit_tokens=limit_tokens,
-            )
-            L.append({**d, "text": text, "tokenized_full_text": tokenized_full_text})
-        idx_tr, idx_val = train_test_split(np.arange(len(L)), train_size=train_size)  # type: ignore
-        idx_tr = set(idx_tr)
-        idx_val = set(idx_val)
-        with open(full_path, "w") as f:
-            json.dump(L, f)
-        with open(train_path, "w") as f:
-            json.dump([{"text": e["text"]} for i, e in enumerate(L) if i in idx_tr], f)
-        with open(valid_path, "w") as f:
-            json.dump([{"text": e["text"]} for i, e in enumerate(L) if i in idx_val], f)
+    generate_dataset(
+        folder_out=folder_out,
+        file_examples=file_examples,
+        field_label=field_label,
+        field_input=field_input,
+        tokenizer=tokenizer, 
+        limit_tokens=limit_tokens,
+        id=""
+    )
     train_dataset = datasets.load_dataset("json", data_files=str(train_path.resolve()), split="train")  # type: ignore
     valid_dataset = datasets.load_dataset("json", data_files=str(valid_path.resolve()), split="train")  # type: ignore
     # Set supervised fine-tuning parameters
@@ -708,13 +897,15 @@ def main_qlora(
         tokenizer=tokenizer,
         args=training_arguments,
         packing=False,
+        max_seq_length=limit_tokens
     )
     print("Starting training QLORA")
     trainer.train()
     print("Saving trained QLORA model")
-    if new_model_name == "":
-        trainer.model.save_pretrained(new_model_name)
-
+    if new_model_name != "":
+        output_dir = "./trained_model"
+        trainer.model.save_pretrained(output_dir)
+        trainer.model.push_to_hub(new_model_name)
 def get_max_tokens(evaluator: MaxTokensEvaluator, min_token_length: int = 0, max_token_length: int = 5000):
     """
     The main algorithm comes from get_max_mix. 
@@ -726,8 +917,6 @@ def get_max_tokens(evaluator: MaxTokensEvaluator, min_token_length: int = 0, max
     min_not_work = float("inf")
 
     while min_token_length < max_token_length:
-        gc.collect()
-        torch.cuda.empty_cache()#type: ignore
         mid_token_length = (min_token_length + max_token_length) // 2
         try:
             evaluator.eval(mid_token_length)
@@ -739,6 +928,13 @@ def get_max_tokens(evaluator: MaxTokensEvaluator, min_token_length: int = 0, max
             # If the code above raises an exception, update min_not_work and adjust the search range
             min_not_work = mid_token_length
             max_token_length = mid_token_length - 1
+        try:
+            gc.collect()
+            torch.cuda.empty_cache()#type: ignore
+        except Exception as e:
+            print("Exception clear")
+            print(e)
+            print("End exception clear")
     return (max_work, min_not_work)
 
 @print_args
@@ -848,11 +1044,12 @@ if __name__ == "__main__":
         "max_tokens_pipeline",
         "max_tokens_embeddings",
         "max_tokens_finetuning",
-        "compute_metrics",
+        "finetune_generation",
+        "finetune_classification",
         "finetune",
         "embeddings_gen",
         "nn_embedding",
-        "nn_classifer"
+        "nn_classifier"
     ]
     parser.add_argument(
         "-path_data_json",
@@ -876,7 +1073,7 @@ if __name__ == "__main__":
         "-token",
         type=str,
         help="Token to huggingface",
-        default="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",
+        default="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",
     )
     parser.add_argument(
         "-interval_idx",
@@ -958,6 +1155,12 @@ if __name__ == "__main__":
         default=8,
     )
     parser.add_argument(
+        "-num_train_epochs",
+        type=int,
+        help="Number of training epochs for qlora",
+        default=5,
+    )
+    parser.add_argument(
         "-layers_ids",
         type=str,
         help="Layers ids for the embedding to take",
@@ -994,12 +1197,8 @@ if __name__ == "__main__":
         [seed_start, seed_end] = intervals[args.interval_idx]
     else:
         [seed_start, seed_end] = [args.seed_start, args.seed_end]
-    if args.algorithm == "max_tokens":
-        get_max_tokens(
-            args.path_data_json, token=args.token, start=seed_start, end=seed_end
-        )
 
-    elif args.algorithm == "inference":
+    if args.algorithm == "inference":
         main_inference(
             args.path_data_json,
             token=args.token,
@@ -1023,10 +1222,10 @@ if __name__ == "__main__":
             n_tokens_show_min=args.n_tokens_show_min,
             n_tokens_show_max=args.n_tokens_show_max,
         )
-    elif args.algorithm == "finetune":
-        path_out = args.path_data_folder / f"qlora_finetune_{args.id}"
+    elif args.algorithm == "finetune_generation":
+        path_out = args.path_data_folder / f"qlora_finetune_generation_{args.id}"
         path_out.mkdir(parents=True, exist_ok=True)
-        main_qlora(
+        main_qlora_generation(
             model_name=args.model_name,
             file_examples=args.path_data_json,
             new_model_name=args.new_model_name,
@@ -1038,6 +1237,24 @@ if __name__ == "__main__":
             lora_dropout=args.qlora_dropout,
             lora_r=args.qlora_r,
             limit_tokens=args.n_tokens_infered_max,
+            num_train_epochs=args.num_train_epochs
+        )
+    elif args.algorithm == "finetune_classification":
+        path_out = args.path_data_folder / f"qlora_finetune_classification_{args.id}"
+        path_out.mkdir(parents=True, exist_ok=True)
+        main_qlora_classification(
+            model_name=args.model_name,
+            file_examples=args.path_data_json,
+            new_model_name=args.new_model_name,
+            folder_out=path_out,
+            token=args.token,
+            field_label="binary_severity",
+            field_input=args.input_field,
+            lora_alpha=args.qlora_alpha,
+            lora_dropout=args.qlora_dropout,
+            lora_r=args.qlora_r,
+            limit_tokens=args.n_tokens_infered_max,
+            num_train_epochs=args.num_train_epochs
         )
     elif args.algorithm == "max_tokens_pipeline":
         (max_work, min_not_work) = get_max_tokens(
@@ -1060,21 +1277,30 @@ if __name__ == "__main__":
         )
         print(f"{max_work=},{min_not_work=}")
     elif args.algorithm == "max_tokens_finetuning":
+        path_data_folder = Path(args.path_data_folder)
+        if not path_data_folder.exists():
+            raise ValueError(f"The path {path_data_folder} does not exist")
         max_n_tokens = 10000
-        (max_work, min_not_work) = get_max_tokens(
-            FinetuneMaxTokens(
-                model_name=args.model_name,
-                token=args.token,
-                max_n_tokens=max_n_tokens,
-                base_file_data=args.path_data_json,
-                lora_alpha=args.qlora_alpha,
-                lora_dropout=args.qlora_dropout,
-                lora_r=args.qlora_r,
-            ),
-            min_token_length=1,
-            max_token_length=max_n_tokens
-        )
-        print(f"{max_work=},{min_not_work=}")
+        args_dict = convert_dict_to_str(vars(args))
+        L = []
+        for model_name in ["meta-llama/Llama-2-7b-chat-hf", "meta-llama/Llama-2-13b-chat-hf"]:
+            for qlora_r in [2,8,16,32,64,128,256]:
+                (max_work, min_not_work) = get_max_tokens(
+                    FinetuneMaxTokens(
+                        model_name=model_name,
+                        token=args.token,
+                        max_n_tokens=max_n_tokens,
+                        base_file_data=args.path_data_json,
+                        lora_alpha=args.qlora_alpha,
+                        lora_dropout=args.qlora_dropout,
+                        lora_r=qlora_r,
+                    ),
+                    min_token_length=1,
+                    max_token_length=max_n_tokens
+                )
+                L.append({"max_work":max_work, "min_not_work": min_not_work, "qlora_r":qlora_r, "model_name": args.model_name, "args":args_dict})
+                with open(path_data_folder / "finetune_tokens_lim.json", "w") as f:
+                    json.dump(L,f)
     elif args.algorithm == "embeddings_gen":
         layers_ids = eval(args.layers_ids)
         get_llama2_embeddings(
