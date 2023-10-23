@@ -10,6 +10,7 @@ from itertools import product
 from textwrap import wrap
 import argparse
 import abc
+import shutil
 
 # typehint imports
 if TYPE_CHECKING:
@@ -154,7 +155,7 @@ class FinetuneMaxTokens(MaxTokensEvaluator):
             data_preprocessed = json.load(f)
         template = data_preprocessed["template"]
         data_sample = {
-            "llama_tokenized_template":token_names,
+            "llama_tokenized_description":token_names,
             "binary_severity": 0
         }
         with open('./tmp.json', 'w') as f:
@@ -167,7 +168,7 @@ class FinetuneMaxTokens(MaxTokensEvaluator):
     def eval(self, n_tokens: int):
         folder_out = Path("./out_tmp/")
         if folder_out.exists():
-            folder_out.rmdir()
+            shutil.rmtree(folder_out)
         folder_out.mkdir(parents=True,exist_ok=True)
         main_qlora(
             Path("./tmp.json"),
