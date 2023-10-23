@@ -671,7 +671,55 @@ class Evaluator:
     def add_samples(self, **kwargs):
         for k,v in kwargs.items():
             self.buffer[k].append(v)
+
+@print_args
+def generate_dataset(folder_out: Path, file_examples: Path,  field_label: str, field_input: str, tokenizer, limit_tokens: int, id: str = ""):
+    """Generates the dataset for the finetuning"""
+    print("Create datasets")
+    train_path = folder_out / f"train_max{id}.json"
+    valid_path = folder_out / f"valid_max{id}.json"
+    full_path = folder_out / f"full_max{id}.json"
+    if not train_path.exists() or not valid_path.exists():
+        print("-> Creating cache")
+        with open(file_examples) as f:
+            data_preprocessed = json.load(f)
+        data = data_preprocessed["data"]
+        template = data_preprocessed["template"]
+        L = []
+        for d in data:
+            template["llama_tokenized_template"] = template[
+                    "llama_tokenized_template"
+                ] + ["<0x0A>", str(d[field_label])]
+            text, tokenized_full_text = build_prompt(
+                template["llama_tokenized_template"],
+                d[field_input],
+                template["template_index_insert"],
+                tokenizer,
+                limit_tokens=limit_tokens,
+            )
+            d = {**d, "text": text, "tokenized_full_text": tokenized_full_text}
+            L.append(d)
         
+        stratify_labels = [d[field_label] for d in L]
+        idx_tr, idx_val = skMsel.train_test_split(np.arange(len(L)), train_size=train_size, stratify=stratify_labels)  # type: ignore
+        idx_tr = set(idx_tr)
+        idx_val = set(idx_val)
+        train_data = [e for i, e in enumerate(L) if i in idx_tr]
+        valid_data = [e for i, e in enumerate(L) if i in idx_val]
+        with open(full_path, "w") as f:
+            json.dump(L, f)
+        with open(train_path, "w") as f:
+            json.dump(train_data, f)
+        with open(valid_path, "w") as f:
+            json.dump(valid_data, f)
+    else:
+        print("-> Reading cache")
+        with open(train_path, "r") as f:
+            train_data = json.load(f)
+        with open(valid_path, "r") as f:
+            valid_data = json.load(f)
+    return train_data, valid_data
+
 @print_args
 def main_qlora_classification(
     file_examples: Path,
@@ -745,39 +793,20 @@ def main_qlora_classification(
     model.config.pretraining_tp = 1
     model.print_trainable_parameters()
     # create datasets
-    print("Create datasets")
-    with open(file_examples) as f:
-        data_preprocessed = json.load(f)
-    data = data_preprocessed["data"]
-    template = data_preprocessed["template"]
-    L = []
-    for d in data:
-        template["llama_tokenized_template"] = template[
-                "llama_tokenized_template"
-            ] + ["<0x0A>", str(d["binary_severity"])]
-        text, tokenized_full_text = build_prompt(
-            template["llama_tokenized_template"],
-            d[field_input],
-            template["template_index_insert"],
-            tokenizer,
-            limit_tokens=limit_tokens,
-        )
-        d = {**d, "text": text, "tokenized_full_text": tokenized_full_text}
-        L.append(d)
-    idx_tr, idx_val = skMsel.train_test_split(np.arange(len(L)), train_size=train_size)  # type: ignore
-    idx_tr = set(idx_tr)
-    idx_val = set(idx_val)
+    tr_data, val_data = generate_dataset(
+        folder_out=folder_out,
+        file_examples=file_examples,
+        field_label=field_label,
+        field_input=field_input,
+        tokenizer=tokenizer, 
+        limit_tokens=limit_tokens,
+        id=""
+    )
     print("Building dataloaders")
     def collate_fn(data: List[dict]):
         inputs = tokenizer([d['text'] for d in data])
         outputs = [d[field_label] for d in data]
         yield inputs,outputs
-    tr_data,val_data = [],[]
-    for i,e in enumerate(L):
-        if i in idx_tr:
-            tr_data.append(e)
-        if i in idx_val:
-            val_data.append(e)
     train_dataloader = torch.utils.data.DataLoader(tr_data, shuffle=True, collate_fn=collate_fn, batch_size=tr_bs)
     eval_dataloader = torch.utils.data.DataLoader(val_data, shuffle=False, collate_fn=collate_fn, batch_size=val_bs)
     print("Starting training QLORA")
@@ -925,38 +954,15 @@ def main_qlora_generation(
         eval_steps=eval_steps
     )
     # create datasets
-    print("Create datasets")
-    train_path = folder_out / f"train_max_{limit_tokens}.json"
-    valid_path = folder_out / f"valid_max_{limit_tokens}.json"
-    full_path = folder_out / f"full_max_{limit_tokens}.json"
-    if not train_path.exists() or not valid_path.exists():
-        with open(file_examples) as f:
-            data_preprocessed = json.load(f)
-        data = data_preprocessed["data"]
-        template = data_preprocessed["template"]
-        L = []
-        for d in data:
-            template["llama_tokenized_template"] = template[
-                    "llama_tokenized_template"
-                ] + ["<0x0A>", str(d[field_label])]
-            text, tokenized_full_text = build_prompt(
-                template["llama_tokenized_template"],
-                d[field_input],
-                template["template_index_insert"],
-                tokenizer,
-                limit_tokens=limit_tokens,
-            )
-            d = {**d, "text": text, "tokenized_full_text": tokenized_full_text}
-            L.append(d)
-        idx_tr, idx_val = skMsel.train_test_split(np.arange(len(L)), train_size=train_size)  # type: ignore
-        idx_tr = set(idx_tr)
-        idx_val = set(idx_val)
-        with open(full_path, "w") as f:
-            json.dump(L, f)
-        with open(train_path, "w") as f:
-            json.dump([e for i, e in enumerate(L) if i in idx_tr], f)
-        with open(valid_path, "w") as f:
-            json.dump([e for i, e in enumerate(L) if i in idx_val], f)
+    generate_dataset(
+        folder_out=folder_out,
+        file_examples=file_examples,
+        field_label=field_label,
+        field_input=field_input,
+        tokenizer=tokenizer, 
+        limit_tokens=limit_tokens,
+        id=""
+    )
     train_dataset = datasets.load_dataset("json", data_files=str(train_path.resolve()), split="train")  # type: ignore
     valid_dataset = datasets.load_dataset("json", data_files=str(valid_path.resolve()), split="train")  # type: ignore
     # Set supervised fine-tuning parameters
