@@ -60,8 +60,8 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 
 
 def print_args(func):
-    print("Current time:",datetime.datetime.now())
     def inner(*args, **kwargs):
+        print("Current time:",datetime.datetime.now())
         print("*" * 100)
         print("Start", func.__name__)
         print("With *args", args)
