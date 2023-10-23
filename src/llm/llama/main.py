@@ -16,6 +16,8 @@ import shutil
 if TYPE_CHECKING:
     import transformers as trf
     import torch
+    import torch.nn as nn
+    import torch.utils.data as dt
     import huggingface_hub
     import pandas as pd
     import numpy as np
@@ -33,6 +35,8 @@ if TYPE_CHECKING:
 imports = [
     "import transformers as trf",
     "import torch",
+    "import torch.nn as nn",
+    "import torch.utils.data as dt",
     "import huggingface_hub",
     "import pandas as pd",
     "import numpy as np",
@@ -53,6 +57,11 @@ for i in imports:
     
 try:
     from src.baseline.baseline_functions import * #type: ignore
+except Exception:
+    pass
+
+try:
+    from src.llm.llama.class_nn import SimpleNN
 except Exception:
     pass
 
@@ -1113,6 +1122,7 @@ if __name__ == "__main__":
         "finetune",
         "embeddings_gen",
         "nn_embedding",
+        "nn_classifier"
     ]
     parser.add_argument(
         "-path_data_json",
@@ -1233,7 +1243,7 @@ if __name__ == "__main__":
         "-base_name",
         type=str,
         help="Base name of the json file with the layer id for get_data_embeddings (ex: embeddings_chunk__trunc_layer_-1_4460.json will give embeddings_chunk__trunc_)",
-        default="(0,)",
+        default="embeddings_chunk__trunc_",
     )
     parser.add_argument(
         "-path_backup_fields",
@@ -1389,10 +1399,9 @@ if __name__ == "__main__":
         ):
             # with open("/home/rmoine/tmp.txt","w") as f:
             #     f.write(str(d))
-            line_dict = json.loads(d)
-            bug_id = line_dict["bug_id"]
-            binary_severity = line_dict["binary_severity"]
-            hidden_state = np.array(line_dict["hidden_state"])
+            bug_id = d["bug_id"]
+            binary_severity = d["binary_severity"]
+            hidden_state = np.array(d["hidden_state"])
 
             base_name=args.base_name
             came_from = list(folder_embeddings.rglob(f"{base_name}layer_{layer_id[0]}_*.json"))
@@ -1411,3 +1420,84 @@ if __name__ == "__main__":
             with open(Path(args.path_data_folder) / 'output_file.json', 'a') as outfile:
                 json.dump(data, outfile)
                 outfile.write('\n')
+
+    elif args.algorithm == "nn_classifer":
+        cont = 0
+        aggregated_lists = []
+        binary_severities = []
+        file_path = Path('/project/def-aloise/andressa/aggregation_files/output_file.json')
+
+        with open(file_path, 'r') as f:
+            for line in f:
+                line_data = line.strip(",\n")
+                data_string = line_data.replace("'", '"')
+
+                # Handling PosixPath object
+                data_string = data_string.replace("PosixPath(", "")
+                data_string = data_string.replace(")", "")
+
+                aggregated_lists.append(eval(data_string)['aggregated_list'])
+                binary_severities.append(eval(data_string)['binary_severity'])
+
+                cont +=1
+                if cont == 100:
+                    break
+        # Perform train-test split with stratification
+        X_train, X_test, y_train, y_test = skMsel.train_test_split(
+            aggregated_lists, 
+            binary_severities, 
+            test_size=0.2, 
+            random_state=0, 
+            stratify=binary_severities
+        )
+        # Convert the lists to PyTorch tensors
+        aggregated_lists_tensor = torch.tensor(X_train, dtype=torch.float)
+        binary_severities_tensor = torch.tensor(y_train, dtype=torch.float)
+
+        # Create a TensorDataset from the tensors
+        dataset = dt.TensorDataset(aggregated_lists_tensor, binary_severities_tensor)
+
+        # Define batch size and create a DataLoader
+        batch_size = 32
+        dataloader = dt.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        
+        input_size = len(aggregated_lists[0])
+        hidden_size = 64
+        output_size = 1
+
+        model = SimpleNN(input_size, hidden_size, output_size)
+        criterion = nn.BCEWithLogitsLoss()  # Binary Cross Entropy Loss
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)  # lr = learning rate
+        
+        num_epochs = 100
+        total_samples = len(dataset)
+        for epoch in range(num_epochs):
+            for i, (inputs, labels) in enumerate(dataloader):
+                optimizer.zero_grad()
+                outputs = model(inputs)
+                loss = criterion(outputs, labels.reshape([-1,1]))
+                loss.backward()
+                optimizer.step()
+                if epoch % 10 == 0:
+                    print(f'Epoch [{epoch + 1}/{num_epochs}], Step [{i + 1}/{total_samples//batch_size+1}], Loss: {loss.item():.4f}')
+
+        aggregated_lists_test_tensor = torch.tensor(X_test, dtype=torch.float)
+        binary_severities_test_tensor = torch.tensor(y_test, dtype=torch.float)
+
+        test_tensor = dt.TensorDataset(aggregated_lists_test_tensor, binary_severities_test_tensor)
+        test_data = dt.DataLoader(test_tensor, batch_size=batch_size, shuffle=True)
+
+        # Set the model to evaluation mode
+        model.eval()
+
+        # Iterate through the test dataset
+        with torch.no_grad():
+            correct = 0
+            total = 0
+            for inputs, labels in test_data:  # Iterate through your test dataset
+                outputs = model(inputs)  # Forward pass
+                predicted = (outputs > 0.5).float()  # Assuming binary classification with threshold 0.5
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+            accuracy = correct / total
+            print(f'Test Accuracy: {accuracy:.4f}')
