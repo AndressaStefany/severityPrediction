@@ -738,7 +738,7 @@ def main_qlora_classification(
     )
     logger.info("dataloaders")
     def collate_fn(data: List[dict]):
-        inputs = tokenizer([d['text'] for d in data])
+        inputs = tokenizer([d['text'] for d in data], padding=True, truncation=True, return_tensors='pt')
         outputs = [d[field_label] for d in data]
         return torch.tensor(inputs, dtype=torch.float16),torch.tensor(outputs,dtype=torch.float16)
     train_dataloader = torch.utils.data.DataLoader(tr_data, shuffle=True, collate_fn=collate_fn, batch_size=tr_bs)
