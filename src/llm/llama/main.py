@@ -1337,20 +1337,21 @@ if __name__ == "__main__":
         if len(layer_id) > 1:
             raise ValueError(f"Expecting just one layer id not {len(layer_id)}")
         print(args.algorithm)
+        
+        with open('/project/def-aloise/andressa/aggregation_files/output_file.json', 'w') as outfile:
+            outfile.write("")
 
         for d in get_data_embeddings(
             folder_embeddings=folder_embeddings,
             layer_id=layer_id[0],
             base_name=args.base_name,
         ):
-            # with open("/home/rmoine/tmp.txt","w") as f:
-            #     f.write(str(d))
             bug_id = d["bug_id"]
             binary_severity = d["binary_severity"]
             hidden_state = np.array(d["hidden_state"])
 
             base_name=args.base_name
-            came_from = list(folder_embeddings.rglob(f"{base_name}layer_{layer_id[0]}_*.json"))
+            came_from = f"{base_name}layer_{layer_id[0]}_.json"
 
             sum_aggregated_array = np.sum(hidden_state, axis=0)
             mean_aggregated_array = sum_aggregated_array / len(hidden_state)
@@ -1363,31 +1364,27 @@ if __name__ == "__main__":
                 "from": came_from,
                 "aggregated_list": aggregated_list,
             }
-            with open(Path(args.path_data_folder) / 'output_file.json', 'a') as outfile:
+            with open('/project/def-aloise/andressa/aggregation_files/output_file.json', 'a') as outfile:
                 json.dump(data, outfile)
-                outfile.write('\n')
+                outfile.write(',\n')
 
     elif args.algorithm == "nn_classifer":
-        cont = 0
         aggregated_lists = []
         binary_severities = []
-        file_path = Path('/project/def-aloise/andressa/aggregation_files/output_file.json')
+        folder_path = Path('/project/def-aloise/andressa/aggregation_files/')
+        json_file_paths = [file for file in folder_path.glob("*.json")]
 
-        with open(file_path, 'r') as f:
-            for line in f:
-                line_data = line.strip(",\n")
-                data_string = line_data.replace("'", '"')
+        for json_file_path in json_file_paths:
+            with open(json_file_path, 'r') as f:
+                for line in f:
+                    line_data = line.strip(",\n")
+                    data_string = line_data.replace("'", '"')
 
-                # Handling PosixPath object
-                data_string = data_string.replace("PosixPath(", "")
-                data_string = data_string.replace(")", "")
+                    data_string = data_string.replace("PosixPath(", "")
+                    data_string = data_string.replace(")", "")
 
-                aggregated_lists.append(eval(data_string)['aggregated_list'])
-                binary_severities.append(eval(data_string)['binary_severity'])
-
-                cont +=1
-                if cont == 100:
-                    break
+                    aggregated_lists.append(eval(data_string)['aggregated_list'])
+                    binary_severities.append(eval(data_string)['binary_severity'])
         # Perform train-test split with stratification
         X_train, X_test, y_train, y_test = skMsel.train_test_split(
             aggregated_lists, 
@@ -1435,15 +1432,19 @@ if __name__ == "__main__":
 
         # Set the model to evaluation mode
         model.eval()
-
+        
+        predicted_list = []
         # Iterate through the test dataset
         with torch.no_grad():
             correct = 0
             total = 0
             for inputs, labels in test_data:  # Iterate through your test dataset
                 outputs = model(inputs)  # Forward pass
-                predicted = (outputs > 0.5).float()  # Assuming binary classification with threshold 0.5
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-            accuracy = correct / total
-            print(f'Test Accuracy: {accuracy:.4f}')
+                predicted = (outputs > 0.5).float()
+                prediction_data = {
+                    "aggregation": inputs.tolist(),
+                    "binary_severity": labels.tolist(),
+                    "prediction": predicted.squeeze().tolist(),
+                }
+                with open('/project/def-aloise/andressa/aggregation_files/predictions.json', 'w') as outfile:
+                    json.dump(prediction_data, outfile, indent=4)
