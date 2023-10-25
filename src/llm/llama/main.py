@@ -1064,6 +1064,12 @@ if __name__ == "__main__":
         default="/project/def-aloise/rmoine/data/",
     )
     parser.add_argument(
+        "-data_folder_path_to_save",
+        type=path_check,
+        help="Root path to the main data folder",
+        default="/project/def-aloise/andressa/data/",
+    )
+    parser.add_argument(
         "-algorithm",
         choices=algorithms_choices,
         help="Algorithm to execute",
@@ -1318,8 +1324,8 @@ if __name__ == "__main__":
         if len(layer_id) > 1:
             raise ValueError(f"Expecting just one layer id not {len(layer_id)}")
         print(args.algorithm)
-        
-        with open('/project/def-aloise/andressa/aggregation_files/output_file.json', 'w') as outfile:
+
+        with open(Path(args.data_folder_path_to_save) / 'output_file.json', 'w') as outfile:
             outfile.write("")
 
         for d in get_data_embeddings(
@@ -1338,21 +1344,21 @@ if __name__ == "__main__":
             mean_aggregated_array = sum_aggregated_array / len(hidden_state)
 
             aggregated_list = mean_aggregated_array.tolist()
-            
+
             data = {
                 "bug_id": bug_id,
                 "binary_severity": binary_severity,
                 "from": came_from,
                 "aggregated_list": aggregated_list,
             }
-            with open('/project/def-aloise/andressa/aggregation_files/output_file.json', 'a') as outfile:
+            with open(Path(args.data_folder_path_to_save) / 'output_aggregation.json', 'a') as outfile:
                 json.dump(data, outfile)
                 outfile.write(',\n')
 
     elif args.algorithm == "nn_classifer":
         aggregated_lists = []
         binary_severities = []
-        folder_path = Path('/project/def-aloise/andressa/aggregation_files/')
+        folder_path = Path(args.data_folder_path_to_save) / 'aggregation_files/'
         json_file_paths = [file for file in folder_path.glob("*.json")]
 
         for json_file_path in json_file_paths:
@@ -1368,10 +1374,10 @@ if __name__ == "__main__":
                     binary_severities.append(eval(data_string)['binary_severity'])
         # Perform train-test split with stratification
         X_train, X_test, y_train, y_test = skMsel.train_test_split(
-            aggregated_lists, 
-            binary_severities, 
-            test_size=0.2, 
-            random_state=0, 
+            aggregated_lists,
+            binary_severities,
+            test_size=0.2,
+            random_state=0,
             stratify=binary_severities
         )
         # Convert the lists to PyTorch tensors
@@ -1413,8 +1419,10 @@ if __name__ == "__main__":
 
         # Set the model to evaluation mode
         model.eval()
-        
+
         predicted_list = []
+        with open(folder_path / 'predictions.json', 'w') as outfile:
+            json.dump("", outfile)
         # Iterate through the test dataset
         with torch.no_grad():
             correct = 0
@@ -1427,5 +1435,6 @@ if __name__ == "__main__":
                     "binary_severity": labels.tolist(),
                     "prediction": predicted.squeeze().tolist(),
                 }
-                with open('/project/def-aloise/andressa/aggregation_files/predictions.json', 'w') as outfile:
-                    json.dump(prediction_data, outfile, indent=4)
+                with open(folder_path / 'predictions.json', 'a') as outfile:
+                    json.dump(prediction_data, outfile)
+                    outfile.write(',\n')
