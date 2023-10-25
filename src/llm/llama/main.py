@@ -11,6 +11,7 @@ from textwrap import wrap
 import argparse
 import abc
 import shutil
+import logging
 
 # typehint imports
 if TYPE_CHECKING:
@@ -65,7 +66,11 @@ try:
 except Exception:
     pass
 
-
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 
 
@@ -223,7 +228,7 @@ def get_max_mix(token_lengths, tokenizer: 'LlamaTokenizer', pipeline: 'trf.Pipel
 def get_tokenizer(token: str, model_name: str) -> 'LlamaTokenizer':
     huggingface_hub.login(token=token)
     tokenizer: 'LlamaTokenizer' = trf.AutoTokenizer.from_pretrained(model_name, use_fast=True,
-        cache_dir="/scratch/$USER/cache_dir")#type: ignore
+        cache_dir="/project/def-aloise/rmoine/cache_dir",token=token)#type: ignore
     return tokenizer
 def initialize_model(model_name: str, token: str, hidden_states: bool = False, base_class: Any = trf.AutoModelForCausalLM) -> 'LlamaModel':
     huggingface_hub.login(token=token)
@@ -238,7 +243,8 @@ def initialize_model(model_name: str, token: str, hidden_states: bool = False, b
         quantization_config=double_quant_config,
         return_dict=hidden_states,
         output_hidden_states=hidden_states,
-        cache_dir="/scratch/$USER/cache_dir"
+        cache_dir="/project/def-aloise/rmoine/cache_dir",
+        token=token
     )
     return model
 def initialize_model_inference(model_name: str, token: str, return_model: bool = True, hidden_states: bool = False) -> Union[Tuple['LlamaTokenizer', 'LlamaModel'],'LlamaTokenizer']:
@@ -594,20 +600,20 @@ class Evaluator:
             self.buffer[k].append(v)
 
 @print_args
-def generate_dataset(folder_out: Path, file_examples: Path,  field_label: str, field_input: str, tokenizer, limit_tokens: int, id: str = ""):
+def generate_dataset(folder_out: Path, file_examples: Path,  field_label: str, field_input: str, tokenizer, limit_tokens: int, train_size: float, id: str = ""):
     """Generates the dataset for the finetuning"""
-    print("Create datasets")
+    logger.info("Create datasets")
     train_path = folder_out / f"train_max{id}.json"
     valid_path = folder_out / f"valid_max{id}.json"
     full_path = folder_out / f"full_max{id}.json"
     if not train_path.exists() or not valid_path.exists():
-        print("-> Creating cache")
+        logger.info("-> Creating cache")
         with open(file_examples) as f:
             data_preprocessed = json.load(f)
         data = data_preprocessed["data"]
         template = data_preprocessed["template"]
         L = []
-        for d in data:
+        for d in tqdm.tqdm(data):
             template["llama_tokenized_template"] = template[
                     "llama_tokenized_template"
                 ] + ["<0x0A>", str(d[field_label])]
@@ -634,12 +640,12 @@ def generate_dataset(folder_out: Path, file_examples: Path,  field_label: str, f
         with open(valid_path, "w") as f:
             json.dump(valid_data, f)
     else:
-        print("-> Reading cache")
+        logger.info("-> Reading cache")
         with open(train_path, "r") as f:
             train_data = json.load(f)
         with open(valid_path, "r") as f:
             valid_data = json.load(f)
-    return train_data, valid_data
+    return train_data, valid_data, train_path, valid_path
 
 @print_args
 def main_qlora_classification(
@@ -692,11 +698,13 @@ def main_qlora_classification(
         - train_size: float = 0.3, the size of the training dataset
     """
     print("main_qlora")
+    logger.info("main_qlora")
     if token != "":
         huggingface_hub.login(token=token)
     if not folder_out.exists():
         folder_out.mkdir(parents=True)
 
+    logger.info("peft.LoraConfig")
     peft_config = peft.LoraConfig(  # type: ignore
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
@@ -705,32 +713,37 @@ def main_qlora_classification(
         inference_mode=False,   
         task_type="CAUSAL_LM",
     )
+    logger.info("LlamaTokenizer")
     tokenizer: LlamaTokenizer = initialize_model_inference(model_name, token, return_model=False) #type: ignore
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
+    logger.info("initialize_model")
     model = initialize_model(model_name=model_name, token=token, base_class=trf.AutoModelForSequenceClassification)
+    logger.info("get_peft_model")
     model = peft.get_peft_model(model, peft_config)
     model.config.use_cache = False
     model.config.pretraining_tp = 1
     model.print_trainable_parameters()
     # create datasets
-    tr_data, val_data = generate_dataset(
+    logger.info("generate_dataset")
+    tr_data, val_data, _, _ = generate_dataset(
         folder_out=folder_out,
         file_examples=file_examples,
         field_label=field_label,
         field_input=field_input,
         tokenizer=tokenizer, 
         limit_tokens=limit_tokens,
+        train_size=train_size,
         id=""
     )
-    print("Building dataloaders")
+    logger.info("dataloaders")
     def collate_fn(data: List[dict]):
-        inputs = tokenizer([d['text'] for d in data])
+        inputs = tokenizer([d['text'] for d in data], padding=True, truncation=True, return_tensors='pt')
         outputs = [d[field_label] for d in data]
-        yield inputs,outputs
+        return torch.tensor(inputs, dtype=torch.float16),torch.tensor(outputs,dtype=torch.float16)
     train_dataloader = torch.utils.data.DataLoader(tr_data, shuffle=True, collate_fn=collate_fn, batch_size=tr_bs)
     eval_dataloader = torch.utils.data.DataLoader(val_data, shuffle=False, collate_fn=collate_fn, batch_size=val_bs)
-    print("Starting training QLORA")
+    logger.info("training QLORA")
     optimizer = torch.optim.AdamW(params=model.parameters(), lr=learning_rate)
 
     # Instantiate scheduler
@@ -743,7 +756,7 @@ def main_qlora_classification(
     model.to(device)
     for epoch in range(num_train_epochs):
         model.train()
-        for step, (inputs, labels) in enumerate(tqdm.tqdm(train_dataloader)):
+        for step,  (inputs, labels) in enumerate(tqdm.tqdm(train_dataloader)):
             inputs.to(device)
             outputs = model(inputs)
             loss = outputs.loss
@@ -765,7 +778,7 @@ def main_qlora_classification(
         break
         # eval_metric = metric.compute()
         # print(f"epoch {epoch}:", eval_metric)
-    print("Saving trained QLORA model")
+    logger.info("Saving trained QLORA model")
     # if new_model_name != "":
     #     output_dir = "./trained_model"
     #     trainer.model.save_pretrained(output_dir)
@@ -833,17 +846,19 @@ def main_qlora_generation(
         - eval_steps: int, the frequency of evaluating the model during training. Default: 20
         - train_size: float = 0.3, the size of the training dataset
     """
-    print("main_qlora")
+    logger.info("main_qlora")
     if token != "":
         huggingface_hub.login(token=token)
     if not folder_out.exists():
         folder_out.mkdir(parents=True)
 
+    logger.info("initialize_model_inference")
     tokenizer,model = initialize_model_inference(model_name, token, return_model=True) #type: ignore
     model.config.use_cache = False
     model.config.pretraining_tp = 1
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
+    logger.info("config elements")
     peft_config = peft.LoraConfig(# type: ignore
             lora_alpha=lora_alpha,
             lora_dropout=lora_dropout,
@@ -875,19 +890,22 @@ def main_qlora_generation(
         eval_steps=eval_steps
     )
     # create datasets
-    generate_dataset(
+    logger.info("generate_dataset")
+    _, _, train_path, valid_path = generate_dataset(
         folder_out=folder_out,
         file_examples=file_examples,
         field_label=field_label,
         field_input=field_input,
         tokenizer=tokenizer, 
         limit_tokens=limit_tokens,
+        train_size=train_size,
         id=""
     )
+    logger.info("load_dataset")
     train_dataset = datasets.load_dataset("json", data_files=str(train_path.resolve()), split="train")  # type: ignore
     valid_dataset = datasets.load_dataset("json", data_files=str(valid_path.resolve()), split="train")  # type: ignore
     # Set supervised fine-tuning parameters
-    print("Set supervised fine-tuning parameters")
+    logger.info("Set supervised fine-tuning parameters")
     trainer = trl.SFTTrainer(  # type: ignore
         model=model,
         train_dataset=train_dataset,  #type: ignore
@@ -899,13 +917,14 @@ def main_qlora_generation(
         packing=False,
         max_seq_length=limit_tokens
     )
-    print("Starting training QLORA")
+    logger.info("Starting training QLORA")
     trainer.train()
-    print("Saving trained QLORA model")
+    logger.info("Saving trained QLORA model")
     if new_model_name != "":
         output_dir = "./trained_model"
         trainer.model.save_pretrained(output_dir)
         trainer.model.push_to_hub(new_model_name)
+    
 def get_max_tokens(evaluator: MaxTokensEvaluator, min_token_length: int = 0, max_token_length: int = 5000):
     """
     The main algorithm comes from get_max_mix. 
