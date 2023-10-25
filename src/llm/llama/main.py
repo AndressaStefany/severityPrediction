@@ -78,10 +78,7 @@ class CustomFormatter(logging.Formatter):
         super().__init__(fmt, datefmt, style, validate)
         try:
             self.total_ram_gpu = float(
-                subprocess.check_output(
-                    "nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits -i 0",
-                    shell=True,
-                )
+                subprocess.check_output("nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits -i 0",shell=True,)
                 .decode("utf-8")
                 .strip()
             )
@@ -795,7 +792,7 @@ def main_qlora_classification(
     limit_tokens: int = 7364,
     new_model_name: str = "",
     mapping_dict: Optional[dict] = None
-):
+) -> Tuple['np.ndarray',List[float],'pd.DataFrame']:
     """
     Perform training and fine-tuning of a model for causal reasoning using LoRA.
     Doc: https://miro.medium.com/v2/resize:fit:4800/format:webp/1*rOW5plKBuMlGgpD0SO8nZA.png
@@ -881,9 +878,9 @@ def main_qlora_classification(
             truncation=True,
             return_tensors="pt",
         )["input_ids"]
-        logger.info(
-            f"batch {len(data)=} making of text of size {len(inputs[0])=} for text {data[0]['text']=}"
-        )
+        # logger.info(
+        #     f"batch {len(data)=} making of text of size {len(inputs[0])=} for text {data[0]['text']=}"
+        # )
         outputs = [d[field_label] for d in data]
         return data, torch.tensor(inputs, dtype=torch.int32), torch.tensor(
             outputs, dtype=torch.float16
@@ -916,6 +913,7 @@ def main_qlora_classification(
     model.to(device)
     os.system("nvidia-smi")
     evaluator = Evaluator()
+    assert num_train_epochs>0, "Train at least one epoch required"
     for epoch in range(num_train_epochs):
         model.train()
         logger.info(f"{epoch=}")
@@ -945,9 +943,10 @@ def main_qlora_classification(
         for step, (d, inputs, labels) in enumerate(tqdm.tqdm(eval_dataloader)):
             inputs.to(device)
             with torch.no_grad():
-                outputs = model(inputs, return_dict=True).cpu().detach().numpy()
+                outputs = model(inputs, return_dict=True)
             pred = outputs.logits.argmax(dim=-1).cpu().detach().tolist()
-            evaluator.add_samples(d=d,pred=pred,logits=outputs.logits.detach().tolist())
+            logits = outputs.logits.detach().tolist()
+            evaluator.add_samples(d=d,pred=pred,logits=logits)
         fields_data = evaluator.get_data()
         conf_matrix, f1, data = compute_metrics_from_list(
             fields_data, 
@@ -966,9 +965,9 @@ def main_qlora_classification(
     if new_model_name != "":
         output_dir = folder_out / "trained_model"
         output_dir.mkdir()
-        model.save_pretrained(output_dir)
+        model.save_pretrained(str(output_dir))
         model.push_to_hub(new_model_name)
-    return conf_matrix, f1, data
+    return conf_matrix, f1, data #type: ignore
 
 
 @print_args
