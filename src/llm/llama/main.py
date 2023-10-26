@@ -656,7 +656,7 @@ def plot_confusion(
 class CustomEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, Path):
-            return str(obj)  # Serialize the path as a string
+            return str(obj.resolve())  # Serialize the path as a string
         return super().default(obj)
 
 def find_representant(
