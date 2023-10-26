@@ -1335,19 +1335,20 @@ def get_classifier():
     model.eval()
 
     # bug_ids_list = []
-    labels_list = []
-    outputs_lists = []
+    # labels_list = []
+    # outputs_lists = []
+    result_list = []
     with torch.no_grad():
         for bug_ids, inputs, labels in test_dataloader:  # Iterate through your test dataset
             outputs = model(inputs)  # Forward pass
             predicted = (outputs > 0.5).float()
             # bug_ids_list.extend(bug_ids.tolist())
-            labels_list.extend(labels.tolist())
-            outputs_lists.extend(predicted.tolist())
+            result = [{"true_label": label, "prediction": prediction} for label, prediction in zip(labels.tolist(), predicted.tolist())]
+            result_list.extend(result)
             # with open(folder_path / 'predictions.json', 'a') as outfile:
             #     json.dump(prediction_data, outfile)
             #     outfile.write(',\n')
-
+    compute_metrics_from_list(result_list)
 
 class DataoutDict(TypedDict):
     bug_id: str
