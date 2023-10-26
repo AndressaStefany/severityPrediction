@@ -463,7 +463,7 @@ def extract_fields_from_json(folder_path: Path) -> List[Dict]:
 
 def compute_metrics_from_list(
     fields_data: List,
-    tokenizer: Optional = None,
+    tokenizer: Optional[Any] = None,
     path_backup_fields: Optional[Path] = None,
     input_field: str = "input",
     pred_field: str = "severity_pred",
