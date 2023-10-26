@@ -1038,6 +1038,81 @@ def get_data_embeddings(folder_embeddings: Path, layer_id: int = -1, base_name: 
                     yield data
                 except json.JSONDecodeError as e:
                     print(f"Error decoding JSON: {e}")
+
+                    
+def get_classifier():
+    # hidden_size = 64, random_state (train test split) = 0, batch_size = 32
+    # criterion = nn.BCEWithLogitsLoss(), lr=0.001, num_epochs = 100
+    binary_severities = []
+    dict_data = []
+    folder_path = Path(args.data_folder_path_to_save) / 'aggregation_files/'
+    json_file_paths = [file for file in folder_path.glob("*.json")]
+
+    for json_file_path in json_file_paths:
+        with open(json_file_path, 'r') as f:
+            for line in f:
+                line_data = line.strip(",\n")
+                data_string = line_data.replace("'", '"')
+
+                data_string = data_string.replace("PosixPath(", "")
+                data_string = data_string.replace(")", "")
+                
+                dict_data.append(eval(data_string))
+                binary_severities.append(eval(data_string)['binary_severity'])
+    train, test = skMsel.train_test_split(
+        dict_data
+        test_size=0.2,
+        random_state=0,
+        stratify=binary_severities
+    )
+    def collate_fn(data: List[dict]):
+        bug_ids = [d['bug_id'] for d in data]
+        inputs = [d['aggregated_list'] for d in data]
+        labels = [d['binary_severity'] for d in data]
+        return torch.tensor(bug_ids, dtype=torch.float16), torch.tensor(inputs, dtype=torch.int16), torch.tensor(labels, dtype=torch.float16)
+
+    # Define batch size and create a DataLoader
+    batch_size = 32
+    train_dataloader = dt.DataLoader(train, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    
+    input_size = len(train[0]['aggregated_list']) #check
+    hidden_size = 64
+    output_size = 1
+
+    model = SimpleNN(input_size, hidden_size, output_size)
+    criterion = nn.BCEWithLogitsLoss()  # Binary Cross Entropy Loss
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)  # lr = learning rate
+    
+    num_epochs = 100
+    total_samples = len(train)
+    for epoch in range(num_epochs):
+        for i, (bug_ids, inputs, labels) in enumerate(train_dataloader):
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels.reshape([-1,1]))
+            loss.backward()
+            optimizer.step()
+            if epoch % 10 == 0:
+                print(f'Epoch [{epoch + 1}/{num_epochs}], Step [{i + 1}/{total_samples//batch_size+1}], Loss: {loss.item():.4f}')
+
+    test_dataloader = dt.DataLoader(test, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+
+    # Set the model to evaluation mode
+    model.eval()
+
+    # bug_ids_list = []
+    labels_list = []
+    outputs_lists = []
+    with torch.no_grad():
+        for bug_ids, inputs, labels in test_dataloader:  # Iterate through your test dataset
+            outputs = model(inputs)  # Forward pass
+            predicted = (outputs > 0.5).float()
+            # bug_ids_list.extend(bug_ids.tolist())
+            labels_list.extend(labels.tolist())
+            outputs_lists.extend(predicted.tolist())
+            # with open(folder_path / 'predictions.json', 'a') as outfile:
+            #     json.dump(prediction_data, outfile)
+            #     outfile.write(',\n')
     
 
 class DataoutDict(TypedDict):
@@ -1375,85 +1450,4 @@ if __name__ == "__main__":
                 outfile.write(',\n')
 
     elif args.algorithm == "nn_classifer":
-        aggregated_lists = []
-        binary_severities = []
-        folder_path = Path(args.data_folder_path_to_save) / 'aggregation_files/'
-        json_file_paths = [file for file in folder_path.glob("*.json")]
-
-        for json_file_path in json_file_paths:
-            with open(json_file_path, 'r') as f:
-                for line in f:
-                    line_data = line.strip(",\n")
-                    data_string = line_data.replace("'", '"')
-
-                    data_string = data_string.replace("PosixPath(", "")
-                    data_string = data_string.replace(")", "")
-
-                    aggregated_lists.append(eval(data_string)['aggregated_list'])
-                    binary_severities.append(eval(data_string)['binary_severity'])
-        # Perform train-test split with stratification
-        X_train, X_test, y_train, y_test = skMsel.train_test_split(
-            aggregated_lists,
-            binary_severities,
-            test_size=0.2,
-            random_state=0,
-            stratify=binary_severities
-        )
-        # Convert the lists to PyTorch tensors
-        aggregated_lists_tensor = torch.tensor(X_train, dtype=torch.float)
-        binary_severities_tensor = torch.tensor(y_train, dtype=torch.float)
-
-        # Create a TensorDataset from the tensors
-        dataset = dt.TensorDataset(aggregated_lists_tensor, binary_severities_tensor)
-
-        # Define batch size and create a DataLoader
-        batch_size = 32
-        dataloader = dt.DataLoader(dataset, batch_size=batch_size, shuffle=True)
-        
-        input_size = len(aggregated_lists[0])
-        hidden_size = 64
-        output_size = 1
-
-        model = SimpleNN(input_size, hidden_size, output_size)
-        criterion = nn.BCEWithLogitsLoss()  # Binary Cross Entropy Loss
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)  # lr = learning rate
-        
-        num_epochs = 100
-        total_samples = len(dataset)
-        for epoch in range(num_epochs):
-            for i, (inputs, labels) in enumerate(dataloader):
-                optimizer.zero_grad()
-                outputs = model(inputs)
-                loss = criterion(outputs, labels.reshape([-1,1]))
-                loss.backward()
-                optimizer.step()
-                if epoch % 10 == 0:
-                    print(f'Epoch [{epoch + 1}/{num_epochs}], Step [{i + 1}/{total_samples//batch_size+1}], Loss: {loss.item():.4f}')
-
-        aggregated_lists_test_tensor = torch.tensor(X_test, dtype=torch.float)
-        binary_severities_test_tensor = torch.tensor(y_test, dtype=torch.float)
-
-        test_tensor = dt.TensorDataset(aggregated_lists_test_tensor, binary_severities_test_tensor)
-        test_data = dt.DataLoader(test_tensor, batch_size=batch_size, shuffle=True)
-
-        # Set the model to evaluation mode
-        model.eval()
-
-        predicted_list = []
-        with open(folder_path / 'predictions.json', 'w') as outfile:
-            json.dump("", outfile)
-        # Iterate through the test dataset
-        with torch.no_grad():
-            correct = 0
-            total = 0
-            for inputs, labels in test_data:  # Iterate through your test dataset
-                outputs = model(inputs)  # Forward pass
-                predicted = (outputs > 0.5).float()
-                prediction_data = {
-                    "aggregation": inputs.tolist(),
-                    "binary_severity": labels.tolist(),
-                    "prediction": predicted.squeeze().tolist(),
-                }
-                with open(folder_path / 'predictions.json', 'a') as outfile:
-                    json.dump(prediction_data, outfile)
-                    outfile.write(',\n')
+        get_classifier()
