@@ -463,7 +463,7 @@ def extract_fields_from_json(folder_path: Path) -> List[Dict]:
 
 def compute_metrics_from_list(
     fields_data: List,
-    tokenizer,
+    tokenizer: Optional = None,
     path_backup_fields: Optional[Path] = None,
     input_field: str = "input",
     pred_field: str = "severity_pred",
@@ -486,12 +486,14 @@ def compute_metrics_from_list(
         else:
             raise Exception("Missing field binary_severity")
     # Count number of tokens
-    data["n_tokens"] = data[input_field].apply(lambda x: len(tokenizer(x)["input_ids"]))  # type: ignore
+    if tokenizer is not None:
+        data["n_tokens"] = data[input_field].apply(lambda x: len(tokenizer(x)["input_ids"]))  # type: ignore
     data_full = data.copy()
     # Filter by limit of tokens
-    data = data.query(
-        f"n_tokens < {n_tokens_show_max} & n_tokens >= {n_tokens_show_min}"
-    )
+    if tokenizer is not None:
+        data = data.query(
+            f"n_tokens < {n_tokens_show_max} & n_tokens >= {n_tokens_show_min}"
+        )
     # Replace Nan by -2 in prediction
     data[pred_field] = data[pred_field].apply(lambda x: -2 if np.isnan(x) else int(x))
     data["binary_severity"] = np.where(
