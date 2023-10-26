@@ -519,8 +519,9 @@ def compute_metrics_from_list(
 def compute_metrics_from_files(
     conf_matrix: "np.ndarray", 
     f1: List[float], 
-    data_full: pd.DataFrame,
     folder_out: Path,
+    data_full: Optional[pd.DataFrame] = None,
+    true_field: str = "binary_severity",
     pred_field: str = "severity_pred",
     mapping_dict: Optional[dict] = None,
     n_tokens_infered_max: int = 7364,
@@ -537,7 +538,8 @@ def compute_metrics_from_files(
     # Return
         None
     """
-    data_full.to_json(folder_out / "data.json", orient="records", indent=4)
+    if data_full is not None:
+        data_full.to_json(folder_out / "data.json", orient="records", indent=4)
     with open(folder_out / "metrics.json", "w") as f:
         json.dump(
             {
@@ -547,13 +549,16 @@ def compute_metrics_from_files(
             },
             f,
         )
-    possibilities_pred = sorted(
-        list(
-            set(data["pred"].unique().tolist()).union(
-                set(data["true"].unique().tolist())
+    if data_full is not None:
+        possibilities_pred = sorted(
+            list(
+                set(data[true_field].unique().tolist()).union(
+                    set(data[pred_field].unique().tolist())
+                )
             )
         )
-    )
+    else:
+        possibilities_pred = list(range(len(conf_matrix)))
     if mapping_dict is None:
         mapping_dict = {
             -2: f"Too big >={n_tokens_infered_max}",
@@ -572,13 +577,14 @@ def compute_metrics_from_files(
         title=f"Confusion matrix\nfor field {pred_field}\n{n_tokens_infered_max=}\nn_tokens_shown in [{n_tokens_show_min};{n_tokens_show_max}[",
         id=id,
     )
-    # find representants
-    find_representant(
-        data_full,
-        folder_out / f"representants{id}.json",
-        n_samples=5,
-        mapping_dict=mapping_dict,
-    )
+    if data_full is not None:
+        # find representants
+        find_representant(
+            data_full,
+            folder_out / f"representants{id}.json",
+            n_samples=5,
+            mapping_dict=mapping_dict,
+        )
 
 
 def plot_confusion(
@@ -624,7 +630,10 @@ def plot_confusion(
     try:
         from pretty_confusion_matrix import pp_matrix
     except Exception:
-        from src.llm.llama.pretty_confusion_matrix import pp_matrix
+        try:
+            from src.llm.llama.pretty_confusion_matrix import pp_matrix
+        except Exception:
+            from llama.pretty_confusion_matrix import pp_matrix
     pp_matrix(  # type: ignor
         df_conf_matrix,
         cmap="coolwarm",
@@ -643,10 +652,12 @@ def plot_confusion(
         pass
 
 
-def custom_encoder(obj):
-    """Allow to encode into json file tuple keys"""
-    return str(obj)
 
+class CustomEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, Path):
+            return str(obj)  # Serialize the path as a string
+        return super().default(obj)
 
 def find_representant(
     df: "pd.DataFrame", path_out: Path, mapping_dict: Dict, n_samples: int = 5
@@ -914,6 +925,8 @@ def main_qlora_classification(
     os.system("nvidia-smi")
     evaluator = Evaluator()
     assert num_train_epochs>0, "Train at least one epoch required"
+    metrics_folder = folder_out / "metrics"
+    metrics_folder.mkdir(exist_ok=True, parents=True)
     for epoch in range(num_train_epochs):
         model.train()
         logger.info(f"{epoch=}")
@@ -955,10 +968,15 @@ def main_qlora_classification(
             pred_field="pred", 
             mapping_dict=mapping_dict, 
             n_tokens_infered_max=limit_tokens,
-            n_tokens_show_max=1000000, 
+            n_tokens_show_max=limit_tokens, 
             n_tokens_show_min=0
         )
-        accuracy = np.sum(np.diag(conf_matrix))
+        accuracy = np.sum(np.diag(conf_matrix))/np.sum(conf_matrix)
+        with open(metrics_folder / f"epoch_{epoch}.json", "w") as f:
+            json.dump({
+                "conf_matrix": conf_matrix.tolist(),
+                "f1": f1,
+            },f,indent=4)
         print(f"epoch {epoch}: {accuracy=} {f1=}")
     
     logger.info("Saving trained QLORA model")
@@ -1263,7 +1281,32 @@ class DataoutDict(TypedDict):
     severity_pred: Union[int, float]
     binary_severity: int
 
-
+def aggr_finetune(
+            folder_out: Path,
+            folder_in: Path,
+            pattern_name: str
+        ):
+    samples = []
+    for p in folder_in.rglob(pattern=pattern_name):
+        path_parameters = p / "parameters.json"
+        path_metrics = p / "metrics"
+        # get the parameters
+        if not path_parameters.exists() or not path_metrics.exists():
+            continue
+        with open(path_parameters) as f:
+            params = json.load(f)
+        # extract the metrics
+        for path_epoch in path_metrics.rglob("epoch_*"):
+            epoch = int(path_epoch.stem.split("_")[-1])
+            with open(path_epoch) as f:
+                metrics = json.load(f)
+            samples.append({
+                **params,
+                **metrics,
+                "epoch":epoch
+            })
+    with open(folder_out / "metrics.json", "w") as f:
+        json.dump(samples,f)
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Select LLM script to run")
 
@@ -1286,6 +1329,7 @@ if __name__ == "__main__":
         "embeddings_gen",
         "nn_embedding",
         "nn_classifier",
+        "aggr_finetune"
     ]
     parser.add_argument(
         "-path_data_json",
@@ -1391,6 +1435,12 @@ if __name__ == "__main__":
         default=8,
     )
     parser.add_argument(
+        "-lr",
+        type=float,
+        help="Learning rate",
+        default=1e-3,
+    )
+    parser.add_argument(
         "-num_train_epochs",
         type=int,
         help="Number of training epochs for qlora",
@@ -1413,6 +1463,12 @@ if __name__ == "__main__":
         type=str,
         help="Allow to add the missing field of binary_severity based on the bug_id common field. Relative path to the data path",
         default="llm/data_preprocessed_tokens.json",
+    )
+    parser.add_argument(
+        "-pattern_name",
+        type=str,
+        help="pattern of the root folders where the finetuning wrote metrics",
+        default="qlora_finetune_class_*",
     )
     args = parser.parse_args()
     print(args)
@@ -1502,6 +1558,8 @@ if __name__ == "__main__":
     elif args.algorithm == "finetune_classification":
         path_out = args.path_data_folder / f"qlora_finetune_{args.id}"
         path_out.mkdir(parents=True, exist_ok=True)
+        with open(path_out / "parameters.json", "w") as f:
+            json.dump(vars(args),indent=4,fp=f,cls=CustomEncoder)
         conf_matrix, f1, data = main_qlora_classification(
             model_name=args.model_name,
             file_examples=args.path_data_json,
@@ -1515,6 +1573,7 @@ if __name__ == "__main__":
             lora_r=args.qlora_r,
             limit_tokens=args.n_tokens_infered_max,
             num_train_epochs=args.num_train_epochs,
+            learning_rate=args.lr
         )
         compute_metrics_from_files(
             conf_matrix=conf_matrix,
@@ -1532,7 +1591,7 @@ if __name__ == "__main__":
             min_token_length=1,
             max_token_length=10000,
         )
-        print(f"{max_work=},{min_not_work=}")
+        logger.info(f"{max_work=},{min_not_work=}")
     elif args.algorithm == "max_tokens_embeddings":
         (max_work, min_not_work) = get_max_tokens(
             EmbeddingsMaxTokens(model_name=args.model_name, token=args.token),
@@ -1587,6 +1646,14 @@ if __name__ == "__main__":
             id_pred=args.id,
             limit_tokens=args.n_tokens_infered_max,
         )
+    elif args.algorithm == "aggr_finetune":
+        folder_out: Path = args.path_data_folder / "train_class"
+        folder_out.mkdir(exist_ok=True, parents=True)
+        aggr_finetune(
+            folder_out=folder_out,
+            folder_in=args.path_data_folder,
+            pattern_name=args.pattern_name
+        )
     elif args.algorithm == "nn_embedding":
         folder_embeddings = Path(args.path_data_folder) / "embeddings"
         layer_id: Tuple[int] = eval(args.layers_ids)
@@ -1627,7 +1694,6 @@ if __name__ == "__main__":
             ) as outfile:
                 json.dump(data, outfile)
                 outfile.write(",\n")
-
     elif args.algorithm == "nn_classifer":
         aggregated_lists = []
         binary_severities = []
