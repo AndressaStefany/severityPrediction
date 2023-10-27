@@ -823,6 +823,7 @@ def generate_dataset(
 @print_args
 def main_qlora_classification(
     file_examples: Path,
+    file_split: Path,
     folder_out: Path,
     lora_alpha: int = 16,
     lora_dropout: float = 0.1,
@@ -900,21 +901,20 @@ def main_qlora_classification(
         base_class=trf.AutoModelForSequenceClassification,
     )
     logger.info("get_peft_model")
-    model = peft.get_peft_model(model, peft_config)
-    model.config.use_cache = False
-    model.config.pretraining_tp = 1
+    model = peft.get_peft_model(model, peft_config)# type: ignore
+    model.config.use_cache = False# type: ignore
+    model.config.pretraining_tp = 1# type: ignore
     model.print_trainable_parameters()
     # create datasets
     logger.info("generate_dataset")
     tr_data, val_data, train_path, valid_path = generate_dataset(
         folder_out=folder_out.parent,
         file_examples=file_examples,
-        field_label=field_label,
+        file_split=file_split,
         field_input=field_input,
         token=token,
         model_name=model_name,
         limit_tokens=limit_tokens,
-        train_size=train_size,
         id=f"_{model_name}_{limit_tokens}",
     )
     logger.info(f"Using {train_path} {valid_path}")
@@ -1038,6 +1038,7 @@ def main_qlora_classification(
 @print_args
 def main_qlora_generation(
     file_examples: Path,
+    file_split: Path,
     folder_out: Path,
     lora_alpha: int = 16,
     lora_dropout: float = 0.1,
@@ -1145,12 +1146,11 @@ def main_qlora_generation(
     train_data, val_data, train_path, valid_path = generate_dataset(
         folder_out=folder_out.parent,
         file_examples=file_examples,
-        field_label=field_label,
+        file_split=file_split,
         field_input=field_input,
         token=token,
         model_name=model_name,
         limit_tokens=limit_tokens,
-        train_size=train_size,
         id=f"_{model_name}_{limit_tokens}",
     )
     logger.info(f"Using {train_path} {valid_path}")
@@ -1167,7 +1167,7 @@ def main_qlora_generation(
         model=model,
         train_dataset=train_dataset,  # type: ignore
         eval_dataset=valid_dataset,  # type: ignore
-        peft_config=peft_config,
+        peft_config=peft_config,# type: ignore
         dataset_text_field="text",
         tokenizer=tokenizer,
         args=training_arguments,
@@ -1664,6 +1664,7 @@ if __name__ == "__main__":
         main_qlora_generation(
             model_name=args.model_name,
             file_examples=args.path_data_json,
+            file_split=args.path_data_folder / "split.json",
             new_model_name=args.new_model_name,
             folder_out=path_out,
             token=args.token,
@@ -1683,6 +1684,7 @@ if __name__ == "__main__":
         conf_matrix, f1, data = main_qlora_classification(
             model_name=args.model_name,
             file_examples=args.path_data_json,
+            file_split=args.path_data_folder / "split.json",
             new_model_name=args.new_model_name,
             folder_out=path_out,
             token=args.token,
