@@ -458,8 +458,8 @@ def main_inference(
             {
                 **d,
                 "answer": answer,
-                f"severity_pred{id_pred}": severity,
-                f"input{id_pred}": text,
+                f"severity_pred": severity,
+                f"input": text,
             }
         )
         if i % 5 == 0:
@@ -1267,7 +1267,7 @@ def get_llama2_embeddings(
     print(f"Running for {start=} {end=}")
     folder_predictions = folder_out
     folder_predictions.mkdir(exist_ok=True, parents=True)
-    get_file_path = lambda idx_layer: folder_predictions / f"embeddings_chunk{id_pred}_layer_{idx_layer}_{start}.json"
+    get_file_path = lambda idx_layer: folder_predictions / f"embeddings_chunk{id_pred}_layer_{idx_layer}_{start}.hdf5"
     for i, d in tqdm.tqdm(enumerate(data), total=len(data)):
         tokenized_full_text = tokenizer.encode(d["description"])
         tokenized_full_text = tokenized_full_text[:limit_tokens]
@@ -1297,7 +1297,7 @@ def merge_data_embeddings(
     - base_name: str = "embeddings_chunk_", the base name of the embedding hdf5 to merge
     - auto_remove: bool = True, if yes autoremove the files when the data have been transfered
     """
-    sorted_path = list(folder_embeddings.rglob(f"{base_name}layer_{layer_id}_*.json"))
+    sorted_path = list(folder_embeddings.rglob(f"{base_name}layer_{layer_id}_*.hdf5"))
     sorted_path = sorted(
         sorted_path, key=lambda x: int(x.name.split(".")[0].split("_")[-1])
     )
@@ -1572,8 +1572,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "-base_name",
         type=str,
-        help="Base name of the json file with the layer id for get_data_embeddings (ex: embeddings_chunk__trunc_layer_-1_4460.json will give embeddings_chunk__trunc_)",
-        default="embeddings_chunk__trunc_",
+        help="Base name of the json file with the layer id for get_data_embeddings (ex: embeddings_chunk__trunc_layer_-1_4460.h5 will give embeddings_chunk__trunc_)",
+        default="embeddings_chunk_",
     )
     parser.add_argument(
         "-path_backup_fields",
@@ -1586,6 +1586,12 @@ if __name__ == "__main__":
         type=str,
         help="pattern of the root folders where the finetuning wrote metrics",
         default="qlora_finetune_class_*",
+    )
+    parser.add_argument(
+        "-pooling_fn",
+        choice=["mean","sum"],
+        help="pooling function to use to do embeddings",
+        default="mean",
     )
     args = parser.parse_args()
     print(args)
@@ -1753,15 +1759,29 @@ if __name__ == "__main__":
                 with open(path_data_folder / "finetune_tokens_lim.json", "w") as f:
                     json.dump(L, f)
     elif args.algorithm == "embeddings_gen":
+        folder_out = args.path_data_folder / "embeddings"
+        folder_out.mkdir(parents=True,exist_ok=True)
         layers_ids = eval(args.layers_ids)
+        pooling_fn = get_pooling_operation(args.pooling_fn)
         get_llama2_embeddings(
             model_name=args.model_name,
+            folder_out=folder_out,
             path_data_preprocessed=args.path_data_json,
             layers_ids=layers_ids,
             start=seed_start,
             end=seed_end,
             id_pred=args.id,
             limit_tokens=args.n_tokens_infered_max,
+            pooling_fn=pooling_fn
+        )
+    elif args.algorithm == "embeddings_agg":
+        folder_embeddings = args.path_data_folder / "embeddings"
+        layers_ids = eval(args.layers_ids)
+        merge_data_embeddings(
+            folder_embeddings=folder_embeddings,
+            path_dst=args.path_data_folder / "embeddings.hdf5",
+            layer_id=layers_ids[0],
+            base_name=args.base_name
         )
     elif args.algorithm == "aggr_finetune":
         folder_out: Path = args.path_data_folder / "train_class"
