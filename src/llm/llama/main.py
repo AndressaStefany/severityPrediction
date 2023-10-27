@@ -33,9 +33,13 @@ if TYPE_CHECKING:
     import sklearn.model_selection as skMsel
     import tqdm
     import datasets
+    import h5py
 
     LlamaTokenizer = Union[trf.LlamaTokenizer, trf.LlamaTokenizerFast]
     LlamaModel = trf.LlamaForCausalLM
+    PoolingOperationCode = Literal["mean","sum"]
+    PoolingFn = Callable[[torch.Tensor],torch.Tensor]
+    ModelName = Literal["meta-llama/Llama-2-13b-chat-hf","meta-llama/Llama-2-7b-chat-hf","meta-llama/Llama-2-70b-chat-hf"]
 
 imports = [
     "import transformers as trf",
@@ -53,6 +57,7 @@ imports = [
     "import sklearn.model_selection as skMsel",
     "import tqdm",
     "import datasets",
+    "import h5py",
 ]
 for i in imports:
     try:
@@ -1216,17 +1221,40 @@ def get_max_tokens(
             print("End exception clear")
     return (max_work, min_not_work)
 
-
+def get_pooling_operation(pooling_code: PoolingOperationCode) -> PoolingFn:
+    if pooling_code == "mean":
+        return lambda embedding: torch.mean(embedding,dim=0)
+    elif pooling_code == "sum":
+        return lambda embedding: torch.sum(embedding,dim=0)
+    else:
+        raise ValueError(f"{pooling_code=} is not possible")
+    
 @print_args
 def get_llama2_embeddings(
-    model_name: str,
+    model_name: ModelName,
     path_data_preprocessed: Path,
+    folder_out: Path,
+    pooling_fn: 'PoolingFn',
     layers_ids: Optional[Tuple[int]] = None,
     start: int = 0,
     end: int = -1,
-    limit_tokens: int = 7364,
-    id_pred: str = "",
+    limit_tokens: int = -1,
+    id_pred: str = ""
 ):
+    """From a json file with the description use llama2 to generate the embeddings for each data sample. The intent of this function is to be called with multiple nodes on a slurm server to have faster results
+    
+    # Arguments
+    - model_name: ModelName, the name of the model to use to generate the embeddings
+    - path_data_preprocessed: Path, the path to the json file containing the data in the format [{'description': "...", 'bug_id': ...}, ...]
+    - folder_out, Path the folder where to put the data, name automatically determined with start seed
+    - pooling_fn: PoolingFn, function to do the aggregation
+    - layers_ids: Optional[Tuple[int]] = (0, ), the layers embeddings to use
+    - start: int = 0, the starting element in the data to process
+    - end: int = -1, the ending element to process in the data
+    - limit_tokens: int = -1, the limit number of tokens to use (all by default)
+    - id_pred: str = "", the id to put in the filename to help for the aggregation of files after
+    
+    """
     if layers_ids is None:
         layers_ids = (0,)
     tokenizer, model = initialize_model_inference(model_name, token, hidden_states=True)  # type: ignore
@@ -1237,69 +1265,50 @@ def get_llama2_embeddings(
         end = len(data)
     data = data[start:end]
     print(f"Running for {start=} {end=}")
-    folder_predictions = path_data_preprocessed.parent / "embeddings"
+    folder_predictions = folder_out
     folder_predictions.mkdir(exist_ok=True, parents=True)
-
-    for idx_layer in layers_ids:
-        with open(
-            folder_predictions
-            / f"embeddings_chunk_{id_pred}_layer_{idx_layer}_{start}.json",
-            "w",
-        ) as f:
-            f.write("")
+    get_file_path = lambda idx_layer: folder_predictions / f"embeddings_chunk{id_pred}_layer_{idx_layer}_{start}.json"
     for i, d in tqdm.tqdm(enumerate(data), total=len(data)):
-        text = d["description"]
-        tokenized_full_text = tokenizer.encode(text)
+        tokenized_full_text = tokenizer.encode(d["description"])
         tokenized_full_text = tokenized_full_text[:limit_tokens]
         embeddings = model(torch.tensor([tokenized_full_text], dtype=torch.int32))  # type: ignore
         for idx_layer in layers_ids:
-            with open(
-                folder_predictions
-                / f"embeddings_chunk_{id_pred}_layer_{idx_layer}_{start}.json",
-                "a",
-            ) as f:
-                f.write(
-                    str(
-                        {
-                            **d,
-                            "layer_id": idx_layer,
-                            "hidden_state": embeddings.hidden_states[
-                                idx_layer
-                            ].tolist()[0],
-                            "text": text,
-                            "tokenized": tokenizer.convert_ids_to_tokens(
-                                tokenized_full_text
-                            ),
-                        }
-                    )
-                    + ",\n"
-                )
+            embedding = embeddings.hidden_states[idx_layer]
+            pooled_embedding = pooling_fn(embedding).tolist()[0]
+            with h5py.File(get_file_path(idx_layer), "a") as fp:
+                fp.create_dataset(str(d['bug_id']),data=pooled_embedding,dtype="f")
         del embeddings
         gc.collect()
         torch.cuda.empty_cache()  # type: ignore
 
-
-
-def get_data_embeddings(
+def merge_data_embeddings(
     folder_embeddings: Path,
+    path_dst: Path,
     layer_id: int = -1,
-    base_name: str = "embeddings_chunk__trunc_",
-) -> Generator[EmbeddingDict, None, None]:
+    base_name: str = "embeddings_chunk_",
+    auto_remove: bool = True
+):
+    """Allows to merge all hdf5 files of the embeddings into one. Automatically removes files after the data is transfered to save space.
+    
+    # Arguments 
+    - folder_embeddings: Path, the path where are stored the embeddings
+    - path_dst: Path, the path of the destination hdf5 file 
+    - layer_id: int = -1, the layer id of the embedding to take
+    - base_name: str = "embeddings_chunk_", the base name of the embedding hdf5 to merge
+    - auto_remove: bool = True, if yes autoremove the files when the data have been transfered
+    """
     sorted_path = list(folder_embeddings.rglob(f"{base_name}layer_{layer_id}_*.json"))
     sorted_path = sorted(
         sorted_path, key=lambda x: int(x.name.split(".")[0].split("_")[-1])
     )
-    for p in sorted_path:
-        print("Reading ", p)
-        with open(p, "r") as json_file:
-            for i, (line) in enumerate(json_file):
-                # Load and process each line as JSON data.
-                try:
-                    data = eval(line[:-2])  # -2 to remove the coma and the back to line
-                    yield data
-                except json.JSONDecodeError as e:
-                    print(f"Error decoding JSON: {e}")
-
+    with h5py.File(path_dst, "w") as fp:
+        for p in sorted_path:
+            print("Reading ", p)
+            with h5py.File(p, "r") as fp:
+                for (bug_id, embedding) in enumerate(fp.items()):
+                    fp.create_dataset(bug_id, data=embedding)
+            if auto_remove:
+                p.unlink()
 
 def get_classifier():
     # hidden_size = 64, random_state (train test split) = 0, batch_size = 32
