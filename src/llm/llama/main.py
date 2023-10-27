@@ -518,6 +518,7 @@ def compute_metrics_from_list(
     # Compute F1-score
     f1: List[float] = skMetr.f1_score(true, pred, average=None).tolist()  # type: ignore
     return conf_matrix, f1, data_full
+
 def compute_metrics_from_files(
     conf_matrix: "np.ndarray", 
     f1: List[float], 
@@ -529,6 +530,7 @@ def compute_metrics_from_files(
     n_tokens_infered_max: int = 7364,
     n_tokens_show_max: int = 7364,
     n_tokens_show_min: int = 0,
+    backend: Optional[str] = "agg"
 ):
     """Taking the path of the predictions folder, it computes the statistics with the predictions (confusion matrix, precision, recall, f1-score). The confusion matrix is plotted into a png file
 
@@ -575,7 +577,7 @@ def compute_metrics_from_files(
         mapping_dict=mapping_dict,
         unique_values=possibilities_pred,
         limit_tokens=n_tokens_infered_max,
-        backend="agg",  # type: ignore
+        backend=backend,  # type: ignore
         title=f"Confusion matrix\nfor field {pred_field}\n{n_tokens_infered_max=}\nn_tokens_shown in [{n_tokens_show_min};{n_tokens_show_max}[",
         id=id,
     )
@@ -804,7 +806,8 @@ def main_qlora_classification(
     train_size: float = 0.3,
     limit_tokens: int = 7364,
     new_model_name: str = "",
-    mapping_dict: Optional[dict] = None
+    mapping_dict: Optional[dict] = None,
+    lim_size: int = 500
 ) -> Tuple['np.ndarray',List[float],'pd.DataFrame']:
     """
     Perform training and fine-tuning of a model for causal reasoning using LoRA.
@@ -836,6 +839,7 @@ def main_qlora_classification(
         - lr_scheduler_type: str, type of learning rate scheduler. Default: "constant"
         - eval_steps: int, the frequency of evaluating the model during training. Default: 20
         - train_size: float = 0.3, the size of the training dataset
+        - lim_size: int = -1, the size of the training and validation set. If -1 no limit
     """
     print("main_qlora_classification")
     logger.info("main_qlora")
@@ -898,12 +902,15 @@ def main_qlora_classification(
         return data, torch.tensor(inputs, dtype=torch.int32), torch.tensor(
             outputs, dtype=torch.float16
         )
-
+    if lim_size == -1:
+        lim_size = len(tr_data)
     train_dataloader = torch.utils.data.DataLoader(
-        tr_data, shuffle=True, collate_fn=collate_fn, batch_size=tr_bs
+        tr_data[:lim_size], shuffle=True, collate_fn=collate_fn, batch_size=tr_bs
     )
+    if lim_size == -1:
+        lim_size = len(val_data)
     eval_dataloader = torch.utils.data.DataLoader(
-        val_data, shuffle=False, collate_fn=collate_fn, batch_size=val_bs
+        val_data[:lim_size], shuffle=False, collate_fn=collate_fn, batch_size=val_bs
     )
     logger.info("training QLORA")
     optimizer = torch.optim.AdamW(params=model.parameters(), lr=learning_rate)
@@ -929,6 +936,8 @@ def main_qlora_classification(
     assert num_train_epochs>0, "Train at least one epoch required"
     metrics_folder = folder_out / "metrics"
     metrics_folder.mkdir(exist_ok=True, parents=True)
+    Ltr = []
+    Lval = []
     for epoch in range(num_train_epochs):
         model.train()
         logger.info(f"{epoch=}")
@@ -944,9 +953,9 @@ def main_qlora_classification(
             # logger.info(f"after inputs.to(device)")
             outputs = model(inputs, return_dict=True)
             # logger.info(f"after model(inputs) {outputs=}")
-            loss = outputs.loss['logits']
-            # logger.info(f"after loss")
-            loss.sum().backward()
+            loss = outputs.loss['logits'].sum()
+            Ltr.append({"loss":loss.tolist(),"step":step,"epoch":epoch,"tot_step":step+epoch*len(train_dataloader)})
+            loss.backward()
             # logger.info(f"after backward")
             optimizer.step()
             lr_scheduler.step()
@@ -959,6 +968,7 @@ def main_qlora_classification(
             inputs.to(device)
             with torch.no_grad():
                 outputs = model(inputs, return_dict=True)
+            Lval.append({"loss":outputs.loss['logits'].sum().tolist(),"step":step,"epoch":epoch,"tot_step":step+epoch*len(train_dataloader)})
             pred = outputs.logits.argmax(dim=-1).cpu().detach().tolist()
             logits = outputs.logits.detach().tolist()
             evaluator.add_samples(d=d,pred=pred,logits=logits)
@@ -978,7 +988,10 @@ def main_qlora_classification(
             json.dump({
                 "conf_matrix": conf_matrix.tolist(),
                 "f1": f1,
-            },f,indent=4)
+                "data": data.to_dict(orient='records'),
+                "Ltr":Ltr,
+                "Lval":Lval
+            },f,indent=2)
         print(f"epoch {epoch}: {accuracy=} {f1=}")
     
     logger.info("Saving trained QLORA model")
@@ -1296,7 +1309,7 @@ def get_classifier():
                 dict_data.append(eval(data_string))
                 binary_severities.append(eval(data_string)['binary_severity'])
     train, test = skMsel.train_test_split(
-        dict_data
+        dict_data,
         test_size=0.2,
         random_state=0,
         stratify=binary_severities
@@ -1412,19 +1425,19 @@ if __name__ == "__main__":
         "-path_data_json",
         type=path_check,
         help="Path to the json data file",
-        default="/project/def-aloise/rmoine/data/data_preprocessed_tokens_v2.json",
+        default=f"/project/def-aloise/{os.environ['USER']}/data/data_preprocessed_tokens_v2.json",
     )
     parser.add_argument(
         "-path_data_folder",
         type=path_check,
         help="Root path to the main data folder",
-        default="/project/def-aloise/rmoine/data/",
+        default=f"/project/def-aloise/{os.environ['USER']}/data/",
     )
     parser.add_argument(
         "-data_folder_path_to_save",
         type=path_check,
         help="Root path to the main data folder",
-        default="/project/def-aloise/andressa/data/",
+        default=f"/project/def-aloise/{os.environ['USER']}/data/",
     )
     parser.add_argument(
         "-algorithm",
