@@ -1249,6 +1249,18 @@ def get_llama2_embeddings(
         gc.collect()
         torch.cuda.empty_cache()  # type: ignore
 
+class PreprocessedData(TypedDict, total=False):
+    """
+    - bug_id: int, the id of the bug
+    - binary_severity: int, the severity level of the bug 0=NON SEVERE, 1=SEVERE
+    - description: str, the field that has been used to generate the embeddings
+    - stemmed_description: str, the field that has been used to generate the embeddings
+    """
+    bug_id: int
+    binary_severity: int
+    description: str
+    stemmed_description: str
+    
 
 class EmbeddingDict(TypedDict, total=False):
     """Contains especially
