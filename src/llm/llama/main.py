@@ -766,12 +766,11 @@ class Evaluator:
 def generate_dataset(
     folder_out: Path,
     file_examples: Path,
-    field_label: str,
+    file_split: Path,
     field_input: str,
     token: str,
     model_name: str,
     limit_tokens: int,
-    train_size: float,
     id: str = "",
 ):
     """Generates the dataset for the finetuning"""
@@ -785,9 +784,11 @@ def generate_dataset(
         logger.info("-> Creating cache")
         with open(file_examples) as f:
             data_preprocessed = json.load(f)
-        data = data_preprocessed["data"]
+        data: List[PreprocessedData] = data_preprocessed["data"]
         template = data_preprocessed["template"]
-        L = []
+        with open(file_split) as f:
+            splits = {k:set(v) for k,v in json.load(f).items()}
+        L = {"tr":[],"val":[],"test":[]}
 
         for d in tqdm.tqdm(data):
             text, tokenized_full_text = build_prompt(
@@ -797,29 +798,26 @@ def generate_dataset(
                 tokenizer,
                 limit_tokens=limit_tokens,
             )
-            d = {**d, "text": text, "tokenized_full_text": tokenized_full_text}
-            L.append(d)
+            d = {**d, "input": text, "n_tokens": len(tokenized_full_text)}
+            for k in ["tr","val","test"]:
+                if d['bug_id'] in splits[k]:
+                    L[k].append(d)
+                    break
         logger.info("-> End creation cache in memory")
-
-        stratify_labels = [d[field_label] for d in L]
-        idx_tr, idx_val = skMsel.train_test_split(np.arange(len(L)), train_size=train_size, stratify=stratify_labels)  # type: ignore
-        idx_tr = set(idx_tr)
-        idx_val = set(idx_val)
-        train_data = [e for i, e in enumerate(L) if i in idx_tr]
-        valid_data = [e for i, e in enumerate(L) if i in idx_val]
         with open(full_path, "w") as f:
             json.dump(L, f)
         with open(train_path, "w") as f:
-            json.dump(train_data, f)
+            json.dump(L['tr'], f)
         with open(valid_path, "w") as f:
-            json.dump(valid_data, f)
+            json.dump(L['val'], f)
+        return L['tr'], L['val'], train_path, valid_path
     else:
         logger.info("-> Reading cache")
         with open(train_path, "r") as f:
             train_data = json.load(f)
         with open(valid_path, "r") as f:
             valid_data = json.load(f)
-    return train_data, valid_data, train_path, valid_path
+        return train_data, valid_data, train_path, valid_path
 
 
 @print_args
@@ -1653,12 +1651,11 @@ if __name__ == "__main__":
         generate_dataset(
             folder_out=args.path_data_folder,
             file_examples=args.path_data_json,
+            file_split=args.path_data_folder / "split.json",
             token=args.token, 
             model_name=args.model_name,
-            train_size=0.7,
             id=f"_{args.model_name}_{args.n_tokens_infered_max}",
             field_input=args.input_field,
-            field_label="binary_severity",
             limit_tokens=args.n_tokens_infered_max,
         )
     elif args.algorithm == "finetune_generation":
