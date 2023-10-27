@@ -70,6 +70,36 @@ try:
 except Exception:
     pass
 
+class PreprocessedData(TypedDict, total=False):
+    """
+    - bug_id: int, the id of the bug
+    - binary_severity: int, the severity level of the bug 0=NON SEVERE, 1=SEVERE
+    - description: str, the field that has been used to generate the embeddings
+    - stemmed_description: str, the field that has been used to generate the embeddings
+    """
+    bug_id: int
+    binary_severity: int
+    description: str
+    stemmed_description: str
+    
+
+class EmbeddingDict(TypedDict, total=False):
+    """Contains especially
+    - description: str, the field that has been used to generate the embeddings. Could have been truncated
+    - layer_id: int, the id of the layer that have been taken into hidden_representation
+    - hidden_state: List, to conver to array or torch Tensor, the actual hidden representation of shape (seq_length, vocab_size)
+    - text: str, same field as description, the text that has been sent to llama2 before tokenization and limiting the number of tokens
+    - tokenized: List[int], the list of tokens ids after llama2 tokenizer and truncation
+    - bug_id: int, the id of the bug
+    """
+
+    description: str
+    layer_id: int
+    hidden_state: List[List[float]]
+    text: str
+    tokenized: List[int]
+    bug_id: int
+
 
 class CustomFormatter(logging.Formatter):
     def __init__(
@@ -110,8 +140,7 @@ class CustomFormatter(logging.Formatter):
         record.gpu_vram_message = gpu_vram_message
 
         return super().format(record)
-
-
+    
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 
 logger = logging.getLogger(__name__)
@@ -1249,35 +1278,6 @@ def get_llama2_embeddings(
         gc.collect()
         torch.cuda.empty_cache()  # type: ignore
 
-class PreprocessedData(TypedDict, total=False):
-    """
-    - bug_id: int, the id of the bug
-    - binary_severity: int, the severity level of the bug 0=NON SEVERE, 1=SEVERE
-    - description: str, the field that has been used to generate the embeddings
-    - stemmed_description: str, the field that has been used to generate the embeddings
-    """
-    bug_id: int
-    binary_severity: int
-    description: str
-    stemmed_description: str
-    
-
-class EmbeddingDict(TypedDict, total=False):
-    """Contains especially
-    - description: str, the field that has been used to generate the embeddings. Could have been truncated
-    - layer_id: int, the id of the layer that have been taken into hidden_representation
-    - hidden_state: List, to conver to array or torch Tensor, the actual hidden representation of shape (seq_length, vocab_size)
-    - text: str, same field as description, the text that has been sent to llama2 before tokenization and limiting the number of tokens
-    - tokenized: List[int], the list of tokens ids after llama2 tokenizer and truncation
-    - bug_id: int, the id of the bug
-    """
-
-    description: str
-    layer_id: int
-    hidden_state: List[List[float]]
-    text: str
-    tokenized: List[int]
-    bug_id: int
 
 
 def get_data_embeddings(
