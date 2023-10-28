@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     PoolingOperationCode = Literal["mean","sum"]
     PoolingFn = Callable[[torch.Tensor],torch.Tensor]
     ModelName = Literal["meta-llama/Llama-2-13b-chat-hf","meta-llama/Llama-2-7b-chat-hf","meta-llama/Llama-2-70b-chat-hf"]
+    BugId: int
 
 imports = [
     "import transformers as trf",
@@ -75,7 +76,7 @@ try:
 except Exception:
     pass
 
-class PreprocessedData(TypedDict, total=False):
+class PreprocessedData(TypedDict, total=True):
     """
     - bug_id: int, the id of the bug
     - binary_severity: int, the severity level of the bug 0=NON SEVERE, 1=SEVERE
@@ -88,24 +89,32 @@ class PreprocessedData(TypedDict, total=False):
     stemmed_description: str
     
 
-class EmbeddingDict(TypedDict, total=False):
+class EmbeddingDict(TypedDict, total=True):
+    tr: List['EmbeddingDict']
+    val: List['EmbeddingDict']
+    test: List['EmbeddingDict']
+    
+class EmbeddingDictElem(TypedDict, total=True):
     """Contains especially
-    - description: str, the field that has been used to generate the embeddings. Could have been truncated
-    - layer_id: int, the id of the layer that have been taken into hidden_representation
-    - hidden_state: List, to conver to array or torch Tensor, the actual hidden representation of shape (seq_length, vocab_size)
-    - text: str, same field as description, the text that has been sent to llama2 before tokenization and limiting the number of tokens
-    - tokenized: List[int], the list of tokens ids after llama2 tokenizer and truncation
     - bug_id: int, the id of the bug
+    - binary_severity: int, the severity level of the bug 0=NON SEVERE, 1=SEVERE
+    - description: str, the field that has been used to generate the embeddings
+    - stemmed_description: str, the field that has been used to generate the embeddings
+    - hidden_state: np.ndarray of shape (size_vocab,), the embedding
     """
 
-    description: str
-    layer_id: int
-    hidden_state: List[List[float]]
-    text: str
-    tokenized: List[int]
     bug_id: int
+    binary_severity: int
+    description: str
+    stemmed_description: str
+    hidden_state: 'np.ndarray'
 
-
+class SplitDict(TypedDict, total=True):
+    """Contains the bug_ids of the data for the train validation and test set
+    """
+    tr: List[int]
+    val: List[int]
+    test: List[int]
 class CustomFormatter(logging.Formatter):
     def __init__(
         self, fmt=None, datefmt=None, style="%", validate: bool = True
@@ -787,7 +796,7 @@ def generate_dataset(
         data: List[PreprocessedData] = data_preprocessed["data"]
         template = data_preprocessed["template"]
         with open(file_split) as f:
-            splits = {k:set(v) for k,v in json.load(f).items()}
+            splits: SplitDict = {k:set(v) for k,v in json.load(f).items()} #type: ignore
         L = {"tr":[],"val":[],"test":[]}
 
         for d in tqdm.tqdm(data):
@@ -1416,6 +1425,30 @@ def aggr_finetune(
             })
     with open(folder_out / "metrics.json", "w") as f:
         json.dump(samples,f)
+        
+def get_embeddings_datasets(
+    path_embeddings: Path,
+    path_preprocessed_data: Path,
+    path_split: Path
+) -> EmbeddingDict:
+    with open(path_split) as fp:
+        splits: SplitDict = {k:set(v) for k,v in json.load(fp).items()}# type: ignore
+    datasets = {k:[] for k in splits}
+    with open(path_preprocessed_data) as fp:
+        data: List[PreprocessedData] = json.load(data)# type: ignore
+    for d in data:
+        for k in splits:
+            if d['bug_id'] in splits[k]:
+                datasets[k].append(d)
+                break
+    # add the embeddings
+    with h5py.File(path_embeddings) as fp:
+        for k in datasets:
+            for i in range(len(datasets[k])):
+                bug_id = datasets[k][i]['bug_id']
+                datasets[k][i]['embedding'] = np.copy(fp[str(bug_id)])
+    return datasets# type: ignore
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Select LLM script to run")
 
