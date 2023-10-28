@@ -93,7 +93,7 @@ def build_prompt(data: str, preprompt: bool = True, add_instructions: str = ""):
 
 default_severities_to_del = ('normal', 'enhancement') #type: ignore
 
-def filter_bug_severity(dataframe: pd.DataFrame, severity_col: str ='bug_severity', severities_to_keep: Optional[Tuple[str]] = None) -> pd.DataFrame:
+def filter_bug_severity(dataframe: pd.DataFrame, severity_col: str ='bug_severity', description_col: Optional[str] = 'description', severities_to_keep: Optional[Tuple[str]] = None) -> pd.DataFrame:
     """Filters the dataframe of bugs to keep only bugs within a provided severity set of possibilities
     
     # Args 
@@ -108,7 +108,7 @@ def filter_bug_severity(dataframe: pd.DataFrame, severity_col: str ='bug_severit
         global default_severities_to_del
         severities_to_keep = default_severities_to_del #type: ignore
     filtered_reports = dataframe[~dataframe[severity_col].isin(severities_to_keep)] #type: ignore
-    selected_columns = ['bug_id', 'description', 'bug_severity']
+    selected_columns = ['bug_id', description_col, 'bug_severity']
     return filtered_reports[selected_columns]
 
 default_high_severities_vals = {'blocker', 'critical','major'}
