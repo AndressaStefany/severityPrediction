@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     import tqdm
     import datasets
     import h5py
+    import bitsandbytes as bnb
 
     LlamaTokenizer = Union[trf.LlamaTokenizer, trf.LlamaTokenizerFast]
     LlamaModel = trf.LlamaForCausalLM
@@ -59,6 +60,7 @@ imports = [
     "import tqdm",
     "import datasets",
     "import h5py",
+    "import bitsandbytes as bnb",
 ]
 for i in imports:
     try:
@@ -88,12 +90,6 @@ class PreprocessedData(TypedDict, total=True):
     description: str
     stemmed_description: str
     
-
-class EmbeddingDict(TypedDict, total=True):
-    tr: List['EmbeddingDict']
-    val: List['EmbeddingDict']
-    test: List['EmbeddingDict']
-    
 class EmbeddingDictElem(TypedDict, total=True):
     """Contains especially
     - bug_id: int, the id of the bug
@@ -109,6 +105,16 @@ class EmbeddingDictElem(TypedDict, total=True):
     stemmed_description: str
     hidden_state: 'np.ndarray'
 
+class EmbeddingDict(TypedDict, total=True):
+    tr: List[EmbeddingDictElem]
+    val: List[EmbeddingDictElem]
+    test: List[EmbeddingDictElem]
+    
+class DataDict(TypedDict, total=True):
+    tr: List[PreprocessedData]
+    val: List[PreprocessedData]
+    test: List[PreprocessedData]
+    
 class SplitDict(TypedDict, total=True):
     """Contains the bug_ids of the data for the train validation and test set
     """
@@ -350,6 +356,7 @@ def initialize_model(
     token: str,
     hidden_states: bool = False,
     base_class: Any = trf.AutoModelForCausalLM,
+    num_labels: int = 1
 ) -> "LlamaModel":
     huggingface_hub.login(token=token)
     double_quant_config = trf.BitsAndBytesConfig(
@@ -359,24 +366,25 @@ def initialize_model(
         bnb_4bit_compute_dtype="float16",
     )
     model = base_class.from_pretrained(
-        args.model_name,
+        model_name,
         quantization_config=double_quant_config,
         return_dict=hidden_states,
         output_hidden_states=hidden_states,
         cache_dir="/project/def-aloise/rmoine/cache_dir",
         token=token,
+        num_labels=num_labels,
     )
     return model
 
 
 def initialize_model_inference(
-    model_name: str, token: str, return_model: bool = True, hidden_states: bool = False
+    model_name: str, token: str, return_model: bool = True, hidden_states: bool = False, num_labels: int = 1
 ) -> Union[Tuple["LlamaTokenizer", "LlamaModel"], "LlamaTokenizer"]:
     huggingface_hub.login(token=token)
     tokenizer = get_tokenizer(token=token, model_name=model_name)
     if return_model:
         model = initialize_model(
-            model_name, token, hidden_states, trf.AutoModelForCausalLM
+            model_name, token, hidden_states, trf.AutoModelForCausalLM, num_labels=num_labels
         )
         return tokenizer, model
     else:
@@ -845,7 +853,6 @@ def main_qlora_classification(
     tr_bs: int = 1,
     val_bs: int = 1,
     learning_rate: float = 2e-4,
-    train_size: float = 0.3,
     limit_tokens: int = 7364,
     new_model_name: str = "",
     mapping_dict: Optional[dict] = None,
@@ -890,15 +897,7 @@ def main_qlora_classification(
     if not folder_out.exists():
         folder_out.mkdir(parents=True)
 
-    logger.info("peft.LoraConfig")
-    peft_config = peft.LoraConfig(  # type: ignore
-        lora_alpha=lora_alpha,
-        lora_dropout=lora_dropout,
-        r=lora_r,
-        bias="none",
-        inference_mode=False,
-        task_type="SEQ_CLS",
-    )
+    
     logger.info("LlamaTokenizer")
     tokenizer: LlamaTokenizer = initialize_model_inference(model_name, token, return_model=False)  # type: ignore
     tokenizer.pad_token = tokenizer.eos_token
@@ -908,6 +907,27 @@ def main_qlora_classification(
         model_name=model_name,
         token=token,
         base_class=trf.AutoModelForSequenceClassification,
+        num_labels=1
+    )
+    cls = bnb.nn.Linear4bit
+    lora_module_names = set()
+    for name, module in model.named_modules():
+        if isinstance(module, cls):
+            names = name.split('.')
+            lora_module_names.add(names[0] if len(names) == 1 else names[-1])
+
+    if 'lm_head' in lora_module_names:
+        lora_module_names.remove('lm_head')
+    target_modules = list(lora_module_names)
+    logger.info("peft.LoraConfig")
+    peft_config = peft.LoraConfig(  # type: ignore
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        r=lora_r,
+        bias="none",
+        inference_mode=False,
+        task_type="SEQ_CLS",
+        target_modules=target_modules,
     )
     logger.info("get_peft_model")
     model = peft.get_peft_model(model, peft_config)# type: ignore
@@ -931,7 +951,7 @@ def main_qlora_classification(
 
     def collate_fn(data: List[dict]):
         inputs = tokenizer(
-            [d["text"] for d in data],
+            [d["input"] for d in data],
             padding=True,
             truncation=True,
             return_tensors="pt",
@@ -993,7 +1013,8 @@ def main_qlora_classification(
             inputs.to(device)
             # logger.info(f"after inputs.to(device)")
             outputs = model(inputs, return_dict=True)
-            # logger.info(f"after model(inputs) {outputs=}")
+            logger.info(f"after model(inputs) {outputs=} {outputs.loss=}")
+            raise Exception
             loss = outputs.loss['logits'].sum()
             Ltr.append({"loss":loss.tolist(),"step":step,"epoch":epoch,"tot_step":step+epoch*len(train_dataloader)})
             loss.backward()
@@ -1072,7 +1093,6 @@ def main_qlora_generation(
     group_by_length: bool = True,
     lr_scheduler_type: str = "constant",
     eval_steps: int = 20,
-    train_size: float = 0.3,
     limit_tokens: int = 7364,
     new_model_name: str = "",
 ):
@@ -1181,7 +1201,7 @@ def main_qlora_generation(
         tokenizer=tokenizer,
         args=training_arguments,
         packing=False,
-        max_seq_length=limit_tokens,
+        max_seq_length=limit_tokens+10,
     )
     logger.info("Starting training QLORA")
     trainer.train()
@@ -1427,10 +1447,10 @@ def aggr_finetune(
         json.dump(samples,f)
         
 def get_embeddings_datasets(
-    path_embeddings: Path,
+    path_split: Path,
     path_preprocessed_data: Path,
-    path_split: Path
-) -> EmbeddingDict:
+    path_embeddings: Optional[Path] = None,
+) -> Union[EmbeddingDict, DataDict]:
     with open(path_split) as fp:
         splits: SplitDict = {k:set(v) for k,v in json.load(fp).items()}# type: ignore
     datasets = {k:[] for k in splits}
@@ -1442,6 +1462,8 @@ def get_embeddings_datasets(
                 datasets[k].append(d)
                 break
     # add the embeddings
+    if path_embeddings is None:
+        return datasets# type: ignore
     with h5py.File(path_embeddings) as fp:
         for k in datasets:
             for i in range(len(datasets[k])):
@@ -1746,6 +1768,15 @@ if __name__ == "__main__":
             min_token_length=1,
             max_token_length=10000,
         )
+        args_dict = (vars(args))
+        path_out = args.path_data_folder / "tokens_lim.json"
+        with open(path_out, "a+") as f:
+            json.dump([{
+                        "max_work": max_work,
+                        "min_not_work": min_not_work,
+                        "model_name": args.model_name,
+                        **args_dict,
+                    }], f)
         logger.info(f"{max_work=},{min_not_work=}")
     elif args.algorithm == "max_tokens_embeddings":
         (max_work, min_not_work) = get_max_tokens(
@@ -1753,13 +1784,22 @@ if __name__ == "__main__":
             min_token_length=1,
             max_token_length=10000,
         )
+        args_dict = (vars(args))
+        path_out = args.path_data_folder / "tokens_lim.json"
+        with open(path_out, "a+") as f:
+            json.dump([{
+                        "max_work": max_work,
+                        "min_not_work": min_not_work,
+                        "model_name": args.model_name,
+                        **args_dict,
+                    }], f)
         print(f"{max_work=},{min_not_work=}")
     elif args.algorithm == "max_tokens_finetuning":
         path_data_folder = Path(args.path_data_folder)
         if not path_data_folder.exists():
             raise ValueError(f"The path {path_data_folder} does not exist")
         max_n_tokens = 10000
-        args_dict = convert_dict_to_str(vars(args))
+        args_dict = (vars(args))
         L = []
         for model_name in [
             "meta-llama/Llama-2-7b-chat-hf",
@@ -1785,10 +1825,12 @@ if __name__ == "__main__":
                         "min_not_work": min_not_work,
                         "qlora_r": qlora_r,
                         "model_name": args.model_name,
-                        "args": args_dict,
                     }
                 )
-                with open(path_data_folder / "finetune_tokens_lim.json", "w") as f:
+                for k,v in args_dict.items():
+                    if k not in L[-1]:
+                        L[-1][k] = v
+                with open(path_data_folder / "tokens_lim.json", "a+") as f:
                     json.dump(L, f)
     elif args.algorithm == "embeddings_gen":
         folder_out = args.path_data_folder / "embeddings"
