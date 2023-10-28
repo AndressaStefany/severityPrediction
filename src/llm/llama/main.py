@@ -15,6 +15,7 @@ import subprocess
 import psutil
 import multiprocessing as mp
 import functools
+import optuna
 
 # typehint imports
 if TYPE_CHECKING:
@@ -1274,11 +1275,50 @@ def get_data_embeddings(
                     yield data
                 except json.JSONDecodeError as e:
                     print(f"Error decoding JSON: {e}")
+                    
+def get_classifier(trial: optuna.Trial, input_size, output_size: int = 1):
+    activation_functions = {
+        'relu': nn.ReLU,
+        'leaky_relu': nn.LeakyReLU,
+        'tanh': nn.Tanh,
+        'elu': nn.ELU,
+        'prelu': nn.PReLU,
+        'linear': nn.Linear
+    }
+    n_layers = trial.suggest_int("n_layers", 3, 10)
+    layers = []
+    in_features = input_size
+    
+    out_features = trial.suggest_int(f"n_units_l{i}", 4, 128)
+    layers.append(nn.Linear(in_features, out_features))
+    in_features = out_features
+    prev_activation = 'linear'
+    
+    for i in range(1, n_layers):
+        out_features = trial.suggest_int(f"n_units_l{i}", 4, 128)
+        function = trial.suggest_categorical(f"layer_function_{i}", list(activation_functions.keys()))
+        
+        # se prev function for igual o atual, sorteia de novo e aplica
+        # caso contrário só aplica
+        
+        if prev_activation == function:
+            function = trial.suggest_categorical(f"layer_function_{i}", list(filter(lambda x: x != function, activation_functions.keys())))
+        layers.append(nn.Linear(in_features, out_features))
+        layers.append(activation_functions[function]())
+        
+        prev_activation = function
+        in_features = out_features
+        
+    # Add the last layer
+    layers.append(nn.Linear(in_features, output_size))
+    layers.append(nn.Sigmoid())
+
+    model = nn.Sequential(*layers)
+    
+    return model
 
 
-def get_classifier():
-    # hidden_size = 64, random_state (train test split) = 0, batch_size = 32
-    # criterion = nn.BCEWithLogitsLoss(), lr=0.001, num_epochs = 100
+def train_test_classifier(trial: optuna.Trial):
     binary_severities = []
     dict_data = []
     folder_path = Path(args.data_folder_path_to_save) / 'aggregation_files/'
@@ -1296,7 +1336,7 @@ def get_classifier():
                 dict_data.append(eval(data_string))
                 binary_severities.append(eval(data_string)['binary_severity'])
     train, test = skMsel.train_test_split(
-        dict_data
+        dict_data,
         test_size=0.2,
         random_state=0,
         stratify=binary_severities
@@ -1308,18 +1348,20 @@ def get_classifier():
         return torch.tensor(bug_ids, dtype=torch.float16), torch.tensor(inputs, dtype=torch.int16), torch.tensor(labels, dtype=torch.float16)
 
     # Define batch size and create a DataLoader
-    batch_size = 32
+    batch_size = trial.suggest_categorical("batch_size",[1, 16, 32, 64])
     train_dataloader = dt.DataLoader(train, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
     
     input_size = len(train[0]['aggregated_list']) #check
-    hidden_size = 64
+    hidden_size = trial.suggest_categorical("hidden_size",[8, 16, 64, 128])
     output_size = 1
 
     model = SimpleNN(input_size, hidden_size, output_size)
-    criterion = nn.BCEWithLogitsLoss()  # Binary Cross Entropy Loss
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)  # lr = learning rate
+    # criterion = nn.BCEWithLogitsLoss()  # Binary Cross Entropy Loss
+    criterion = nn.BCEWithLogitsLoss(pos_weight=trial.suggest_float("pos_weight", 0.1, 2.0))
+    lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)  # lr = learning rate
     
-    num_epochs = 100
+    num_epochs = trial.suggest_categorical("num_epochs", [10, 50, 100])
     total_samples = len(train)
     for epoch in range(num_epochs):
         for i, (bug_ids, inputs, labels) in enumerate(train_dataloader):
@@ -1337,7 +1379,7 @@ def get_classifier():
     model.eval()
 
     # bug_ids_list = []
-    # labels_list = []
+    labels_list = []
     # outputs_lists = []
     result_list = []
     with torch.no_grad():
@@ -1345,12 +1387,15 @@ def get_classifier():
             outputs = model(inputs)  # Forward pass
             predicted = (outputs > 0.5).float()
             # bug_ids_list.extend(bug_ids.tolist())
-            result = [{"true_label": label, "prediction": prediction} for label, prediction in zip(labels.tolist(), predicted.tolist())]
+            labels_list.extend(labels.tolist())
+            result = [{"binary_severity": label, "prediction": prediction} for label, prediction in zip(labels.tolist(), predicted.tolist())]
             result_list.extend(result)
-            # with open(folder_path / 'predictions.json', 'a') as outfile:
-            #     json.dump(prediction_data, outfile)
-            #     outfile.write(',\n')
-    compute_metrics_from_list(result_list)
+    _, f1, _ = compute_metrics_from_list(result_list, pred_field="prediction")
+    _, class_count = np.unique(labels_list, return_counts=True)
+    class_proportion = class_count/len(labels_list)
+    
+    weighted_avg_f1 = np.average(f1, weights=class_proportion)
+    return weighted_avg_f1
 
 class DataoutDict(TypedDict):
     bug_id: str
@@ -1774,5 +1819,17 @@ if __name__ == "__main__":
             with open(Path(args.data_folder_path_to_save) / 'output_aggregation.json', 'a') as outfile:
                 json.dump(data, outfile)
                 outfile.write(",\n")
-    elif args.algorithm == "nn_classifer":
-        get_classifier()
+    elif args.algorithm == "nn_classifier":
+        study_name = "nn_classifier"
+        storage_name = "sqlite:///{}.db".format(study_name)
+        study = optuna.create_study(direction="maximize",
+                                    study_name=study_name, 
+                                    storage=storage_name, 
+                                    load_if_exists=True)
+        n_jobs = 1
+        study.optimize(train_test_classifier, n_trials=10,n_jobs=n_jobs)
+        with open(args.path_data_folder / f"{study_name}results.json" ,'w') as f:
+            json.dump({
+                "best_params": study.best_params,
+                "best_value": study.best_value
+            },f)
