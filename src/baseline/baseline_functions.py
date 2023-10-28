@@ -90,8 +90,10 @@ def build_prompt(data: str, preprompt: bool = True, add_instructions: str = ""):
         with open("./data/preprompt.txt") as f:
             preprompt_data = f.read().strip()
     return t.substitute(input=data,preprompt=preprompt_data,add_instructions=add_instructions)
+
 default_severities_to_del = ('normal', 'enhancement') #type: ignore
-def filter_bug_severity(dataframe: pd.DataFrame, severity_col='bug_severity', severities_to_keep: Optional[Tuple[str]] = None) -> pd.DataFrame:
+
+def filter_bug_severity(dataframe: pd.DataFrame, severity_col: str ='bug_severity', severities_to_keep: Optional[Tuple[str]] = None) -> pd.DataFrame:
     """Filters the dataframe of bugs to keep only bugs within a provided severity set of possibilities
     
     # Args 
@@ -106,10 +108,12 @@ def filter_bug_severity(dataframe: pd.DataFrame, severity_col='bug_severity', se
         global default_severities_to_del
         severities_to_keep = default_severities_to_del #type: ignore
     filtered_reports = dataframe[~dataframe[severity_col].isin(severities_to_keep)] #type: ignore
-    selected_columns = ['_id', 'bug_id', 'description', 'bug_severity']
+    selected_columns = ['bug_id', 'description', 'bug_severity']
     return filtered_reports[selected_columns]
+
 default_high_severities_vals = {'blocker', 'critical','major'}
-def create_binary_feature(dataframe, severity_col: str ='bug_severity', high_severities_vals: Optional[Set[str]] = None) -> pd.DataFrame:
+
+def create_binary_feature(dataframe: pd.DataFrame, severity_col: str ='bug_severity', high_severities_vals: Optional[Set[str]] = None) -> pd.DataFrame:
     """Creates a binary feature based on the severity of the bug
     
     # Args 
@@ -151,7 +155,7 @@ def remove_code_snippets(text: str) -> str:
 
 def remove_url(text: str):
     url_pattern = r'http\S+'
-    return re.sub(url_pattern, '', text)
+    return re.sub(url_pattern, 'URL', text)
 
 def remove_urls_and_codes(dataframe: pd.DataFrame, col_to_process: str='description') -> pd.DataFrame:
     """Remove URLs and programming code snippets from the description column of a dataframe
@@ -166,7 +170,7 @@ def remove_urls_and_codes(dataframe: pd.DataFrame, col_to_process: str='descript
     dataframe[col_to_process] = dataframe[col_to_process].apply(remove_code_snippets)
     return dataframe
 
-def preprocess_text(dataframe, col_to_process='description'):
+def preprocess_text(dataframe: pd.DataFrame, col_to_process: Optional[str]='description'):
     """Preprocess the text in the column provided of a dataframe
 
     # Args
@@ -174,14 +178,18 @@ def preprocess_text(dataframe, col_to_process='description'):
         - col: str, the name of the column containing the text to process
         
     # Output
-        - pd.DataFrame, the dataframe with the preprocessed text in column `preprocess_desc`
+        - pd.DataFrame, the dataframe with the preprocessed text in column `description`
+        and `stemmed_description`
     """
     bug_reports_copy = dataframe.copy()
     
     # Check for empty descriptions or empty lists and remove those rows
     bug_reports_copy = bug_reports_copy[bug_reports_copy[col_to_process].apply(lambda x: isinstance(x, str) and len(x.strip()) > 0)]
     
-    tokens = bug_reports_copy[col_to_process].apply(word_tokenize)
+    # remove URL
+    bug_reports_copy[col_to_process] = bug_reports_copy[col_to_process].apply(remove_url)
+    
+    token_list = bug_reports_copy[col_to_process].apply(word_tokenize)
     
     # Get the set of stopwords
     stop_words = set(stopwords.words('english'))
@@ -192,21 +200,27 @@ def preprocess_text(dataframe, col_to_process='description'):
     special_characters.add('``')
     special_characters.add("''")
     # there is also:  "n't" / checkar
-    
+
+    filtered_texts = []
+    stm_filtered_texts = []
+
     # Initialize the stemmer
     stemmer = PorterStemmer()
-    
     # Apply stop-word removal and stemming
-    filtered_texts = []
-    for tokens in tokens:
-        filtered_tokens = [stemmer.stem(token) for token in tokens if token.lower() not in stop_words and token not in special_characters]
+    for tokens in token_list:
+        stm_filtered_tokens = [stemmer.stem(token) for token in tokens if token.lower() not in stop_words and token not in special_characters]
+        stm_filtered_texts.append(' '.join(stm_filtered_tokens))
+        
+        filtered_tokens = [token for token in tokens if token.lower() not in stop_words and token not in special_characters]
         filtered_texts.append(' '.join(filtered_tokens))
-    bug_reports_copy['preprocess_desc'] = filtered_texts
+        
+    bug_reports_copy['description'] = filtered_texts
+    bug_reports_copy['stemmed_description'] = stm_filtered_texts
     
-    # Remove rows where preprocess_desc is empty or a list is empty
-    bug_reports_copy = bug_reports_copy[bug_reports_copy['preprocess_desc'].apply(lambda x: isinstance(x, str) and len(x.strip()) > 0)]
-    
-    return bug_reports_copy
+    # Remove rows where description is empty or a list is empty
+    bug_reports_copy = bug_reports_copy[bug_reports_copy['description'].apply(lambda x: isinstance(x, str) and len(x.strip()) > 0)]
+    cols = ['bug_id', 'bug_severity', 'binary_severity', 'description', 'stemmed_description']
+    return bug_reports_copy[cols]
 
 def custom_transformations() -> List[Tuple[str,FunctionTransformer]]:
     return [
