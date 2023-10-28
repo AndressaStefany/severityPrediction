@@ -1248,7 +1248,7 @@ def get_max_tokens(
             print("End exception clear")
     return (max_work, min_not_work)
 
-def get_pooling_operation(pooling_code: PoolingOperationCode) -> PoolingFn:
+def get_pooling_operation(pooling_code: 'PoolingOperationCode') -> 'PoolingFn':
     if pooling_code == "mean":
         return lambda embedding: torch.mean(embedding,dim=0)
     elif pooling_code == "sum":
@@ -1258,7 +1258,7 @@ def get_pooling_operation(pooling_code: PoolingOperationCode) -> PoolingFn:
     
 @print_args
 def get_llama2_embeddings(
-    model_name: ModelName,
+    model_name: 'ModelName',
     path_data_preprocessed: Path,
     folder_out: Path,
     pooling_fn: 'PoolingFn',
@@ -1472,6 +1472,7 @@ def get_embeddings_datasets(
     return datasets# type: ignore
 
 if __name__ == "__main__":
+    logger.info("start")
     parser = argparse.ArgumentParser(description="Select LLM script to run")
 
     def path_check(p: str):
@@ -1642,7 +1643,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-pooling_fn",
-        choice=["mean","sum"],
+        choices=["mean","sum"],
         help="pooling function to use to do embeddings",
         default="mean",
     )
@@ -1763,44 +1764,65 @@ if __name__ == "__main__":
             n_tokens_show_max=args.n_tokens_show_max,
         )
     elif args.algorithm == "max_tokens_pipeline":
+        logger.info(args.algorithm)
         (max_work, min_not_work) = get_max_tokens(
             PipelineMaxTokens(model_name=args.model_name, token=args.token),
             min_token_length=1,
             max_token_length=10000,
         )
-        args_dict = (vars(args))
+        logger.info((max_work, min_not_work))
+        args_dict = convert_dict_to_str(vars(args))
         path_out = args.path_data_folder / "tokens_lim.json"
-        with open(path_out, "a+") as f:
-            json.dump([{
-                        "max_work": max_work,
-                        "min_not_work": min_not_work,
-                        "model_name": args.model_name,
-                        **args_dict,
-                    }], f)
+        L = []
+        if path_out.exists():
+            with open(path_out, "r") as f:
+                L = json.load(f)
+        L.append({
+                    "max_work": max_work,
+                    "min_not_work": min_not_work,
+                    "model_name": args.model_name,
+                })
+        for k,v in args_dict.items():
+            L[-1][k] = v
+        with open(path_out, "w") as f:
+            json.dump(L, f,indent=2)
         logger.info(f"{max_work=},{min_not_work=}")
     elif args.algorithm == "max_tokens_embeddings":
+        logger.info(args.algorithm)
         (max_work, min_not_work) = get_max_tokens(
             EmbeddingsMaxTokens(model_name=args.model_name, token=args.token),
             min_token_length=1,
             max_token_length=10000,
         )
-        args_dict = (vars(args))
-        path_out = args.path_data_folder / "tokens_lim.json"
-        with open(path_out, "a+") as f:
-            json.dump([{
-                        "max_work": max_work,
-                        "min_not_work": min_not_work,
-                        "model_name": args.model_name,
-                        **args_dict,
-                    }], f)
+        logger.info((max_work, min_not_work))
+        
+        args_dict = convert_dict_to_str(vars(args))
+        path_out: Path = args.path_data_folder / "tokens_lim.json"
+        L = []
+        if path_out.exists():
+            with open(path_out, "r") as f:
+                L = json.load(f)
+        L.append({
+                    "max_work": max_work,
+                    "min_not_work": min_not_work,
+                    "model_name": args.model_name,
+                })
+        for k,v in args_dict.items():
+            L[-1][k] = v
+        with open(path_out, "w") as f:
+            json.dump(L, f,indent=2)
         print(f"{max_work=},{min_not_work=}")
     elif args.algorithm == "max_tokens_finetuning":
         path_data_folder = Path(args.path_data_folder)
         if not path_data_folder.exists():
             raise ValueError(f"The path {path_data_folder} does not exist")
         max_n_tokens = 10000
-        args_dict = (vars(args))
+        args_dict = convert_dict_to_str(vars(args))
+        path_out = path_data_folder / "tokens_lim.json"
         L = []
+        if path_out.exists():
+            with open(path_out, "r") as f:
+                L = json.load(f)
         for model_name in [
             "meta-llama/Llama-2-7b-chat-hf",
             "meta-llama/Llama-2-13b-chat-hf",
@@ -1830,8 +1852,8 @@ if __name__ == "__main__":
                 for k,v in args_dict.items():
                     if k not in L[-1]:
                         L[-1][k] = v
-                with open(path_data_folder / "tokens_lim.json", "a+") as f:
-                    json.dump(L, f)
+                with open(path_out, "w") as f:
+                    json.dump(L, f,indent=2)
     elif args.algorithm == "embeddings_gen":
         folder_out = args.path_data_folder / "embeddings"
         folder_out.mkdir(parents=True,exist_ok=True)
