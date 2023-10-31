@@ -1019,7 +1019,7 @@ def main_qlora_classification(
         model=model,
         train_dataset=tr_data,  # type: ignore
         peft_config=peft_config,# type: ignore
-        dataset_text_field="text",
+        dataset_text_field="input",
         tokenizer=tokenizer,
         args=training_arguments,
         packing=False,
