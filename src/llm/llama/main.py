@@ -1436,7 +1436,7 @@ def get_classifier(trial: 'optuna.Trial', input_size, output_size: int = 1):
     return model
 
 
-def train_test_classifier(trial: optuna.Trial):
+def train_test_classifier(trial: 'optuna.Trial'):
     binary_severities = []
     dict_data = []
     folder_path = Path(args.data_folder_path_to_save) / 'aggregation_files/'
