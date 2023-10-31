@@ -43,13 +43,16 @@ def generate_embeddings(clear: bool = False):
     mapping = [
         ["_nltk", "/project/def-aloise/$USER/data/data_preprocessed_tokens_v2.json"],
         ["_trunc", "/project/def-aloise/$USER/data/data_preprocessed_tokens_v3.json"],
+        ["_v4_eclipse", "/project/def-aloise/$USER/data/eclipse_72k.json"],
+        ["_v4_mozilla", "/project/def-aloise/$USER/data/mozilla_201k.json"],
     ]
     model_name = "meta-llama/Llama-2-13b-chat-hf"
-    layers_ids = "(0,1,-1)"
-    [id, path_data_json] = mapping[1]
+    layers_ids = "(-1,)"
+    [id, path_data_json] = mapping[3]
     n_tokens_infered_max = 1000 # 1104 with hello word limit but seems to be not short enough...
     n_chunks = 10
     path_file = Path(__file__)
+    path_folder_out = path_file.parent / "launches" / "embeddings"
     path_template = (
         path_file.parent.parent.parent.parent
         / "data"
@@ -62,7 +65,7 @@ def generate_embeddings(clear: bool = False):
         for f in path_file.parent.rglob("embeddings_gen_*"):
             f.unlink()
     for i in range(n_chunks):
-        with open(path_file.parent / f"embeddings_gen{id}_{i}", "w") as f:
+        with open(path_folder_out / f"embeddings_gen{id}_{i}", "w") as f:
             f.write(
                 template.substitute(
                     id=i,
@@ -74,9 +77,13 @@ def generate_embeddings(clear: bool = False):
                     n_tokens_infered_max=n_tokens_infered_max,
                 )
             )
-    with open(path_file.parent / f"launch{id}_all_embeddings_gen", "w") as f:
+    with open(path_folder_out / f"launch{id}_all_embeddings_gen", "w") as f:
         f.write(
-            "\n".join([f"sbatch ./embeddings_gen{id}_{i}" for i in range(n_chunks)])
+            "\n".join([f"sbatch /project/def-aloise/rmoine/launches/embeddings/embeddings_gen{id}_{i}" for i in range(n_chunks)])
+        )
+    with open(path_folder_out / f"cancel{id}_all_embeddings_gen", "w") as f:
+        f.write(
+            "\n".join([f"scancel -n embeddings_gen{id}_{i}" for i in range(n_chunks)])
         )
 
 
