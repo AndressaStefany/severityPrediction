@@ -48,7 +48,7 @@ def generate_embeddings(clear: bool = False):
     ]
     model_name = "meta-llama/Llama-2-13b-chat-hf"
     layers_ids = "(-1,)"
-    [id, path_data_json] = mapping[2]
+    [id, path_data_json] = mapping[3]
     n_tokens_infered_max = 1000 # 1104 with hello word limit but seems to be not short enough...
     n_chunks = 10
     path_file = Path(__file__)

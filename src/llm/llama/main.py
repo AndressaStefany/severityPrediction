@@ -868,12 +868,11 @@ class EpochCallback(trf.TrainerCallback):
         self.tot_step += 1
         return super().on_step_end(args, state, control, **kwargs)
 class CustomTrainer(trl.SFTTrainer):
-    def compute_loss(self, inputs, *args, **kwargs):
+    def compute_loss(self, model, inputs, *args, **kwargs):
         logger.info(f"{inputs=}")
         inputs['labels'] = inputs['labels'].float()
-        inputs['text'] = inputs['text'].float()
         logger.info(f"{inputs=}")
-        return super().compute_loss(inputs, *args, **kwargs)
+        return super().compute_loss(model, inputs, *args, **kwargs)
 @print_args
 def main_qlora_classification(
     file_examples: Path,
