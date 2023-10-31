@@ -983,14 +983,14 @@ def main_qlora_classification(
         real_lim_size = len(tr_data)
     Ltr = []
     for d in tr_data[:real_lim_size]:
-        d['input'] += "\n"+str(d[field_label])
+        d['text'] = d['input']+"\n"+str(d[field_label])
         Ltr.append(d)
     logger.info(f"{tr_data[0]}")
     if lim_size == -1:
         real_lim_size = len(val_data)
     Lval = []
     for d in tr_data[:real_lim_size]:
-        d['input'] += "\n"+str(d[field_label])
+        d['text'] = d['input']+"\n"+str(d[field_label])
         Lval.append(d)
     tr_data = datasets.Dataset.from_list(Ltr)  # type: ignore
     val_data = datasets.Dataset.from_list(Lval)  # type: ignore
@@ -1018,7 +1018,7 @@ def main_qlora_classification(
         model=model,
         train_dataset=tr_data,  # type: ignore
         peft_config=peft_config,# type: ignore
-        dataset_text_field="input",
+        dataset_text_field="text",
         tokenizer=tokenizer,
         args=training_arguments,
         packing=False,
@@ -1220,9 +1220,9 @@ def main_qlora_generation(
     logger.info(f"Using {train_path} {valid_path}")
     logger.info("load_dataset")
     for i in range(len(train_data)):
-        train_data[i]['text'] += "\n"+str(train_data[i][field_label])
+        train_data[i]['input'] += "\n"+str(train_data[i][field_label])
     for i in range(len(val_data)):
-        val_data[i]['text'] += "\n"+str(val_data[i][field_label])
+        val_data[i]['input'] += "\n"+str(val_data[i][field_label])
     train_dataset = datasets.Dataset.from_list(train_data)  # type: ignore
     valid_dataset = datasets.Dataset.from_list(val_data)  # type: ignore
     # Set supervised fine-tuning parameters
@@ -1232,7 +1232,7 @@ def main_qlora_generation(
         train_dataset=train_dataset,  # type: ignore
         eval_dataset=valid_dataset,  # type: ignore
         peft_config=peft_config,# type: ignore
-        dataset_text_field="text",
+        dataset_text_field="input",
         tokenizer=tokenizer,
         args=training_arguments,
         packing=False,
