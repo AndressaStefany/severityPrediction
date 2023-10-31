@@ -44,11 +44,11 @@ def generate_embeddings(clear: bool = False):
         ["_nltk", "/project/def-aloise/$USER/data/data_preprocessed_tokens_v2.json"],
         ["_trunc", "/project/def-aloise/$USER/data/data_preprocessed_tokens_v3.json"],
         ["_v4_eclipse", "/project/def-aloise/$USER/data/eclipse_72k.json"],
-        ["_v4_mozilla", "/project/def-aloise/$USER/data/mozilla_201k.json"],
+        ["_v4_mozilla", "/project/def-aloise/$USER/data/mozilla_200k.json"],
     ]
     model_name = "meta-llama/Llama-2-13b-chat-hf"
     layers_ids = "(-1,)"
-    [id, path_data_json] = mapping[3]
+    [id, path_data_json] = mapping[2]
     n_tokens_infered_max = 1000 # 1104 with hello word limit but seems to be not short enough...
     n_chunks = 10
     path_file = Path(__file__)

@@ -7,6 +7,6 @@ dos2unix ./launches/*/*;
 user=rmoine
 scp -r ./launches $user@cedar.computecanada.ca:/project/def-aloise/$user/
 scp -r ./*.py $user@cedar.computecanada.ca:/project/def-aloise/$user/
-# scp -r ../../../data/split_eclipse_72k.json $user@cedar.computecanada.ca:/project/def-aloise/$user/data/
-# scp -r ../../../data/split_mozilla_201k.json $user@cedar.computecanada.ca:/project/def-aloise/$user/data/
+scp -r ../../../data/split_eclipse_72k.json $user@cedar.computecanada.ca:/project/def-aloise/$user/data/
+scp -r ../../../data/split_mozilla_200k.json $user@cedar.computecanada.ca:/project/def-aloise/$user/data/
 scp -r ../../../data/template.json $user@cedar.computecanada.ca:/project/def-aloise/$user/data/

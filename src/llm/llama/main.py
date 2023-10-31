@@ -854,12 +854,12 @@ class EpochCallback(trf.TrainerCallback):
         self.prev_epoch = 0
         self.step = 0
         self.eval_dataset = eval_dataset
-    def on_epoch_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+    def on_epoch_end(self, args: 'TrainingArguments', state: 'TrainerState', control: 'TrainerControl', **kwargs):
         logger.info(f"Log eval of epoch {state.epoch} step {self.step}")
         eval_results = self._trainer.evaluate(eval_dataset=self.eval_dataset)
         logger.info(f"eval --> {list(eval_results)}")
         return super().on_prediction_step(args, state, control, **kwargs)
-    def on_step_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+    def on_step_end(self, args: 'TrainingArguments', state: 'TrainerState', control: 'TrainerControl', **kwargs):
         logger.info(f"Log tr of epoch {state.epoch} step {self.step}")
         loss = state.log_history[-1]['loss']
         if int(state.epoch)-self.prev_epoch > 0:
@@ -1394,7 +1394,7 @@ def merge_data_embeddings(
                 p.unlink()
 
 
-def get_classifier(trial: optuna.Trial, input_size, output_size: int = 1):
+def get_classifier(trial: 'optuna.Trial', input_size, output_size: int = 1):
     activation_functions = {
         'relu': nn.ReLU,
         'leaky_relu': nn.LeakyReLU,
@@ -1586,7 +1586,10 @@ def generate_train_test_split(path_data: Path, folder_out: Path, train_percent: 
     negative_examples = [d for d in dataset if d['binary_severity'] == 0]
     num_positive_train = int(train_percent * len(positive_examples))
     num_negative_train = int(train_percent * len(negative_examples))
-    balanced_train_set = positive_examples[:num_positive_train] + negative_examples[:num_negative_train]
+    num_train_per_severity = min(num_positive_train,num_negative_train)
+    balanced_train_set = positive_examples[:num_train_per_severity] + negative_examples[:num_train_per_severity]
+    logger.info(f"{num_train_per_severity=}, {len(positive_examples[:num_train_per_severity])=}, {len(negative_examples[:num_train_per_severity])=}")
+    assert len(balanced_train_set) == num_train_per_severity*2
     remaining_examples = {
         1: positive_examples[num_positive_train:],
         0: negative_examples[num_negative_train:]
@@ -1604,7 +1607,7 @@ def generate_train_test_split(path_data: Path, folder_out: Path, train_percent: 
     for k,L in zip(ids,[balanced_train_set,validation_set,test_set]):
         ids[k] = [e['bug_id'] for e in L]
     
-    assert sum(len(e) for e in ids.values()) == len(dataset), f"Expecting {sum(len(e) for e in ids.values())=} to be equal to {len(dataset)=}"
+    #assert sum(len(e) for e in ids.values()) == len(dataset), f"Expecting {sum(len(e) for e in ids.values())=} to be equal to {len(dataset)=}"
     with open(folder_out / f"split_{path_data.stem}.json", "w") as fp:
         json.dump(ids, fp)
     return ids
@@ -1788,7 +1791,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-dataset_choice",
-        choices=["eclipse_72k","mozilla_201k"],
+        choices=["eclipse_72k","mozilla_200k"],
         help="choose which one of the dataset to use",
         default="eclipse_72k",
     )
