@@ -17,6 +17,7 @@ module load py-optuna/3.2.0-gcc-9.4.0-ba4jncp
 module load py-scikit-learn/1.3.1-gcc-9.4.0-wo3twiw
 module load py-nltk/3.5-gcc-9.4.0-zbkorbu
 module load py-pandas/1.5.3-gcc-9.4.0-ohbmp5n
+pip install optuna --no-index
 
 # Start the script
 python /home/rmoine/severityPrediction/src/baseline/baseline_functions.py
