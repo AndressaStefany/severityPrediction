@@ -78,10 +78,21 @@ try:
 except Exception:
     pass
 
-try:
-    from src.llm.llama.class_nn import SimpleNN
-except Exception:
-    pass
+class SimpleNN(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super(SimpleNN, self).__init__()
+        self.layer1 = nn.Linear(input_size, hidden_size)
+        self.relu = nn.ReLU()
+        self.leaky_relu = nn.LeakyReLU()
+        self.layer2 = nn.Linear(hidden_size, output_size)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        out = self.layer1(x)
+        out = self.leaky_relu(out)
+        out = self.layer2(out)
+        out = self.sigmoid(out)
+        return out
 
 class PreprocessedData(TypedDict, total=True):
     """
@@ -559,6 +570,8 @@ def compute_metrics_from_list(
         data = data.query(
             f"n_tokens < {n_tokens_show_max} & n_tokens >= {n_tokens_show_min}"
         )
+    print('dataaa', data)
+    print('data[pred_field]]]]]]', data[pred_field])
     # Replace Nan by -2 in prediction
     data[pred_field] = data[pred_field].apply(lambda x: -2 if np.isnan(x) else int(x))
     data["binary_severity"] = np.where(
@@ -1462,51 +1475,58 @@ def get_classifier(trial: 'optuna.Trial', input_size, output_size: int = 1):
     return model
 
 
-def train_test_classifier(trial: 'optuna.Trial'):
-    binary_severities = []
-    dict_data = []
-    folder_path = Path(args.data_folder_path_to_save) / 'aggregation_files/'
-    json_file_paths = [file for file in folder_path.glob("*.json")]
+def train_test_classifier(trial: optuna.Trial, label_name: str='binary_severity'): #folder_path, hdf5_file_path, dataset_name, split_dataset_name, label_name: str='binary_severity'):
+    folder_path = Path(args.path_data_folder)
+    hdf5_file_path = folder_path / f"embeddings_chunk_v4_eclipse_layer_-1_0.hdf5"
+    split_dataset_name = Path(args.split_dataset_name)
+    dataset_name = Path(args.dataset_choice)
+    df = pd.read_json(folder_path / dataset_name)
+    train_dict, val_dict, test_dict = [], [], []
+    
+    with open(folder_path / split_dataset_name, 'r') as file:
+        idxs = json.load(file)
 
-    for json_file_path in json_file_paths:
-        with open(json_file_path, 'r') as f:
-            for line in f:
-                line_data = line.strip(",\n")
-                data_string = line_data.replace("'", '"')
-
-                data_string = data_string.replace("PosixPath(", "")
-                data_string = data_string.replace(")", "")
-                
-                dict_data.append(eval(data_string))
-                binary_severities.append(eval(data_string)['binary_severity'])
-    train, test = skMsel.train_test_split(
-        dict_data,
-        test_size=0.2,
-        random_state=0,
-        stratify=binary_severities
-    )
+    with h5py.File(hdf5_file_path, 'r') as file:
+        for key, value in file.items():
+            severity = df[df['bug_id']==int(key)][label_name]
+            if int(key) in idxs['tr']:
+                train_dict.append({"bug_id": int(key), "embedding": np.array(value).tolist(), label_name: int(severity.iloc[0])})
+            elif int(key) in idxs['val']:
+                val_dict.append({"bug_id": int(key), "embedding": np.array(value).tolist(), label_name: int(severity.iloc[0])})
+            elif int(key) in idxs['test']:
+                test_dict.append({"bug_id": int(key), "embedding": np.array(value).tolist(), label_name: int(severity.iloc[0])})
+            else:
+                raise ValueError(f"The bug_id {key} does not exist")
     def collate_fn(data: List[dict]):
         bug_ids = [d['bug_id'] for d in data]
-        inputs = [d['aggregated_list'] for d in data]
-        labels = [d['binary_severity'] for d in data]
-        return torch.tensor(bug_ids, dtype=torch.float16), torch.tensor(inputs, dtype=torch.int16), torch.tensor(labels, dtype=torch.float16)
+        inputs = [d['embedding'] for d in data]
+        labels = [d[label_name] for d in data]
+        return torch.tensor(bug_ids, dtype=torch.float32), torch.tensor(inputs, dtype=torch.float32), torch.tensor(labels, dtype=torch.float32)
 
     # Define batch size and create a DataLoader
     batch_size = trial.suggest_categorical("batch_size",[1, 16, 32, 64])
-    train_dataloader = dt.DataLoader(train, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    # batch_size = 32
+    train_dataloader = dt.DataLoader(train_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    test_dataloader = dt.DataLoader(test_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    val_dataloader = dt.DataLoader(val_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
     
-    input_size = len(train[0]['aggregated_list']) #check
+    input_size = len(train_dict[0]['embedding'])
     hidden_size = trial.suggest_categorical("hidden_size",[8, 16, 64, 128])
+    # hidden_size = 64
     output_size = 1
 
     model = SimpleNN(input_size, hidden_size, output_size)
-    # criterion = nn.BCEWithLogitsLoss()  # Binary Cross Entropy Loss
-    criterion = nn.BCEWithLogitsLoss(pos_weight=trial.suggest_float("pos_weight", 0.1, 2.0))
+    # Binary Cross Entropy Loss
+    criterion = nn.BCEWithLogitsLoss(pos_weight=trial.suggest_float("pos_weight", [torch.tensor(0.1), torch.tensor(2.0)]))
+    # pos_weight = torch.tensor(0.1)  # Convert the float value to a tensor
+    # criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
+    # lr = 0.1
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)  # lr = learning rate
-    
+
     num_epochs = trial.suggest_categorical("num_epochs", [10, 50, 100])
-    total_samples = len(train)
+    # num_epochs = 100
+    total_samples = len(train_dict)
     for epoch in range(num_epochs):
         for i, (bug_ids, inputs, labels) in enumerate(train_dataloader):
             optimizer.zero_grad()
@@ -1517,28 +1537,41 @@ def train_test_classifier(trial: 'optuna.Trial'):
             if epoch % 10 == 0:
                 print(f'Epoch [{epoch + 1}/{num_epochs}], Step [{i + 1}/{total_samples//batch_size+1}], Loss: {loss.item():.4f}')
 
-    test_dataloader = dt.DataLoader(test, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
-
-    # Set the model to evaluation mode
+    # Validation step
     model.eval()
+    val_labels_list = []
+    val_result_list = []
+    with torch.no_grad():
+        for bug_ids, inputs, labels in val_dataloader:
+            outputs = model(inputs)
+            predicted = (outputs > 0.5).float()
+            val_labels_list.extend(labels.tolist())
+            result = [{"bug_id": bug_id, "binary_severity": label, "prediction": prediction[0]} for bug_id, label, prediction in zip(bug_ids.tolist(), labels.tolist(), predicted.tolist())]
+            val_result_list.extend(result)
+    _, val_f1, _ = compute_metrics_from_list(val_result_list, pred_field="prediction")
+    _, val_class_count = np.unique(val_labels_list, return_counts=True)
+    val_class_proportion = val_class_count / len(val_labels_list)
+    val_weighted_avg_f1 = np.average(val_f1, weights=val_class_proportion)
 
-    # bug_ids_list = []
-    labels_list = []
-    # outputs_lists = []
-    result_list = []
+    # Print validation metrics
+    print(f'Validation F1 Score: {val_weighted_avg_f1}')
+
+    # Test step
+    model.eval()  # Ensure model is in evaluation mode for the test step
+    test_labels_list = []
+    test_result_list = []
     with torch.no_grad():
         for bug_ids, inputs, labels in test_dataloader:  # Iterate through your test dataset
             outputs = model(inputs)  # Forward pass
             predicted = (outputs > 0.5).float()
-            # bug_ids_list.extend(bug_ids.tolist())
-            labels_list.extend(labels.tolist())
-            result = [{"binary_severity": label, "prediction": prediction} for label, prediction in zip(labels.tolist(), predicted.tolist())]
-            result_list.extend(result)
-    _, f1, _ = compute_metrics_from_list(result_list, pred_field="prediction")
-    _, class_count = np.unique(labels_list, return_counts=True)
-    class_proportion = class_count/len(labels_list)
+            test_labels_list.extend(labels.tolist())
+            result = [{"bug_id": bug_id, "binary_severity": label, "prediction": prediction[0]} for bug_id, label, prediction in zip(bug_ids.tolist(), labels.tolist(), predicted.tolist())]
+            test_result_list.extend(result)
+    _, f1, _ = compute_metrics_from_list(test_result_list, pred_field="prediction")
+    _, class_count = np.unique(test_labels_list, return_counts=True)
+    test_class_proportion = class_count/len(test_labels_list)
     
-    weighted_avg_f1 = np.average(f1, weights=class_proportion)
+    weighted_avg_f1 = np.average(f1, weights=test_class_proportion)
     return weighted_avg_f1
 
 class DataoutDict(TypedDict):
@@ -1815,6 +1848,12 @@ if __name__ == "__main__":
         choices=["mean","sum"],
         help="pooling function to use to do embeddings",
         default="mean",
+    )
+    parser.add_argument(
+        "-split_dataset_name",
+        type=str,
+        help="name of the split (tr,val,test) document",
+        default="split_eclipse_72k.json",
     )
     parser.add_argument(
         "-dataset_choice",
@@ -2107,6 +2146,7 @@ if __name__ == "__main__":
                 json.dump(data, outfile)
                 outfile.write(",\n")
     elif args.algorithm == "nn_classifier":
+        # passar pro args... o documento/dataset a utilizar
         study_name = "nn_classifier"
         storage_name = "sqlite:///{}.db".format(study_name)
         study = optuna.create_study(direction="maximize",
