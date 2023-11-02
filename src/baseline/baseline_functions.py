@@ -170,18 +170,20 @@ def remove_urls_and_codes(dataframe: pd.DataFrame, col_to_process: str='descript
     dataframe[col_to_process] = dataframe[col_to_process].apply(remove_code_snippets)
     return dataframe
 
-def preprocess_text(dataframe: pd.DataFrame, col_to_process: Optional[str]='description'):
+def preprocess_text(dataframe: pd.DataFrame, col_to_process: Optional[str]='description', primary_key: Optional[str]='bug_id'):
     """Preprocess the text in the column provided of a dataframe
 
     # Args
         - dataframe: pd.DataFrame, the dataframe to process
-        - col: str, the name of the column containing the text to process
+        - col_to_process: str, the name of the column containing the text to process
+        - primary_key: str, dataframe column corresponding to the primary key
         
     # Output
         - pd.DataFrame, the dataframe with the preprocessed text in column `description`
         and `stemmed_description`
     """
     bug_reports_copy = dataframe.copy()
+    bug_reports_copy = bug_reports_copy.drop_duplicates(subset=[primary_key], keep='first')
     
     # Check for empty descriptions or empty lists and remove those rows
     bug_reports_copy = bug_reports_copy[bug_reports_copy[col_to_process].apply(lambda x: isinstance(x, str) and len(x.strip()) > 0)]
