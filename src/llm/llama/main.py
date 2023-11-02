@@ -852,11 +852,42 @@ def generate_dataset(
         return train_data, valid_data, train_path, valid_path
 
 class CustomTrainer(trl.SFTTrainer):
+    def __init__(self, tokenizer, *args, **kwargs):
+        self.tokenizer = tokenizer
+        super().__init__(*args,**kwargs)
     def compute_loss(self, model, inputs, *args, **kwargs):
         logger.info(f"{inputs=}")
-        prediction = model(**inputs)
-        logger.info(f"{inputs=} {prediction=}")
-        return super().compute_loss(model, inputs, *args, **kwargs)
+        prediction = model(inputs['input'])
+        label = inputs['label']
+        bug_id = inputs['bug_id']
+        loss = torch.nn.functional.cross_entropy(
+            input=prediction,
+            target=label
+        )
+        logger.info(f"{loss=} {label=} {prediction=} {bug_id=}")
+        return loss
+class Dataset(torch.utils.data.Dataset):
+    def __init__(self, tokenizer, l_dict: List[dict], input_field: str = "input", label_field: str = "binary_severity"): 
+        self.l_dict = l_dict
+        self.input_field = input_field
+        self.label_field = label_field
+        self.tokenizer = tokenizer
+    def __len__(self):
+        return len(self.l_dict)
+    def __getitem__(self, i: int) -> Dict[str,'torch.Tensor']:
+        elem = {**self.l_dict[i]}
+        input = torch.tensor(self.tokenizer(elem[self.input_field])['input_ids'])
+        label = torch.tensor(elem[self.label_field])
+        bug_id = torch.tensor(elem['bug_id'])
+        return {
+            "input":input,
+            "label": label,
+            "bug_id":bug_id
+        }
+class DataCollator(trf.data.DataCollatorForTokenClassification):
+    def torch_call(self, features):
+        logger.info(f"{features=}")
+        return features
 @print_args
 def main_qlora_classification(
     file_examples: Path,
@@ -870,7 +901,7 @@ def main_qlora_classification(
     field_label: str = "binary_severity",
     field_input: str = "llama_tokenized_description",
     num_train_epochs: int = 1,
-    tr_bs: int = 4,
+    tr_bs: int = 1,
     gradient_accumulation_steps: int = 1,
     val_bs: int = 1,
     learning_rate: float = 2e-4,
@@ -927,7 +958,7 @@ def main_qlora_classification(
     model = initialize_model(
         model_name=model_name,
         token=token,
-        base_class=trf.AutoModelForCausalLM,
+        base_class=trf.AutoModelForSequenceClassification,
         load_in_8bit=False,
         use_flash_attention_2=False
     )
@@ -938,7 +969,7 @@ def main_qlora_classification(
         r=lora_r,
         bias="none",
         inference_mode=False,
-        task_type="CAUSAL_LM"
+        task_type="SEQ_CLS"
     )
     # https://github.com/huggingface/transformers/blob/ce2e7ef3d96afaf592faf3337b7dd997c7ad4928/src/transformers/models/llama/modeling_llama.py#L906
     logger.info("get_peft_model")
@@ -959,22 +990,14 @@ def main_qlora_classification(
     )
     logger.info(f"Using {train_path} {valid_path}")
     logger.info("dataloaders")
-    real_lim_size = lim_size
+    real_lim_size_tr = lim_size
     if lim_size == -1:
-        real_lim_size = len(tr_data)
-    Ltr = []
-    for d in tr_data[:real_lim_size]:
-        d['text'] = d['input']+"\n"+str(d[field_label])
-        Ltr.append(d)
-    logger.info(f"{tr_data[0]}")
+        real_lim_size_tr = len(tr_data)
+    tr_data = Dataset(tokenizer, tr_data[:real_lim_size_tr])
+    real_lim_size_val = lim_size
     if lim_size == -1:
-        real_lim_size = len(val_data)
-    Lval = []
-    for d in tr_data[:real_lim_size]:
-        d['text'] = d['input']+"\n"+str(d[field_label])
-        Lval.append(d)
-    tr_data = datasets.Dataset.from_list(Ltr)  # type: ignore
-    val_data = datasets.Dataset.from_list(Lval)  # type: ignore
+        real_lim_size_val = len(val_data)
+    val_data = Dataset(tokenizer, val_data[:real_lim_size_val])
     logger.info("training QLORA")
     # Set training parameters
     training_arguments = trf.TrainingArguments(
@@ -985,7 +1008,8 @@ def main_qlora_classification(
         logging_steps=1,
         learning_rate=learning_rate,
         fp16=True,
-        optim="paged_adamw_32bit"
+        optim="paged_adamw_32bit",
+        remove_unused_columns=False
     )
     
     
@@ -1002,11 +1026,12 @@ def main_qlora_classification(
         train_dataset=tr_data,
         eval_dataset=val_data,
         peft_config=peft_config,# type: ignore
-        dataset_text_field="text",
         tokenizer=tokenizer,
         args=training_arguments,
         packing=False,   
-        max_seq_length=limit_tokens+5 
+        max_seq_length=limit_tokens+5,
+        formatting_func=lambda x:x,
+        data_collator=DataCollator(tokenizer,False,limit_tokens)
     )
     for name, module in trainer.model.named_modules():
         if "norm" in name:
@@ -1084,7 +1109,7 @@ def main_qlora_classification(
     logger.info("Saving trained QLORA model")
     if new_model_name != "":
         output_dir = folder_out / "trained_model"
-        output_dir.mkdir()
+        output_dir.mkdir(parents=True, exist_ok=True)
         # model.save_pretrained(str(output_dir))
         # model.push_to_hub(new_model_name)
     return conf_matrix, f1, data #type: ignore
@@ -1377,9 +1402,10 @@ def merge_data_embeddings(
     with h5py.File(path_dst, "w") as fp:
         for p in sorted_path:
             print("Reading ", p)
-            with h5py.File(p, "r") as fp:
-                for (bug_id, embedding) in enumerate(fp.items()):
-                    fp.create_dataset(bug_id, data=np.copy(embedding), dtype="f")
+            with h5py.File(p, "r") as fp2:
+                for (bug_id, embedding) in tqdm.tqdm(enumerate(fp2.items()),total=len(fp2)):
+                    data = np.copy(embedding)
+                    fp.create_dataset(str(bug_id), data=data, dtype="f")
             if auto_remove:
                 p.unlink()
     sorted_path = list(folder_embeddings.rglob(f"{base_name}_*.json"))
