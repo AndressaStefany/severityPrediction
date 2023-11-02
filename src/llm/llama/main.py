@@ -1680,7 +1680,8 @@ if __name__ == "__main__":
         if path.exists():
             return path.resolve()
         else:
-            raise Exception(f"{p} is not a path to a directory")
+            print(f"Warning: {path.resolve()} does not exists")
+            return path.resolve()
 
     algorithms_choices = [
         "inference",
