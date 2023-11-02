@@ -869,16 +869,19 @@ class CustomTrainer(trl.SFTTrainer):
         self.tokenizer = tokenizer
         super().__init__(*args,**kwargs)
     def compute_loss(self, model, inputs, *args, **kwargs):
-        logger.info(f"{inputs=}")
-        prediction = model(inputs['input'])
+        inputs = inputs[0]
+        input = inputs['input']
         label = inputs['label']
         bug_id = inputs['bug_id']
+        prediction = model(input)
+        logger.info(f"{inputs=} {prediction=}")
         loss = torch.nn.functional.cross_entropy(
             input=prediction,
             target=label
         )
         logger.info(f"{loss=} {label=} {prediction=} {bug_id=}")
         return loss
+
 class Dataset(torch.utils.data.Dataset):
     def __init__(self, tokenizer, l_dict: List[dict], input_field: str = "input", label_field: str = "binary_severity"): 
         self.l_dict = l_dict
@@ -889,7 +892,7 @@ class Dataset(torch.utils.data.Dataset):
         return len(self.l_dict)
     def __getitem__(self, i: int) -> Dict[str,'torch.Tensor']:
         elem = {**self.l_dict[i]}
-        input = torch.tensor(self.tokenizer(elem[self.input_field])['input_ids'])
+        input = self.tokenizer(elem[self.input_field], return_tensors="pt")['input_ids']
         label = torch.tensor(elem[self.label_field])
         bug_id = torch.tensor(elem['bug_id'])
         return {
@@ -1054,70 +1057,6 @@ def main_qlora_classification(
     trainer.train()
     with open(folder_out / "log_history.json", "w") as fp:
         json.dump(trainer.state.log_history, fp)
-    # device = "cuda"
-    # model.to(device)
-    # os.system("nvidia-smi")
-    # evaluator = Evaluator()
-    # assert num_train_epochs>0, "Train at least one epoch required"
-    # metrics_folder = folder_out / "metrics"
-    # metrics_folder.mkdir(exist_ok=True, parents=True)
-    # Ltr = []
-    # Lval = []
-    # for epoch in range(num_train_epochs):
-    #     model.train()
-    #     logger.info(f"{epoch=}")
-    #     for step, (d, inputs, labels) in enumerate(tqdm.tqdm(train_dataloader)):
-    #         # logger.info(f"{inputs.shape=}")
-    #         # cpu_size_bytes = inputs.element_size() * inputs.numel()
-    #         # logger.info(f"{cpu_size_bytes=}")
-    #         inputs.to(device)
-    #         # logger.info(f"after inputs.to(device)")
-    #         inputs.to("cpu")
-    #         # logger.info(f"after inputs.to('cpu')")
-    #         inputs.to(device)
-    #         # logger.info(f"after inputs.to(device)")
-    #         outputs = model(inputs, return_dict=True)
-    #         logger.info(f"after model(inputs) {outputs=} {outputs.loss=}")
-    #         loss = outputs.loss['logits'].sum()
-    #         Ltr.append({"loss":loss.tolist(),"step":step,"epoch":epoch,"tot_step":step+epoch*len(train_dataloader)})
-    #         loss.backward()
-    #         # logger.info(f"after backward")
-    #         optimizer.step()
-    #         lr_scheduler.step()
-    #         optimizer.zero_grad()
-    #         # logger.info(f"after step")
-
-    #     model.eval()
-    #     evaluator.reset()
-    #     for step, (d, inputs, labels) in enumerate(tqdm.tqdm(eval_dataloader)):
-    #         inputs.to(device)
-    #         with torch.no_grad():
-    #             outputs = model(inputs, return_dict=True)
-    #         Lval.append({"loss":outputs.loss['logits'].sum().tolist(),"step":step,"epoch":epoch,"tot_step":step+epoch*len(train_dataloader)})
-    #         pred = outputs.logits.argmax(dim=-1).cpu().detach().tolist()
-    #         logits = outputs.logits.detach().tolist()[0]
-    #         evaluator.add_samples(d=d,pred=pred,logits=logits)
-    #     fields_data = evaluator.get_data()
-        # conf_matrix, f1, data = compute_metrics_from_list(
-        #     fields_data, 
-        #     tokenizer, 
-        #     input_field="text", 
-        #     pred_field="pred", 
-        #     mapping_dict=mapping_dict, 
-        #     n_tokens_infered_max=limit_tokens,
-        #     n_tokens_show_max=limit_tokens, 
-        #     n_tokens_show_min=0
-        # )
-    #     accuracy = np.sum(np.diag(conf_matrix))/np.sum(conf_matrix)
-    #     with open(metrics_folder / f"epoch_{epoch}.json", "w") as f:
-    #         json.dump({
-    #             "conf_matrix": conf_matrix.tolist(),
-    #             "f1": f1,
-    #             "data": data.to_dict(orient='records'),
-    #             "Ltr":Ltr,
-    #             "Lval":Lval
-    #         },f,indent=2)
-        # print(f"epoch {epoch}: {accuracy=} {f1=}")
     
     logger.info("Saving trained QLORA model")
     if new_model_name != "":
@@ -1475,7 +1414,7 @@ def get_classifier(trial: 'optuna.Trial', input_size, output_size: int = 1):
     return model
 
 
-def train_test_classifier(trial: optuna.Trial, label_name: str='binary_severity'): #folder_path, hdf5_file_path, dataset_name, split_dataset_name, label_name: str='binary_severity'):
+def train_test_classifier(trial: 'optuna.Trial', label_name: str='binary_severity'): #folder_path, hdf5_file_path, dataset_name, split_dataset_name, label_name: str='binary_severity'):
     folder_path = Path(args.path_data_folder)
     hdf5_file_path = folder_path / f"embeddings_chunk_v4_eclipse_layer_-1_0.hdf5"
     split_dataset_name = Path(args.split_dataset_name)
@@ -1700,6 +1639,12 @@ if __name__ == "__main__":
         "embeddings_agg"
     ]
     parser.add_argument(
+        "-algorithm",
+        choices=algorithms_choices,
+        help="Algorithm to execute",
+        default="inference",
+    )
+    parser.add_argument(
         "-path_data_json",
         type=path_check,
         help="Path to the json data file",
@@ -1716,12 +1661,6 @@ if __name__ == "__main__":
         type=path_check,
         help="Root path to the main data folder",
         default=f"/project/def-aloise/{os.environ['USER']}/data/",
-    )
-    parser.add_argument(
-        "-algorithm",
-        choices=algorithms_choices,
-        help="Algorithm to execute",
-        default="inference",
     )
     parser.add_argument(
         "-token",
@@ -1862,6 +1801,7 @@ if __name__ == "__main__":
         help="choose which one of the dataset to use",
         default="eclipse_72k",
     )
+    parser.add_argument('extra_args', nargs=argparse.REMAINDER, help='Additional arguments')
     args = parser.parse_args()
     print(args)
     n_data = args.n_data
