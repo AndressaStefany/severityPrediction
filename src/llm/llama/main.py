@@ -914,7 +914,7 @@ class CustomTrainer(trl.SFTTrainer):
         bug_id = inputs['bug_id']
         prediction = model(input)[0]
         prediction = torch.nn.functional.sigmoid(prediction)
-        loss = torch.nn.functional.cross_entropy(
+        loss = torch.nn.functional.binary_cross_entropy(
             input=prediction,
             target=label
         )
