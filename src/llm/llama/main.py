@@ -1431,7 +1431,7 @@ def merge_data_embeddings(
         json.dump(L,fp)
 
 
-def get_classifier(trial: 'optuna.Trial', input_size, output_size: int = 1):
+def get_nn_classifier(trial: 'optuna.Trial', input_size, output_size: int = 1):
     activation_functions = {
         'relu': nn.ReLU,
         'leaky_relu': nn.LeakyReLU,
@@ -1444,7 +1444,7 @@ def get_classifier(trial: 'optuna.Trial', input_size, output_size: int = 1):
     layers = []
     in_features = input_size
     
-    out_features = trial.suggest_int(f"n_units_l{i}", 4, 128)
+    out_features = trial.suggest_int(f"n_units_l0", 4, 128)
     layers.append(nn.Linear(in_features, out_features))
     in_features = out_features
     prev_activation = 'linear'
@@ -1452,9 +1452,6 @@ def get_classifier(trial: 'optuna.Trial', input_size, output_size: int = 1):
     for i in range(1, n_layers):
         out_features = trial.suggest_int(f"n_units_l{i}", 4, 128)
         function = trial.suggest_categorical(f"layer_function_{i}", list(activation_functions.keys()))
-        
-        # se prev function for igual o atual, sorteia de novo e aplica
-        # caso contrário só aplica
         
         if prev_activation == function:
             function = trial.suggest_categorical(f"layer_function_{i}", list(filter(lambda x: x != function, activation_functions.keys())))
@@ -1469,16 +1466,15 @@ def get_classifier(trial: 'optuna.Trial', input_size, output_size: int = 1):
     layers.append(nn.Sigmoid())
 
     model = nn.Sequential(*layers)
-    
     return model
 
 
 def train_test_classifier(trial: 'optuna.Trial', label_name: str='binary_severity'): #folder_path, hdf5_file_path, dataset_name, split_dataset_name, label_name: str='binary_severity'):
     folder_path = Path(args.path_data_folder)
     hdf5_file_path = folder_path / f"embeddings_chunk_v4_eclipse_layer_-1_0.hdf5"
-    split_dataset_name = Path(args.split_dataset_name)
-    dataset_name = Path(args.dataset_choice)
-    df = pd.read_json(folder_path / dataset_name)
+    split_dataset_name = args.split_dataset_name
+    dataset_name = args.dataset_choice
+    df = pd.read_json(folder_path / f"{dataset_name}.json")
     train_dict, val_dict, test_dict = [], [], []
     
     with open(folder_path / split_dataset_name, 'r') as file:
@@ -1509,13 +1505,16 @@ def train_test_classifier(trial: 'optuna.Trial', label_name: str='binary_severit
     val_dataloader = dt.DataLoader(val_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
     
     input_size = len(train_dict[0]['embedding'])
-    hidden_size = trial.suggest_categorical("hidden_size",[8, 16, 64, 128])
+    # hidden_size = trial.suggest_categorical("hidden_size",[8, 16, 64, 128])
     # hidden_size = 64
     output_size = 1
 
-    model = SimpleNN(input_size, hidden_size, output_size)
+    model = get_nn_classifier(trial=trial, input_size=input_size, output_size=output_size)
+    # model = SimpleNN(input_size, hidden_size, output_size)
     # Binary Cross Entropy Loss
-    criterion = nn.BCEWithLogitsLoss(pos_weight=trial.suggest_float("pos_weight", [torch.tensor(0.1), torch.tensor(2.0)]))
+    pos_weight = trial.suggest_float("pos_weight", 0.1, 2.0)
+    pos_weight_tensor = torch.tensor(pos_weight)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
     # pos_weight = torch.tensor(0.1)  # Convert the float value to a tensor
     # criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
@@ -1526,6 +1525,7 @@ def train_test_classifier(trial: 'optuna.Trial', label_name: str='binary_severit
     # num_epochs = 100
     total_samples = len(train_dict)
     for epoch in range(num_epochs):
+        # add something about undersampling
         for i, (bug_ids, inputs, labels) in enumerate(train_dataloader):
             optimizer.zero_grad()
             outputs = model(inputs)
@@ -1555,12 +1555,12 @@ def train_test_classifier(trial: 'optuna.Trial', label_name: str='binary_severit
     print(f'Validation F1 Score: {val_weighted_avg_f1}')
 
     # Test step
-    model.eval()  # Ensure model is in evaluation mode for the test step
+    model.eval()
     test_labels_list = []
     test_result_list = []
     with torch.no_grad():
-        for bug_ids, inputs, labels in test_dataloader:  # Iterate through your test dataset
-            outputs = model(inputs)  # Forward pass
+        for bug_ids, inputs, labels in test_dataloader:
+            outputs = model(inputs)
             predicted = (outputs > 0.5).float()
             test_labels_list.extend(labels.tolist())
             result = [{"bug_id": bug_id, "binary_severity": label, "prediction": prediction[0]} for bug_id, label, prediction in zip(bug_ids.tolist(), labels.tolist(), predicted.tolist())]
@@ -1835,54 +1835,18 @@ if __name__ == "__main__":
         "merge_data_embeddings": merge_data_embeddings,
         "aggr_finetune": aggr_finetune,
     })
-    # elif args.algorithm == "nn_embedding":
-    #     folder_embeddings = Path(args.path_data_folder) / "embeddings"
-    #     layer_id: Tuple[int] = eval(args.layers_ids)
-    #     if len(layer_id) > 1:
-    #         raise ValueError(f"Expecting just one layer id not {len(layer_id)}")
-    #     print(args.algorithm)
-
-    #     with open(Path(args.data_folder_path_to_save) / 'output_file.json', 'w') as outfile:
-    #         outfile.write("")
-
-    #     for d in get_data_embeddings(
-    #         folder_embeddings=folder_embeddings,
-    #         layer_id=layer_id[0],
-    #         base_name=args.base_name,
-    #     ):
-    #         bug_id = d["bug_id"]
-    #         binary_severity = d["binary_severity"]
-    #         hidden_state = np.array(d["hidden_state"])
-
-    #         base_name = args.base_name
-    #         came_from = f"{base_name}layer_{layer_id[0]}_.json"
-
-    #         sum_aggregated_array = np.sum(hidden_state, axis=0)
-    #         mean_aggregated_array = sum_aggregated_array / len(hidden_state)
-
-    #         aggregated_list = mean_aggregated_array.tolist()
-
-    #         data = {
-    #             "bug_id": bug_id,
-    #             "binary_severity": binary_severity,
-    #             "from": came_from,
-    #             "aggregated_list": aggregated_list,
-    #         }
-    #         with open(Path(args.data_folder_path_to_save) / 'output_aggregation.json', 'a') as outfile:
-    #             json.dump(data, outfile)
-    #             outfile.write(",\n")
-    # elif args.algorithm == "nn_classifier":
-    #     # passar pro args... o documento/dataset a utilizar
-    #     study_name = "nn_classifier"
-    #     storage_name = "sqlite:///{}.db".format(study_name)
-    #     study = optuna.create_study(direction="maximize",
-    #                                 study_name=study_name, 
-    #                                 storage=storage_name, 
-    #                                 load_if_exists=True)
-    #     n_jobs = 1
-    #     study.optimize(train_test_classifier, n_trials=10,n_jobs=n_jobs)
-    #     with open(args.path_data_folder / f"{study_name}results.json" ,'w') as f:
-    #         json.dump({
-    #             "best_params": study.best_params,
-    #             "best_value": study.best_value
-    #         },f)
+            
+    if args.algorithm == "nn_classifier":
+        study_name = "nn_classifier"
+        storage_name = "sqlite:///{}.db".format(study_name)
+        study = optuna.create_study(direction="maximize",
+                                    study_name=study_name, 
+                                    storage=storage_name, 
+                                    load_if_exists=True)
+        n_jobs = 1
+        study.optimize(train_test_classifier, n_trials=10,n_jobs=n_jobs)
+        with open(args.path_data_folder / f"{study_name}results.json" ,'w') as f:
+            json.dump({
+                "best_params": study.best_params,
+                "best_value": study.best_value
+            },f)
