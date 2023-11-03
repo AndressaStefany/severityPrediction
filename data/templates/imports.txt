@@ -1,9 +1,5 @@
-module load python/3.9
-module load cuda/11.7
-nvidia-smi
-
-
 module load StdEnv/2020  gcc/9.3.0  cuda/11.4 python/3.11 arrow ## cuda/11.7 not work
+nvidia-smi
 virtualenv $SLURM_TMPDIR/MYENV
 source $SLURM_TMPDIR/MYENV/bin/activate
 pip install --no-index --upgrade pip
