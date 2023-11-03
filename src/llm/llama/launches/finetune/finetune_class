@@ -53,7 +53,7 @@ lr=0.00001
 n_tokens_infered_max=200
 cd /project/def-aloise/$USER/
 
-python /project/def-aloise/$USER/main.py -dataset_choice $dataset_choice -path_data_folder /project/def-aloise/$USER/data/ -algorithm $algorithm -id $id_name -new_model_name $new_model_name -qlora_alpha $qlora_alpha -qlora_r $qlora_r -qlora_dropout $qlora_dropout -model_name $model_name -n_tokens_infered_max $n_tokens_infered_max -num_train_epochs 1 -lr $lr
+python /project/def-aloise/$USER/main.py qlora_classification -dataset_choice $dataset_choice -path_data_folder /project/def-aloise/$USER/data/ -algorithm $algorithm -id $id_name -new_model_name $new_model_name -qlora_alpha $qlora_alpha -qlora_r $qlora_r -qlora_dropout $qlora_dropout -model_name $model_name -n_tokens_infered_max $n_tokens_infered_max -num_train_epochs 1 -lr $lr
 
 
 # Capture the end time
