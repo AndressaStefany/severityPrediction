@@ -1,0 +1,17 @@
+### Example of Input
+
+$severe_descr
+
+### Response
+1
+
+### End
+
+### Example of Input
+
+$non_severe_descr
+
+### Response
+0
+
+### End

@@ -1,0 +1,13 @@
+$preprompt
+Below is an instruction that describes a task. Write a response that appropriately completes the request.
+
+### Instruction:
+Categorize the bug report into one of 2 categories:
+
+0 = NOT SEVERE
+1 = SEVERE
+$add_instructions
+### Input:
+$input
+
+### Response:

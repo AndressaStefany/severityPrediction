@@ -16,6 +16,20 @@ import psutil
 import multiprocessing as mp
 import functools
 import random
+import fire
+
+# tye hints
+LlamaTokenizer = Union['trf.LlamaTokenizer', 'trf.LlamaTokenizerFast']
+LlamaModel = 'trf.LlamaForCausalLM'
+PoolingOperationCode = Literal["mean","sum"]
+PoolingFn = Callable[['torch.Tensor'],'torch.Tensor']
+ModelName = Literal["meta-llama/Llama-2-13b-chat-hf","meta-llama/Llama-2-7b-chat-hf"]
+DatasetName = Literal["eclipse_72k","mozilla_200k"]
+BugId: int
+default_token: str = "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"
+default_model: ModelName = "meta-llama/Llama-2-13b-chat-hf"
+default_n_tokens_infered_max: int = 7364
+default_input_field: str = "description"
 
 # typehint imports
 if TYPE_CHECKING:
@@ -39,12 +53,6 @@ if TYPE_CHECKING:
     import evaluate
     import optuna
 
-    LlamaTokenizer = Union[trf.LlamaTokenizer, trf.LlamaTokenizerFast]
-    LlamaModel = trf.LlamaForCausalLM
-    PoolingOperationCode = Literal["mean","sum"]
-    PoolingFn = Callable[[torch.Tensor],torch.Tensor]
-    ModelName = Literal["meta-llama/Llama-2-13b-chat-hf","meta-llama/Llama-2-7b-chat-hf","meta-llama/Llama-2-70b-chat-hf"]
-    BugId: int
 
 imports = [
     "import transformers as trf",
@@ -77,6 +85,25 @@ try:
     from src.baseline.baseline_functions import *  # type: ignore
 except Exception:
     pass
+
+def existing_path(p: Union[str,Path], is_folder: bool) -> Path:
+    p = Path(p)
+    if not p.exists():
+        raise Exception(f"{p.resolve()} does not exists")
+    if p.is_dir() and not is_folder:
+        raise Exception(f"{p.resolve()} is a folder not a file")
+    if not p.is_dir() and is_folder:
+        raise Exception(f"{p.resolve()} is a file not a folder")
+    return p
+
+def assert_valid_token(token: str):
+    assert isinstance(token, str) and len(token)>3 and token[:3] == "hf_"
+def get_literal_value(model_name: str, literal: Any = ModelName) -> Any:
+    assert isinstance(model_name, str) and model_name in get_args(Literal)
+    return model_name# type: ignore
+def get_dataset_choice(dataset_choice: str) -> DatasetName:
+    assert isinstance(dataset_choice, str) and dataset_choice in get_args(DatasetName)
+    return dataset_choice# type: ignore
 
 class SimpleNN(nn.Module):
     def __init__(self, input_size, hidden_size, output_size):
@@ -290,7 +317,7 @@ class FinetuneMaxTokens(MaxTokensEvaluator):
         model_name: str,
         token: str,
         max_n_tokens: int,
-        base_file_data: Path,
+        template_path: Path,
         n_samples: int = 100,
         **kwargs_train,
     ) -> None:
@@ -299,9 +326,8 @@ class FinetuneMaxTokens(MaxTokensEvaluator):
         self.kwargs = {"model_name": model_name, "token": token, **kwargs_train}
         token_ids = generate_text_with_n_tokens(tokenizer, max_n_tokens)
         token_names = tokenizer.convert_ids_to_tokens(token_ids)
-        with open(base_file_data) as f:
-            data_preprocessed = json.load(f)
-        template = data_preprocessed["template"]
+        with open(template_path) as f:
+            template = json.load(f)
         data_sample = {"llama_tokenized_description": token_names, "binary_severity": 0}
         with open("./tmp.json", "w") as f:
             json.dump(
@@ -442,30 +468,36 @@ def build_prompt(
 
 @print_args
 def main_inference(
-    path_data_preprocessed: Path,
-    model_name: str = "meta-llama/Llama-2-13b-chat-hf",
-    token: str = "",
-    start: int = 0,
-    end: int = -1,
-    limit_tokens: int = 7364,
+    path_data_json: str,# type: ignore
+    model_name: str = default_model,
+    token: str = default_token,
+    n_tokens_infered_max: int = 7364,
     id_pred: str = "",
+    n_data: Optional[int] = None, 
+    seed_start: Optional[int] = None, 
+    seed_end: Optional[int] = None, 
+    n_chunks: Optional[int] = None, 
+    interval_idx: Optional[int] = None
 ):
+    path_data_json: Path = existing_path(path_data_json)
+    assert model_name in get_args(ModelName), f"Expecting model name to be in {get_args(ModelName)} not {model_name}"
+    assert len(token) > 3 and token[:3] == "hf_"
+    seed_start, seed_end = generate_seeds(n_data,seed_start,seed_end,n_chunks,interval_idx)
+    
     tokenizer, model = initialize_model_inference(model_name, token)  # type: ignore
     pipeline = trf.pipeline(
         "text-generation", model=model, tokenizer=tokenizer, device_map="auto"
     )
-    with open(path_data_preprocessed) as f:
+    with open(path_data_json) as f:
         data_preprocessed = json.load(f)
     data = data_preprocessed["data"]
     template = data_preprocessed["template"]
-    if end == -1:
-        end = len(data)
-    data = data[start:end]
+    data = data[seed_start:seed_end]
     responses = []
-    folder_predictions = path_data_preprocessed.parent / "predictions"
+    folder_predictions = path_data_json.parent / "predictions"
     folder_predictions.mkdir(exist_ok=True, parents=True)
     with open(folder_predictions / f"metadata.meta", "w") as f:
-        json.dump({"data_path": str(path_data_preprocessed.resolve())}, f, indent=2)
+        json.dump({"data_path": str(path_data_json.resolve())}, f, indent=2)
     for i, d in tqdm.tqdm(enumerate(data), total=len(data)):
         # gc.collect()
         # torch.cuda.empty_cache()  # type: ignore
@@ -476,10 +508,10 @@ def main_inference(
             d["llama_tokenized_description"],
             template["template_index_insert"],
             tokenizer,
-            limit_tokens=limit_tokens,
+            limit_tokens=n_tokens_infered_max,
         )
         n_tokens = len(tokenized_full_text)
-        assert n_tokens < limit_tokens
+        assert n_tokens < n_tokens_infered_max
         try:
             [answer] = pipeline(  # type: ignore
                 text,
@@ -506,13 +538,13 @@ def main_inference(
         )
         if i % 5 == 0:
             with open(
-                folder_predictions / f"predictions_v100l_chunk_{start}_{id_pred}.json",
+                folder_predictions / f"predictions_v100l_chunk_{seed_start}_{id_pred}.json",
                 "w",
             ) as f:
                 json.dump(responses, f)
 
     with open(
-        folder_predictions / f"predictions_v100l_chunk_{start}_{id_pred}.json", "w"
+        folder_predictions / f"predictions_v100l_chunk_{seed_start}_{id_pred}.json", "w"
     ) as f:
         json.dump(responses, f, indent=2)
 
@@ -808,16 +840,23 @@ class Evaluator:
 
 @print_args
 def generate_dataset(
-    folder_out: Path,
-    file_examples: Path,
-    file_split: Path,
+    folder_out: Union[str,Path], #type: ignore
+    folder_data: Union[str,Path], #type: ignore
+    dataset_choice: DatasetName,
     field_input: str,
-    token: str,
-    model_name: str,
-    limit_tokens: int,
+    token: str = default_token,
+    model_name: ModelName = default_model,
+    n_tokens_infered_max: int = -1,
     id: str = "",
 ):
     """Generates the dataset for the finetuning"""
+    folder_out: Path = existing_path(folder_out, is_folder=True) 
+    folder_data: Path = existing_path(folder_data, is_folder=True)
+    file_examples = existing_path(folder_data / f"{dataset_choice}.json", is_folder=False)
+    file_split = existing_path(folder_data / f"split_{dataset_choice}.json", is_folder=False)
+    assert_valid_token(token)
+    model_name = get_literal_value(model_name)
+    
     logger.info("Create datasets")
     id = id.replace("/","_")
     train_path = folder_out / f"finetune_train{id}.json"
@@ -841,7 +880,7 @@ def generate_dataset(
                 d[field_input],
                 template["template_index_insert"],
                 tokenizer,
-                limit_tokens=limit_tokens,
+                limit_tokens=n_tokens_infered_max,
             )
             d = {**d, "input": text, "n_tokens": len(tokenized_full_text)}
             for k in ["tr","val","test"]:
@@ -871,9 +910,9 @@ class CustomTrainer(trl.SFTTrainer):
     def compute_loss(self, model, inputs, *args, **kwargs):
         inputs = inputs[0]
         input = inputs['input']
-        label = inputs['label']
+        label = inputs['label'].reshape((1,1)).to(torch.float)
         bug_id = inputs['bug_id']
-        prediction = model(input)
+        prediction = model(input)[0]
         logger.info(f"{inputs=} {prediction=}")
         loss = torch.nn.functional.cross_entropy(
             input=prediction,
@@ -906,20 +945,18 @@ class DataCollator(trf.data.DataCollatorForTokenClassification):
         return features
 @print_args
 def main_qlora_classification(
-    file_examples: Path,
-    file_split: Path,
-    folder_out: Path,
+    folder_out: str, #type: ignore
+    folder_data: str, #type: ignore
+    dataset_choice: DatasetName,
     lora_alpha: int = 16,
     lora_dropout: float = 0.1,
     lora_r: int = 64,
-    model_name: str = "meta-llama/Llama-2-13b-chat-hf",
-    token: str = "",
-    field_label: str = "binary_severity",
+    model_name: str = default_model,
+    token: str = default_token,
     field_input: str = "llama_tokenized_description",
     num_train_epochs: int = 1,
     tr_bs: int = 1,
     gradient_accumulation_steps: int = 1,
-    val_bs: int = 1,
     learning_rate: float = 2e-4,
     limit_tokens: int = 7364,
     new_model_name: str = "",
@@ -960,11 +997,17 @@ def main_qlora_classification(
         - lim_size: int = -1, the size of the training and validation set. If -1 no limit
     """
     print("main_qlora_classification")
+    arguments = locals()
     logger.info("main_qlora")
+    folder_out: Path = existing_path(folder_out, is_folder=True) / f"qlora_finetune_{id}"
+    folder_out.mkdir(parents=True, exist_ok=True)
+    folder_data: Path = existing_path(folder_data, is_folder=False)
+    assert_valid_token(token)
+    model_name = get_literal_value(model_name)
     if token != "":
         huggingface_hub.login(token=token)
-    if not folder_out.exists():
-        folder_out.mkdir(parents=True)
+    with open(folder_out / "parameters.json", "w") as f:
+        json.dump(arguments,indent=4,fp=f,cls=CustomEncoder)
 
     
     logger.info("LlamaTokenizer")
@@ -995,13 +1038,12 @@ def main_qlora_classification(
     # create datasets
     logger.info("generate_dataset")
     tr_data, val_data, train_path, valid_path = generate_dataset(
-        folder_out=folder_out.parent,
-        file_examples=file_examples,
-        file_split=file_split,
+        folder_out=folder_data,
+        folder_data=folder_data,
         field_input=field_input,
+        dataset_choice=dataset_choice,
         token=token,
         model_name=model_name,
-        limit_tokens=limit_tokens,
         id=f"_{model_name}{id}_{limit_tokens}",
     )
     logger.info(f"Using {train_path} {valid_path}")
@@ -1051,7 +1093,7 @@ def main_qlora_classification(
     )
     for name, module in trainer.model.named_modules():
         if "norm" in name:
-            module = module.to(torch.float32)
+            module = module.to(torch.float32)#type :ignore
     logger.info(f"{trainer.args._n_gpu=}")
     
     trainer.train()
@@ -1064,7 +1106,17 @@ def main_qlora_classification(
         output_dir.mkdir(parents=True, exist_ok=True)
         # model.save_pretrained(str(output_dir))
         # model.push_to_hub(new_model_name)
-    return conf_matrix, f1, data #type: ignore
+    
+    compute_metrics_from_files(
+        conf_matrix=conf_matrix,
+        f1=f1,
+        data_full=data,
+        folder_out=path_out,
+        pred_field="pred",
+        n_tokens_infered_max=args.n_tokens_infered_max,
+        n_tokens_show_min=args.n_tokens_show_min,
+        n_tokens_show_max=args.n_tokens_show_max,
+    )
 
 
 @print_args
@@ -1260,16 +1312,17 @@ def get_pooling_operation(pooling_code: 'PoolingOperationCode') -> 'PoolingFn':
     
 @print_args
 def get_llama2_embeddings(
-    model_name: 'ModelName',
-    token: str,
-    path_data_preprocessed: Path,
-    folder_out: Path,
-    pooling_fn: 'PoolingFn',
-    layers_ids: Optional[Tuple[int]] = None,
+    folder_out: str, #type: ignore
+    folder_data: str, #type: ignore
+    dataset_choice: DatasetName,
+    pooling_op: PoolingOperationCode,
+    layer_id: int = -1,
     start: int = 0,
     end: int = -1,
     limit_tokens: int = -1,
-    id_pred: str = ""
+    id_pred: str = "",
+    model_name: ModelName = default_model,# type: ignore
+    token: str = default_token,
 ):
     """From a json file with the description use llama2 to generate the embeddings for each data sample. The intent of this function is to be called with multiple nodes on a slurm server to have faster results
     
@@ -1285,8 +1338,13 @@ def get_llama2_embeddings(
     - id_pred: str = "", the id to put in the filename to help for the aggregation of files after
     
     """
-    if layers_ids is None:
-        layers_ids = (0,)
+    folder_out: Path = existing_path(folder_out, is_folder=True) / f"embeddings{id_pred}"
+    folder_out.mkdir(parents=True, exist_ok=True)
+    folder_data: Path = existing_path(folder_data, is_folder=False)
+    path_data_preprocessed: Path = existing_path(folder_data / f"{dataset_choice}.json", is_folder=False)
+    assert_valid_token(token)
+    model_name: ModelName = get_literal_value(model_name)
+    pooling_fn: PoolingFn = get_literal_value(pooling_op, PoolingOperationCode)
     tokenizer, model = initialize_model_inference(model_name, token, hidden_states=True)  # type: ignore
     with open(path_data_preprocessed) as f:
         data_preprocessed = json.load(f)
@@ -1317,11 +1375,10 @@ def get_llama2_embeddings(
         logger.info(f"{len(tokenized_full_text)=}")
         try:
             embeddings = model(torch.tensor([tokenized_full_text], dtype=torch.int32))  # type: ignore
-            for idx_layer in layers_ids:
-                embedding = embeddings.hidden_states[idx_layer]
-                pooled_embedding = np.array(pooling_fn(embedding).tolist()[0],dtype=np.float32)
-                with h5py.File(get_file_path(idx_layer), "a") as fp:
-                    fp.create_dataset(str(d['bug_id']),data=pooled_embedding,dtype="f")
+            embedding = embeddings.hidden_states[layer_id]
+            pooled_embedding = np.array(pooling_fn(embedding).tolist()[0],dtype=np.float32)
+            with h5py.File(get_file_path(layer_id), "a") as fp:
+                fp.create_dataset(str(d['bug_id']),data=pooled_embedding,dtype="f")
             del embeddings
         except torch.cuda.OutOfMemoryError:
             logger.info(f"Error for {len(tokenized_full_text)} tokens")
@@ -1331,12 +1388,13 @@ def get_llama2_embeddings(
     with open(path_missing, "w") as fp:
         json.dump(Lmissing, fp)
 
+@print_args
 def merge_data_embeddings(
     folder_embeddings: Path,
     path_dst: Path,
     layer_id: int = -1,
     base_name: str = "embeddings_chunk_",
-    auto_remove: bool = True
+    auto_remove: bool = False
 ):
     """Allows to merge all hdf5 files of the embeddings into one. Automatically removes files after the data is transfered to save space.
     
@@ -1347,6 +1405,7 @@ def merge_data_embeddings(
     - base_name: str = "embeddings_chunk_", the base name of the embedding hdf5 to merge
     - auto_remove: bool = True, if yes autoremove the files when the data have been transfered
     """
+    folder_embeddings = existing_path(folder_embeddings, is_folder=True)
     sorted_path = list(folder_embeddings.rglob(f"{base_name}layer_{layer_id}_*.hdf5"))
     sorted_path = sorted(
         sorted_path, key=lambda x: int(x.name.split(".")[0].split("_")[-1])
@@ -1520,11 +1579,14 @@ class DataoutDict(TypedDict):
     severity_pred: Union[int, float]
     binary_severity: int
 
+@print_args
 def aggr_finetune(
             folder_out: Path,
             folder_in: Path,
             pattern_name: str
         ):
+    folder_in = existing_path(folder_in,is_folder=True)
+    folder_out.mkdir(exist_ok=True, parents=True)
     samples = []
     for p in folder_in.rglob(pattern=pattern_name):
         path_parameters = p / "parameters.json"
@@ -1573,10 +1635,13 @@ def get_embeddings_datasets(
     return datasets# type: ignore
 
 @print_args
-def generate_train_test_split(path_data: Path, folder_out: Path, train_percent: float = 0.7, val_percent: float = 0.2) -> SplitDict:
+def generate_train_test_split(path_data: str, folder_out: str, train_percent: float = 0.7, val_percent: float = 0.2) -> SplitDict:# type: ignore
     """Generate a dataset with balanced training set, imbalanced validation and test sets"""
     with open(path_data) as fp:
         dataset = json.load(fp)
+    path_data: Path = existing_path(path_data, is_folder=False)
+    folder_out: Path = existing_path(folder_out, is_folder=True)
+    assert folder_out.is_dir()
     random.seed(0)
     random.shuffle(dataset)
     
@@ -1610,404 +1675,142 @@ def generate_train_test_split(path_data: Path, folder_out: Path, train_percent: 
         json.dump(ids, fp)
     return ids
 
-if __name__ == "__main__":
-    logger.info("start")
-    parser = argparse.ArgumentParser(description="Select LLM script to run")
-
-    def path_check(p: str):
-        path = Path(p)
-        if path.exists():
-            return path.resolve()
-        else:
-            print(f"Warning: {path.resolve()} does not exists")
-            return path.resolve()
-
-    algorithms_choices = [
-        "inference",
-        "max_tokens_pipeline",
-        "max_tokens_embeddings",
-        "max_tokens_finetuning",
-        "finetune_generation",
-        "finetune_classification",
-        "finetune_dataset",
-        "finetune",
-        "embeddings_gen",
-        "nn_embedding",
-        "nn_classifier",
-        "aggr_finetune",
-        "split_datasets",
-        "embeddings_agg"
-    ]
-    parser.add_argument(
-        "-algorithm",
-        choices=algorithms_choices,
-        help="Algorithm to execute",
-        default="inference",
-    )
-    parser.add_argument(
-        "-path_data_json",
-        type=path_check,
-        help="Path to the json data file",
-        default=f"/project/def-aloise/{os.environ['USER']}/data/eclipse_72k.json",
-    )
-    parser.add_argument(
-        "-path_data_folder",
-        type=path_check,
-        help="Root path to the main data folder",
-        default=f"/project/def-aloise/{os.environ['USER']}/data/",
-    )
-    parser.add_argument(
-        "-data_folder_path_to_save",
-        type=path_check,
-        help="Root path to the main data folder",
-        default=f"/project/def-aloise/{os.environ['USER']}/data/",
-    )
-    parser.add_argument(
-        "-token",
-        type=str,
-        help="Token to huggingface",
-        default="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",
-    )
-    parser.add_argument(
-        "-interval_idx",
-        type=int,
-        help="Choice of the interval for inference and max tokens",
-    )
-    parser.add_argument(
-        "-n_chunks",
-        type=int,
-        help="Number of chunks to do for inference and max tokens",
-    )
-    parser.add_argument(
-        "-seed_start", type=int, help="Seed start for inference", default=0
-    )
-    parser.add_argument(
-        "-seed_end", type=int, help="Seed end for inference (included)", default=-1
-    )
-    parser.add_argument(
-        "-pred_field",
-        type=str,
-        help="Predicted field to use",
-        default="severity_pred_trunc",
-    )
-    parser.add_argument(
-        "-input_field", type=str, help="Predicted field to use", default="description"
-    )
-    parser.add_argument(
-        "-n_tokens_infered_max",
-        type=int,
-        help="Number of maximum infered tokens",
-        default=7364,
-    )
-    parser.add_argument(
-        "-n_tokens_show_min",
-        type=int,
-        help="Maximum number of tokens tokens in the statistics",
-        default=0,
-    )
-    parser.add_argument(
-        "-n_tokens_show_max",
-        type=int,
-        help="Minimum number of tokens shown in the statistics",
-        default=7364,
-    )
-    parser.add_argument(
-        "-n_data", type=int, help="Total number of data in the dataset", default=22302
-    )
-    parser.add_argument(
-        "-id", type=str, help="Id to put on the files to save", default="_trunc"
-    )
-    parser.add_argument(
-        "-model_name",
-        type=str,
-        help="Name of the huggingface model to use",
-        default="meta-llama/Llama-2-13b-chat-hf",
-    )
-    parser.add_argument(
-        "-new_model_name",
-        type=str,
-        help="Name of the huggingface model to use",
-        default="meta-llama/Finetune-Llama-2-13b-chat-hf",
-    )
-    parser.add_argument(
-        "-qlora_alpha",
-        type=float,
-        help="Ponderation of the QLORA finetuning",
-        default=8,
-    )
-    parser.add_argument(
-        "-qlora_dropout",
-        type=float,
-        help="Dropout applied to the QLORA finetuning",
-        default=0.1,
-    )
-    parser.add_argument(
-        "-qlora_r",
-        type=int,
-        help="Rank of the matrices of the QLORA finetuning",
-        default=8,
-    )
-    parser.add_argument(
-        "-lr",
-        type=float,
-        help="Learning rate",
-        default=1e-3,
-    )
-    parser.add_argument(
-        "-num_train_epochs",
-        type=int,
-        help="Number of training epochs for qlora",
-        default=5,
-    )
-    parser.add_argument(
-        "-layers_ids",
-        type=str,
-        help="Layers ids for the embedding to take",
-        default="(-1,)",
-    )
-    parser.add_argument(
-        "-base_name",
-        type=str,
-        help="Base name of the json file with the layer id for get_data_embeddings (ex: embeddings_chunk__trunc_layer_-1_4460.h5 will give embeddings_chunk__trunc_)",
-        default="embeddings_chunk_",
-    )
-    parser.add_argument(
-        "-path_backup_fields",
-        type=str,
-        help="Allow to add the missing field of binary_severity based on the bug_id common field. Relative path to the data path",
-        default="llm/data_preprocessed_tokens.json",
-    )
-    parser.add_argument(
-        "-pattern_name",
-        type=str,
-        help="pattern of the root folders where the finetuning wrote metrics",
-        default="qlora_finetune_class_*",
-    )
-    parser.add_argument(
-        "-pooling_fn",
-        choices=["mean","sum"],
-        help="pooling function to use to do embeddings",
-        default="mean",
-    )
-    parser.add_argument(
-        "-split_dataset_name",
-        type=str,
-        help="name of the split (tr,val,test) document",
-        default="split_eclipse_72k.json",
-    )
-    parser.add_argument(
-        "-dataset_choice",
-        choices=["eclipse_72k","mozilla_200k"],
-        help="choose which one of the dataset to use",
-        default="eclipse_72k",
-    )
-    parser.add_argument('extra_args', nargs=argparse.REMAINDER, help='Additional arguments')
-    args = parser.parse_args()
-    print(args)
-    n_data = args.n_data
-    assert args.n_chunks is not None or (
-        args.seed_start is not None and args.seed_end is not None
-    ), "Expecting n_chunks or seed start and seed end"
-    if args.n_chunks is not None:
-        assert args.interval_idx is not None, "Expecting interval id"
-
-        n_intervals = args.n_chunks
+def generate_seeds(
+        n_data: Optional[int] = None, 
+        seed_start: Optional[int] = None, 
+        seed_end: Optional[int] = None, 
+        n_chunks: Optional[int] = None, 
+        interval_idx: Optional[int] = None
+    ) -> Tuple[int,int]:
+    assert (seed_start is None and seed_end is None) == (n_chunks is not None and interval_idx is not None and n_data is not None), "Expecting either seed_start and seed_end or n_chunks and interval_idx"
+    if seed_start is not None and seed_end is not None:
+        if seed_end == -1:
+            assert n_data is not None
+            seed_end = n_data
+        return (seed_start,seed_end)
+    if n_chunks is not None and interval_idx is not None and n_data is not None:
+        n_intervals = n_chunks
         intervals = [
             [i * (n_data // n_intervals), (i + 1) * (n_data // n_intervals)]
             for i in range(n_intervals)
         ]
         intervals[-1][1] = n_data
-        [seed_start, seed_end] = intervals[args.interval_idx]
-    else:
-        [seed_start, seed_end] = [args.seed_start, args.seed_end]
-    if args.algorithm == "split_datasets":
-        generate_train_test_split(
-            path_data=args.path_data_json,
-            folder_out=args.path_data_folder,
-            train_percent=0.7,
-            val_percent=0.2
-        )
-    elif args.algorithm == "inference":
-        main_inference(
-            args.path_data_json,
-            token=args.token,
-            start=seed_start,
-            end=seed_end,
-            model_name=args.model_name,
-            id_pred=args.id,
-            limit_tokens=args.n_tokens_infered_max,
-        )
-    elif args.algorithm == "compute_metrics":
-        folder_out = args.path_data_folder / f"out_{args.pred_field}{args.id}"
-        folder_out.mkdir(parents=True, exist_ok=True)
-        
-        tokenizer = initialize_model_inference(model_name, token, return_model=False)  # type: ignore
-        fields_data = extract_fields_from_json(args.path_data_folder)
-        conf_matrix, f1, data = compute_metrics_from_list(
-            fields_data=fields_data, 
-            tokenizer=tokenizer, 
-            path_backup_fields=args.path_data_folder / args.path_backup_fields, 
-            pred_field=args.pred_field,
-            input_field=args.input_field,
-            n_tokens_infered_max=args.n_tokens_infered_max,
-            n_tokens_show_min=args.n_tokens_show_min,
-            n_tokens_show_max=args.n_tokens_show_max,
-        )
-        compute_metrics_from_files(
-            conf_matrix=conf_matrix,
-            f1=f1,
-            data_full=data,
-            folder_out=folder_out,
-            pred_field=args.pred_field,
-            n_tokens_infered_max=args.n_tokens_infered_max,
-            n_tokens_show_min=args.n_tokens_show_min,
-            n_tokens_show_max=args.n_tokens_show_max,
-        )
-    elif args.algorithm == "finetune_dataset":
-        generate_dataset(
-            folder_out=args.path_data_folder,
-            file_examples=args.path_data_json,
-            file_split=args.path_data_folder / f"split_{args.dataset_choice}.json",
-            token=args.token, 
-            model_name=args.model_name,
-            id=f"_{args.model_name}_{args.n_tokens_infered_max}",
-            field_input=args.input_field,
-            limit_tokens=args.n_tokens_infered_max,
-        )
-    elif args.algorithm == "finetune_generation":
-        path_out = args.path_data_folder / f"qlora_finetune_{args.id}"
-        path_out.mkdir(parents=True, exist_ok=True)
-        main_qlora_generation(
-            model_name=args.model_name,
-            file_examples=args.path_data_json,
-            file_split=args.path_data_folder / f"split_{args.dataset_choice}.json",
-            new_model_name=args.new_model_name,
-            folder_out=path_out,
-            token=args.token,
-            field_label="binary_severity",
-            field_input=args.input_field,
-            lora_alpha=args.qlora_alpha,
-            lora_dropout=args.qlora_dropout,
-            lora_r=args.qlora_r,
-            limit_tokens=args.n_tokens_infered_max,
-            num_train_epochs=args.num_train_epochs
-        )
-    elif args.algorithm == "finetune_classification":
-        path_out = args.path_data_folder / f"qlora_finetune_{args.id}"
-        path_out.mkdir(parents=True, exist_ok=True)
-        with open(path_out / "parameters.json", "w") as f:
-            json.dump(vars(args),indent=4,fp=f,cls=CustomEncoder)
-        conf_matrix, f1, data = main_qlora_classification(
-            model_name=args.model_name,
-            file_examples=args.path_data_folder / f"{args.dataset_choice}.json",
-            file_split=args.path_data_folder / f"split_{args.dataset_choice}.json",
-            new_model_name=args.new_model_name,
-            folder_out=path_out,
-            token=args.token,
-            field_label="binary_severity",
-            field_input=args.input_field,
-            lora_alpha=args.qlora_alpha,
-            lora_dropout=args.qlora_dropout,
-            lora_r=args.qlora_r,
-            limit_tokens=args.n_tokens_infered_max,
-            num_train_epochs=args.num_train_epochs,
-            learning_rate=args.lr,
-            id=f"_{args.dataset_choice}"
-        )
-        compute_metrics_from_files(
-            conf_matrix=conf_matrix,
-            f1=f1,
-            data_full=data,
-            folder_out=path_out,
-            pred_field="pred",
-            n_tokens_infered_max=args.n_tokens_infered_max,
-            n_tokens_show_min=args.n_tokens_show_min,
-            n_tokens_show_max=args.n_tokens_show_max,
-        )
-    elif args.algorithm == "max_tokens_pipeline":
-        logger.info(args.algorithm)
-        (max_work, min_not_work) = get_max_tokens(
-            PipelineMaxTokens(model_name=args.model_name, token=args.token),
-            min_token_length=1,
-            max_token_length=10000,
-        )
-        logger.info((max_work, min_not_work))
-        args_dict = convert_dict_to_str(vars(args))
-        path_out = args.path_data_folder / "tokens_lim.json"
-        L = []
-        if path_out.exists():
-            with open(path_out, "r") as f:
-                L = json.load(f)
-        L.append({
-                    "max_work": max_work,
-                    "min_not_work": min_not_work,
-                    "model_name": args.model_name,
-                })
-        for k,v in args_dict.items():
-            L[-1][k] = v
-        with open(path_out, "w") as f:
-            json.dump(L, f,indent=2)
-        logger.info(f"{max_work=},{min_not_work=}")
-    elif args.algorithm == "max_tokens_embeddings":
-        logger.info(args.algorithm)
-        (max_work, min_not_work) = get_max_tokens(
-            EmbeddingsMaxTokens(model_name=args.model_name, token=args.token),
-            min_token_length=1,
-            max_token_length=10000,
-        )
-        logger.info((max_work, min_not_work))
-        
-        args_dict = convert_dict_to_str(vars(args))
-        path_out: Path = args.path_data_folder / "tokens_lim.json"
-        L = []
-        if path_out.exists():
-            with open(path_out, "r") as f:
-                L = json.load(f)
-        L.append({
-                    "max_work": max_work,
-                    "min_not_work": min_not_work,
-                    "model_name": args.model_name,
-                })
-        for k,v in args_dict.items():
-            L[-1][k] = v
-        with open(path_out, "w") as f:
-            json.dump(L, f,indent=2)
-        print(f"{max_work=},{min_not_work=}")
-    elif args.algorithm == "max_tokens_finetuning":
-        path_data_folder = Path(args.path_data_folder)
-        if not path_data_folder.exists():
-            raise ValueError(f"The path {path_data_folder} does not exist")
-        max_n_tokens = 10000
-        args_dict = convert_dict_to_str(vars(args))
-        path_out = path_data_folder / "tokens_lim.json"
-        L = []
-        if path_out.exists():
-            with open(path_out, "r") as f:
-                L = json.load(f)
-        for model_name in [
-            "meta-llama/Llama-2-7b-chat-hf",
-            "meta-llama/Llama-2-13b-chat-hf",
-        ]:
+        [seed_start, seed_end] = intervals[interval_idx]
+        return (seed_start,seed_end)
+    raise Exception
+
+@print_args
+def main_compute_metrics(path_data_folder: str, input_field: str = "input", pred_field: str = "pred", id: str = "", model_name: str = default_model, token: str = default_token, n_tokens_infered_max: int = default_n_tokens_infered_max, n_tokens_show_min: int = 0, n_tokens_show_max: int = default_n_tokens_infered_max):# type: ignore
+    path_data_folder: Path = existing_path(path_data_folder, is_folder=True)
+    assert_valid_token(token)
+    model_name = get_literal_value(model_name)
+    
+    folder_out = path_data_folder / f"out_{pred_field}{id}"
+    folder_out.mkdir(parents=True, exist_ok=True)
+    
+    tokenizer = initialize_model_inference(model_name, token, return_model=False)  # type: ignore
+    fields_data = extract_fields_from_json(path_data_folder)
+    conf_matrix, f1, data = compute_metrics_from_list(
+        fields_data=fields_data, 
+        tokenizer=tokenizer, 
+        pred_field=pred_field,
+        input_field=input_field,
+        n_tokens_infered_max=n_tokens_infered_max,
+        n_tokens_show_min=n_tokens_show_min,
+        n_tokens_show_max=n_tokens_show_max,
+    )
+    compute_metrics_from_files(
+        conf_matrix=conf_matrix,
+        f1=f1,
+        data_full=data,
+        folder_out=folder_out,
+        pred_field=pred_field,
+        n_tokens_infered_max=n_tokens_infered_max,
+        n_tokens_show_min=n_tokens_show_min,
+        n_tokens_show_max=n_tokens_show_max,
+    )
+    
+@print_args
+def max_tokens_pipeline(folder_data: Union[str,Path], model_name: ModelName = default_model, token: str = default_token):# type: ignore
+    folder_data: Path = existing_path(folder_data, is_folder=True)
+    args_dict = locals()
+    (max_work, min_not_work) = get_max_tokens(
+        PipelineMaxTokens(model_name=model_name, token=token),
+        min_token_length=1,
+        max_token_length=10000,
+    )
+    path_out = folder_data / "tokens_lim.json"
+    L = []
+    if path_out.exists():
+        with open(path_out, "r") as f:
+            L = json.load(f)
+    L.append({
+                "max_work": max_work,
+                "min_not_work": min_not_work,
+                "model_name": model_name,
+            })
+    for k,v in args_dict.items():
+        L[-1][k] = v
+    with open(path_out, "w") as f:
+        json.dump(L, f,indent=2)
+    logger.info(f"{max_work=},{min_not_work=}")
+    
+@print_args
+def max_tokens_embeddings(folder_data: Union[str,Path], model_name: ModelName = default_model, token: str = default_token):# type: ignore
+    folder_data: Path = existing_path(folder_data, is_folder=True)
+    args_dict = locals()
+    (max_work, min_not_work) = get_max_tokens(
+        EmbeddingsMaxTokens(model_name=model_name, token=token),
+        min_token_length=1,
+        max_token_length=10000,
+    )
+    path_out = folder_data / "tokens_lim.json"
+    L = []
+    if path_out.exists():
+        with open(path_out, "r") as f:
+            L = json.load(f)
+    L.append({
+                "max_work": max_work,
+                "min_not_work": min_not_work,
+                "model_name": model_name,
+            })
+    for k,v in args_dict.items():
+        L[-1][k] = v
+    with open(path_out, "w") as f:
+        json.dump(L, f,indent=2)
+    logger.info(f"{max_work=},{min_not_work=}")
+
+@print_args
+def max_tokens_finetuning(folder_data: Union[str,Path], qlora_alpha: int = 16, qlora_dropout: float = 0.1, model_name: ModelName = default_model, token: str = default_token, n_tokens_infered_max: int = default_n_tokens_infered_max):# type: ignore
+    folder_data: Path = existing_path(folder_data, is_folder=True)
+    template_path: Path = existing_path(folder_data / "template.json", is_folder=False)
+    args_dict = locals()
+    path_out = folder_data / "tokens_lim.json"
+    L = []
+    if path_out.exists():
+        with open(path_out, "r") as f:
+            L = json.load(f)
+    for model_name in get_args(ModelName):
             for qlora_r in [2, 8, 16, 32, 64, 128, 256]:
                 (max_work, min_not_work) = get_max_tokens(
                     FinetuneMaxTokens(
                         model_name=model_name,
-                        token=args.token,
-                        max_n_tokens=max_n_tokens,
-                        base_file_data=args.path_data_json,
-                        lora_alpha=args.qlora_alpha,
-                        lora_dropout=args.qlora_dropout,
+                        token=token,
+                        max_n_tokens=10000,
+                        template_path=template_path,
+                        lora_alpha=qlora_alpha,
+                        lora_dropout=qlora_dropout,
                         lora_r=qlora_r,
                     ),
                     min_token_length=1,
-                    max_token_length=max_n_tokens,
+                    max_token_length=n_tokens_infered_max,
                 )
                 L.append(
                     {
                         "max_work": max_work,
                         "min_not_work": min_not_work,
                         "qlora_r": qlora_r,
-                        "model_name": args.model_name,
+                        "model_name": model_name,
                     }
                 )
                 for k,v in args_dict.items():
@@ -2015,89 +1818,71 @@ if __name__ == "__main__":
                         L[-1][k] = v
                 with open(path_out, "w") as f:
                     json.dump(L, f,indent=2)
-    elif args.algorithm == "embeddings_gen":
-        folder_out = args.path_data_folder / "embeddings"
-        folder_out.mkdir(parents=True,exist_ok=True)
-        layers_ids = eval(args.layers_ids)
-        pooling_fn = get_pooling_operation(args.pooling_fn)
-        get_llama2_embeddings(
-            model_name=args.model_name,
-            token=args.token,
-            folder_out=folder_out,
-            path_data_preprocessed=args.path_data_json,
-            layers_ids=layers_ids,
-            start=seed_start,
-            end=seed_end,
-            id_pred=args.id,
-            limit_tokens=args.n_tokens_infered_max,
-            pooling_fn=pooling_fn
-        )
-    elif args.algorithm == "embeddings_agg":
-        folder_embeddings = args.path_data_folder / "embeddings"
-        layers_ids = eval(args.layers_ids)
-        merge_data_embeddings(
-            folder_embeddings=folder_embeddings,
-            path_dst=args.path_data_folder / f"{args.base_name}embeddings.hdf5",
-            layer_id=layers_ids[0],
-            base_name=args.base_name,
-            auto_remove=False
-        )
-    elif args.algorithm == "aggr_finetune":
-        folder_out: Path = args.path_data_folder / "train_class"
-        folder_out.mkdir(exist_ok=True, parents=True)
-        aggr_finetune(
-            folder_out=folder_out,
-            folder_in=args.path_data_folder,
-            pattern_name=args.pattern_name
-        )
-    elif args.algorithm == "nn_embedding":
-        folder_embeddings = Path(args.path_data_folder) / "embeddings"
-        layer_id: Tuple[int] = eval(args.layers_ids)
-        if len(layer_id) > 1:
-            raise ValueError(f"Expecting just one layer id not {len(layer_id)}")
-        print(args.algorithm)
+                    
 
-        with open(Path(args.data_folder_path_to_save) / 'output_file.json', 'w') as outfile:
-            outfile.write("")
+if __name__ == "__main__":
+    print("start")
+    fire.Fire({
+        "split_datasets": generate_train_test_split,
+        "inference": main_inference,
+        "compute_metrics": main_compute_metrics,
+        "generate_dataset": generate_dataset,
+        "qlora_classification": main_qlora_classification,
+        "max_tokens_pipeline": max_tokens_pipeline,
+        "max_tokens_embeddings": max_tokens_embeddings,
+        "max_tokens_finetuning": max_tokens_finetuning,
+        "get_llama2_embeddings": get_llama2_embeddings,
+        "merge_data_embeddings": merge_data_embeddings,
+        "aggr_finetune": aggr_finetune,
+    })
+    # elif args.algorithm == "nn_embedding":
+    #     folder_embeddings = Path(args.path_data_folder) / "embeddings"
+    #     layer_id: Tuple[int] = eval(args.layers_ids)
+    #     if len(layer_id) > 1:
+    #         raise ValueError(f"Expecting just one layer id not {len(layer_id)}")
+    #     print(args.algorithm)
 
-        for d in get_data_embeddings(
-            folder_embeddings=folder_embeddings,
-            layer_id=layer_id[0],
-            base_name=args.base_name,
-        ):
-            bug_id = d["bug_id"]
-            binary_severity = d["binary_severity"]
-            hidden_state = np.array(d["hidden_state"])
+    #     with open(Path(args.data_folder_path_to_save) / 'output_file.json', 'w') as outfile:
+    #         outfile.write("")
 
-            base_name = args.base_name
-            came_from = f"{base_name}layer_{layer_id[0]}_.json"
+    #     for d in get_data_embeddings(
+    #         folder_embeddings=folder_embeddings,
+    #         layer_id=layer_id[0],
+    #         base_name=args.base_name,
+    #     ):
+    #         bug_id = d["bug_id"]
+    #         binary_severity = d["binary_severity"]
+    #         hidden_state = np.array(d["hidden_state"])
 
-            sum_aggregated_array = np.sum(hidden_state, axis=0)
-            mean_aggregated_array = sum_aggregated_array / len(hidden_state)
+    #         base_name = args.base_name
+    #         came_from = f"{base_name}layer_{layer_id[0]}_.json"
 
-            aggregated_list = mean_aggregated_array.tolist()
+    #         sum_aggregated_array = np.sum(hidden_state, axis=0)
+    #         mean_aggregated_array = sum_aggregated_array / len(hidden_state)
 
-            data = {
-                "bug_id": bug_id,
-                "binary_severity": binary_severity,
-                "from": came_from,
-                "aggregated_list": aggregated_list,
-            }
-            with open(Path(args.data_folder_path_to_save) / 'output_aggregation.json', 'a') as outfile:
-                json.dump(data, outfile)
-                outfile.write(",\n")
-    elif args.algorithm == "nn_classifier":
-        # passar pro args... o documento/dataset a utilizar
-        study_name = "nn_classifier"
-        storage_name = "sqlite:///{}.db".format(study_name)
-        study = optuna.create_study(direction="maximize",
-                                    study_name=study_name, 
-                                    storage=storage_name, 
-                                    load_if_exists=True)
-        n_jobs = 1
-        study.optimize(train_test_classifier, n_trials=10,n_jobs=n_jobs)
-        with open(args.path_data_folder / f"{study_name}results.json" ,'w') as f:
-            json.dump({
-                "best_params": study.best_params,
-                "best_value": study.best_value
-            },f)
+    #         aggregated_list = mean_aggregated_array.tolist()
+
+    #         data = {
+    #             "bug_id": bug_id,
+    #             "binary_severity": binary_severity,
+    #             "from": came_from,
+    #             "aggregated_list": aggregated_list,
+    #         }
+    #         with open(Path(args.data_folder_path_to_save) / 'output_aggregation.json', 'a') as outfile:
+    #             json.dump(data, outfile)
+    #             outfile.write(",\n")
+    # elif args.algorithm == "nn_classifier":
+    #     # passar pro args... o documento/dataset a utilizar
+    #     study_name = "nn_classifier"
+    #     storage_name = "sqlite:///{}.db".format(study_name)
+    #     study = optuna.create_study(direction="maximize",
+    #                                 study_name=study_name, 
+    #                                 storage=storage_name, 
+    #                                 load_if_exists=True)
+    #     n_jobs = 1
+    #     study.optimize(train_test_classifier, n_trials=10,n_jobs=n_jobs)
+    #     with open(args.path_data_folder / f"{study_name}results.json" ,'w') as f:
+    #         json.dump({
+    #             "best_params": study.best_params,
+    #             "best_value": study.best_value
+    #         },f)
