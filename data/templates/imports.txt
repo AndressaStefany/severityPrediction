@@ -1,0 +1,28 @@
+module load python/3.9
+module load cuda/11.7
+nvidia-smi
+
+
+module load StdEnv/2020  gcc/9.3.0  cuda/11.4 python/3.11 arrow ## cuda/11.7 not work
+virtualenv $SLURM_TMPDIR/MYENV
+source $SLURM_TMPDIR/MYENV/bin/activate
+pip install --no-index --upgrade pip
+
+pip install /home/rmoine/docstring_parser-0.15-py3-none-any.whl --no-index
+pip install /home/rmoine/shtab-1.6.4-py3-none-any.whl --no-index
+pip install /home/rmoine/tyro-0.5.10-py3-none-any.whl --no-index
+pip install /home/rmoine/trl-0.7.2-py3-none-any.whl --no-index
+
+
+pip install peft --no-index
+pip install scikit-learn bitsandbytes sentencepiece protobuf tqdm nltk --no-index
+pip install huggingface_hub --no-index
+pip install datasets --no-index
+
+pip install xformers accelerate --no-index
+pip install seaborn --no-index
+pip install transformers --no-index
+pip install torch --no-index
+pip install h5py --no-index
+pip install fire --no-index
+pip install optuna --no-index

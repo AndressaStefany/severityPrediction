@@ -1,0 +1,1 @@
+rm log-*;sbatch severity_launch;watch -n 5 "sq -u $USER;cat log-severity_launch-*.out | tail"

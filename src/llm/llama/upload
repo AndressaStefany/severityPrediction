@@ -1,0 +1,15 @@
+#/bin/bash
+script_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )";
+cd "$script_dir";
+pwd
+dos2unix ./launches/*;
+dos2unix ./launches/*/*;
+user=rmoine
+server=cedar
+scp -r ./launches $user@$server.computecanada.ca:/project/def-aloise/$user/
+scp -r ./*.py $user@$server.computecanada.ca:/project/def-aloise/$user/
+# scp -r ../../../data/split_eclipse_72k.json $user@$server.computecanada.ca:/project/def-aloise/$user/data/
+# scp -r ../../../data/split_mozilla_200k.json $user@$server.computecanada.ca:/project/def-aloise/$user/data/
+# scp -r ../../../data/llm/eclipse_72k.json $user@$server.computecanada.ca:/project/def-aloise/$user/data/
+# scp -r ../../../data/llm/mozilla_200k.json $user@$server.computecanada.ca:/project/def-aloise/$user/data/
+# scp -r ../../../data/template.json $user@$server.computecanada.ca:/project/def-aloise/$user/data/

@@ -1,0 +1,45 @@
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --gpus-per-node=v100l:1 # on cedar choose one v100l gpu but can be also p100l
+#SBATCH --cpus-per-task=1 # change this parameter to 2,4,6,... and increase "--num_workers" accordingly to see the effect on performance
+#SBATCH --time=02-00:00:00           # duration (JJ-HH:MM:SS)
+#SBATCH --output=log-%x-%j.out
+#SBATCH --error=log-%x-%j.err
+#SBATCH --mail-user=robin.moine456@gmail.com
+#SBATCH --mail-type=ALL
+#SBATCH --mem=8G # Request 8 GB of RAM
+
+# syntax of 
+# Capture the start time
+start_time=$$(date +"%Y-%m-%d %H:%M:%S")
+
+# loading modules
+module load python/3.9
+module load cuda/11.7
+virtualenv --no-download $$SLURM_TMPDIR/env
+source $$SLURM_TMPDIR/env/bin/activate
+pip install torch  --no-index
+pip install transformers accelerate huggingface_hub xformers --no-index
+pip install pandas scikit-learn nltk bitsandbytes sentencepiece protobuf --no-index
+pip install tqdm --no-index
+pip install seaborn --no-index
+pip install matplotlib --no-index
+# Execution of the script: replace by python path_to_your_script
+# Do not forget to change the pathes to absolute pathes (dont hesitate to use $$USER variable)
+interval_idx=$id
+path_data_json=$path_data_json
+id_name=$id_name
+model_name=$model_name
+n_tokens_infered_max=$n_tokens_infered_max
+accelerate launch /project/def-aloise/$$USER/main.py -path_data_json $$path_data_json -path_data_folder /project/def-aloise/$$USER/data/ -algorithm inference -n_chunks $n_chunks -interval_idx $$interval_idx -id $$id_name -model_name $$model_name -n_tokens_infered_max $$n_tokens_infered_max
+
+
+# Capture the end time
+end_time=$$(date +"%Y-%m-%d %H:%M:%S")
+
+# Calculate and display the execution time
+start_seconds=$$(date -d "$$start_time" '+%s')
+end_seconds=$$(date -d "$$end_time" '+%s')
+execution_time=$$((end_seconds - start_seconds))
+
+echo "Execution time: $$execution_time seconds"

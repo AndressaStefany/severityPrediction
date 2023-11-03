@@ -1,0 +1,66 @@
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --gpus-per-node=v100l:1 # on cedar choose one v100l gpu but can be also p100l
+#SBATCH --cpus-per-task=1 # change this parameter to 2,4,6,... and increase "--num_workers" accordingly to see the effect on performance
+#SBATCH --time=00-02:00:00           # duration (JJ-HH:MM:SS)
+#SBATCH --output=log-%x-%j.out
+#SBATCH --error=log-%x-%j.err
+#SBATCH --mail-user=robin.moine456@gmail.com
+#SBATCH --mail-type=ALL
+#SBATCH --mem=32G # Request 8 GB of RAM
+
+# syntax of 
+# Capture the start time
+start_time=$(date +"%Y-%m-%d %H:%M:%S")
+
+# loading modules
+module load python/3.9
+module load cuda/11.7
+nvidia-smi
+
+
+module load StdEnv/2020  gcc/9.3.0  cuda/11.4 python/3.11 arrow ## cuda/11.7 not work
+virtualenv $SLURM_TMPDIR/MYENV
+source $SLURM_TMPDIR/MYENV/bin/activate
+pip install --no-index --upgrade pip
+
+pip install $HOME/docstring_parser-0.15-py3-none-any.whl --no-index
+pip install $HOME/shtab-1.6.4-py3-none-any.whl --no-index
+pip install $HOME/tyro-0.5.10-py3-none-any.whl --no-index
+pip install $HOME/trl-0.7.2-py3-none-any.whl --no-index
+
+
+pip install peft --no-index
+pip install scikit-learn bitsandbytes sentencepiece protobuf tqdm nltk --no-index
+pip install huggingface_hub --no-index
+pip install datasets --no-index
+
+pip install xformers accelerate --no-index
+pip install seaborn --no-index
+pip install transformers --no-index
+pip install torch --no-index
+pip install h5py --no-index
+
+# Execution of the script: replace by python path_to_your_script
+# Do not forget to change the pathes to absolute pathes (dont hesitate to use $USER variable)
+interval_idx=1
+path_data_json=/project/def-aloise/$USER/data/mozilla_200k.json
+id_name=_v4_mozilla
+model_name=meta-llama/Llama-2-13b-chat-hf
+layers_ids="(-1,)"
+n_tokens_infered_max=1000
+base_name=embeddings_chunk_v4_mozilla_
+
+python /project/def-aloise/$USER/main.py -path_data_json $path_data_json -path_data_folder /project/def-aloise/$USER/data/ -algorithm embeddings_agg -layers_ids $layers_ids -base_name $base_name
+
+
+# Capture the end time
+end_time=$(date +"%Y-%m-%d %H:%M:%S")
+
+# Calculate and display the execution time
+start_seconds=$(date -d "$start_time" '+%s')
+end_seconds=$(date -d "$end_time" '+%s')
+execution_time=$((end_seconds - start_seconds))
+
+echo "Execution time: $execution_time seconds"
+

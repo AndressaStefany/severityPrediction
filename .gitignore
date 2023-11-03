@@ -1,3 +1,15 @@
-/data/
+/data/predictions*
+/data/predictions*
+/data/debug*
+/data/llm/
+/data/max_tokens/
+/data/train_class/
+/data/eclipse_*
+/data/preprocessed_data*
 __pycache__
 .ipynb_checkpoints
+.obsidian
+.vscode
+.vscode/launch.json
+/predictions/
+./*.db
