@@ -363,6 +363,7 @@ def get_tokenizer(token: str, model_name: str) -> "LlamaTokenizer":
         use_fast=True,
         cache_dir="/project/def-aloise/rmoine/cache_dir",
         token=token,
+        trust_remote_code=True, 
     )  # type: ignore
     return tokenizer
 
@@ -373,7 +374,8 @@ def initialize_model(
     hidden_states: bool = False,
     base_class: Any = trf.AutoModelForCausalLM,
     num_labels: int = 1,
-    load_in_8bit: bool = False
+    load_in_8bit: bool = False,
+    use_flash_attention_2=False
 ) -> "LlamaModel":
     huggingface_hub.login(token=token)
     double_quant_config = None
@@ -392,7 +394,11 @@ def initialize_model(
         cache_dir="/project/def-aloise/rmoine/cache_dir",
         token=token,
         num_labels=num_labels,
+        use_flash_attention_2=use_flash_attention_2,
+        load_in_8bit=load_in_8bit,
+        trust_remote_code=True,
     )
+    model.config.use_cache = False
     return model
 
 
@@ -858,34 +864,46 @@ def generate_dataset(
             valid_data = json.load(f)
         return train_data, valid_data, train_path, valid_path
 
-class EpochCallback(trf.TrainerCallback):
-    def __init__(self, eval_dataset, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.Ltr = []
-        self.Lval = []
-        self.tot_step = 0
-        self.prev_epoch = 0
-        self.step = 0
-        self.eval_dataset = eval_dataset
-    def on_epoch_end(self, args: 'TrainingArguments', state: 'TrainerState', control: 'TrainerControl', **kwargs):
-        logger.info(f"Log eval of epoch {state.epoch} step {self.step}")
-        eval_results = self._trainer.evaluate(eval_dataset=self.eval_dataset)
-        logger.info(f"eval --> {list(eval_results)}")
-        return super().on_prediction_step(args, state, control, **kwargs)
-    def on_step_end(self, args: 'TrainingArguments', state: 'TrainerState', control: 'TrainerControl', **kwargs):
-        logger.info(f"Log tr of epoch {state.epoch} step {self.step}")
-        loss = state.log_history[-1]['loss']
-        if int(state.epoch)-self.prev_epoch > 0:
-            self.step = 0
-        self.Ltr.append({"loss":loss,"step":self.step,"epoch":state.epoch,"tot_step":self.tot_step})
-        self.tot_step += 1
-        return super().on_step_end(args, state, control, **kwargs)
 class CustomTrainer(trl.SFTTrainer):
+    def __init__(self, tokenizer, *args, **kwargs):
+        self.tokenizer = tokenizer
+        super().__init__(*args,**kwargs)
     def compute_loss(self, model, inputs, *args, **kwargs):
-        logger.info(f"{inputs=}")
-        inputs['labels'] = inputs['labels'].float()
-        logger.info(f"{inputs=}")
-        return super().compute_loss(model, inputs, *args, **kwargs)
+        inputs = inputs[0]
+        input = inputs['input']
+        label = inputs['label']
+        bug_id = inputs['bug_id']
+        prediction = model(input)
+        logger.info(f"{inputs=} {prediction=}")
+        loss = torch.nn.functional.cross_entropy(
+            input=prediction,
+            target=label
+        )
+        logger.info(f"{loss=} {label=} {prediction=} {bug_id=}")
+        return loss
+
+class Dataset(torch.utils.data.Dataset):
+    def __init__(self, tokenizer, l_dict: List[dict], input_field: str = "input", label_field: str = "binary_severity"): 
+        self.l_dict = l_dict
+        self.input_field = input_field
+        self.label_field = label_field
+        self.tokenizer = tokenizer
+    def __len__(self):
+        return len(self.l_dict)
+    def __getitem__(self, i: int) -> Dict[str,'torch.Tensor']:
+        elem = {**self.l_dict[i]}
+        input = self.tokenizer(elem[self.input_field], return_tensors="pt")['input_ids']
+        label = torch.tensor(elem[self.label_field])
+        bug_id = torch.tensor(elem['bug_id'])
+        return {
+            "input":input,
+            "label": label,
+            "bug_id":bug_id
+        }
+class DataCollator(trf.data.DataCollatorForTokenClassification):
+    def torch_call(self, features):
+        logger.info(f"{features=}")
+        return features
 @print_args
 def main_qlora_classification(
     file_examples: Path,
@@ -900,6 +918,7 @@ def main_qlora_classification(
     field_input: str = "llama_tokenized_description",
     num_train_epochs: int = 1,
     tr_bs: int = 1,
+    gradient_accumulation_steps: int = 1,
     val_bs: int = 1,
     learning_rate: float = 2e-4,
     limit_tokens: int = 7364,
@@ -949,16 +968,15 @@ def main_qlora_classification(
 
     
     logger.info("LlamaTokenizer")
-    tokenizer: LlamaTokenizer = initialize_model_inference(model_name, token, return_model=False)  # type: ignore
+    tokenizer: LlamaTokenizer = get_tokenizer(model_name=model_name, token=token)
     tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right"
     logger.info("initialize_model")
     model = initialize_model(
         model_name=model_name,
         token=token,
         base_class=trf.AutoModelForSequenceClassification,
-        num_labels=1,
-        load_in_8bit=True,
+        load_in_8bit=False,
+        use_flash_attention_2=False
     )
     logger.info("peft.LoraConfig")
     peft_config = peft.LoraConfig(  # type: ignore
@@ -967,14 +985,12 @@ def main_qlora_classification(
         r=lora_r,
         bias="none",
         inference_mode=False,
-        task_type=peft.TaskType.SEQ_CLS,
+        task_type="SEQ_CLS"
     )
     # https://github.com/huggingface/transformers/blob/ce2e7ef3d96afaf592faf3337b7dd997c7ad4928/src/transformers/models/llama/modeling_llama.py#L906
     logger.info("get_peft_model")
-    model = peft.get_peft_model(model, peft_config)# type: ignore
-    model.config.use_cache = False# type: ignore
-    model.config.pretraining_tp = 1# type: ignore
-    model.print_trainable_parameters()
+    # model = peft.get_peft_model(model, peft_config)# type: ignore
+    # model.print_trainable_parameters()
     print(model)
     # create datasets
     logger.info("generate_dataset")
@@ -990,31 +1006,26 @@ def main_qlora_classification(
     )
     logger.info(f"Using {train_path} {valid_path}")
     logger.info("dataloaders")
-    real_lim_size = lim_size
+    real_lim_size_tr = lim_size
     if lim_size == -1:
-        real_lim_size = len(tr_data)
-    Ltr = []
-    for d in tr_data[:real_lim_size]:
-        d['text'] = d['input']+"\n"+str(d[field_label])
-        Ltr.append(d)
-    logger.info(f"{tr_data[0]}")
+        real_lim_size_tr = len(tr_data)
+    tr_data = Dataset(tokenizer, tr_data[:real_lim_size_tr])
+    real_lim_size_val = lim_size
     if lim_size == -1:
-        real_lim_size = len(val_data)
-    Lval = []
-    for d in tr_data[:real_lim_size]:
-        d['text'] = d['input']+"\n"+str(d[field_label])
-        Lval.append(d)
-    tr_data = datasets.Dataset.from_list(Ltr)  # type: ignore
-    val_data = datasets.Dataset.from_list(Lval)  # type: ignore
+        real_lim_size_val = len(val_data)
+    val_data = Dataset(tokenizer, val_data[:real_lim_size_val])
     logger.info("training QLORA")
     # Set training parameters
     training_arguments = trf.TrainingArguments(
         output_dir=str(folder_out.resolve()),
         num_train_epochs=num_train_epochs,
         per_device_train_batch_size=tr_bs,
+        gradient_accumulation_steps=gradient_accumulation_steps,
         logging_steps=1,
         learning_rate=learning_rate,
         fp16=True,
+        optim="paged_adamw_32bit",
+        remove_unused_columns=False
     )
     
     
@@ -1028,87 +1039,31 @@ def main_qlora_classification(
     logger.info("Set supervised fine-tuning parameters")
     trainer = CustomTrainer(  # type: ignore
         model=model,
-        train_dataset=tr_data,  # type: ignore
+        train_dataset=tr_data,
+        eval_dataset=val_data,
         peft_config=peft_config,# type: ignore
-        dataset_text_field="text",
         tokenizer=tokenizer,
         args=training_arguments,
-        packing=False,
-        callbacks=[EpochCallback(val_data)],        
+        packing=False,   
+        max_seq_length=limit_tokens+5,
+        formatting_func=lambda x:x,
+        data_collator=DataCollator(tokenizer,False,limit_tokens)
     )
+    for name, module in trainer.model.named_modules():
+        if "norm" in name:
+            module = module.to(torch.float32)
     logger.info(f"{trainer.args._n_gpu=}")
+    
     trainer.train()
-    # device = "cuda"
-    # model.to(device)
-    # os.system("nvidia-smi")
-    # evaluator = Evaluator()
-    # assert num_train_epochs>0, "Train at least one epoch required"
-    # metrics_folder = folder_out / "metrics"
-    # metrics_folder.mkdir(exist_ok=True, parents=True)
-    # Ltr = []
-    # Lval = []
-    # for epoch in range(num_train_epochs):
-    #     model.train()
-    #     logger.info(f"{epoch=}")
-    #     for step, (d, inputs, labels) in enumerate(tqdm.tqdm(train_dataloader)):
-    #         # logger.info(f"{inputs.shape=}")
-    #         # cpu_size_bytes = inputs.element_size() * inputs.numel()
-    #         # logger.info(f"{cpu_size_bytes=}")
-    #         inputs.to(device)
-    #         # logger.info(f"after inputs.to(device)")
-    #         inputs.to("cpu")
-    #         # logger.info(f"after inputs.to('cpu')")
-    #         inputs.to(device)
-    #         # logger.info(f"after inputs.to(device)")
-    #         outputs = model(inputs, return_dict=True)
-    #         logger.info(f"after model(inputs) {outputs=} {outputs.loss=}")
-    #         loss = outputs.loss['logits'].sum()
-    #         Ltr.append({"loss":loss.tolist(),"step":step,"epoch":epoch,"tot_step":step+epoch*len(train_dataloader)})
-    #         loss.backward()
-    #         # logger.info(f"after backward")
-    #         optimizer.step()
-    #         lr_scheduler.step()
-    #         optimizer.zero_grad()
-    #         # logger.info(f"after step")
-
-    #     model.eval()
-    #     evaluator.reset()
-    #     for step, (d, inputs, labels) in enumerate(tqdm.tqdm(eval_dataloader)):
-    #         inputs.to(device)
-    #         with torch.no_grad():
-    #             outputs = model(inputs, return_dict=True)
-    #         Lval.append({"loss":outputs.loss['logits'].sum().tolist(),"step":step,"epoch":epoch,"tot_step":step+epoch*len(train_dataloader)})
-    #         pred = outputs.logits.argmax(dim=-1).cpu().detach().tolist()
-    #         logits = outputs.logits.detach().tolist()[0]
-    #         evaluator.add_samples(d=d,pred=pred,logits=logits)
-    #     fields_data = evaluator.get_data()
-        # conf_matrix, f1, data = compute_metrics_from_list(
-        #     fields_data, 
-        #     tokenizer, 
-        #     input_field="text", 
-        #     pred_field="pred", 
-        #     mapping_dict=mapping_dict, 
-        #     n_tokens_infered_max=limit_tokens,
-        #     n_tokens_show_max=limit_tokens, 
-        #     n_tokens_show_min=0
-        # )
-    #     accuracy = np.sum(np.diag(conf_matrix))/np.sum(conf_matrix)
-    #     with open(metrics_folder / f"epoch_{epoch}.json", "w") as f:
-    #         json.dump({
-    #             "conf_matrix": conf_matrix.tolist(),
-    #             "f1": f1,
-    #             "data": data.to_dict(orient='records'),
-    #             "Ltr":Ltr,
-    #             "Lval":Lval
-    #         },f,indent=2)
-        # print(f"epoch {epoch}: {accuracy=} {f1=}")
+    with open(folder_out / "log_history.json", "w") as fp:
+        json.dump(trainer.state.log_history, fp)
     
     logger.info("Saving trained QLORA model")
     if new_model_name != "":
         output_dir = folder_out / "trained_model"
-        output_dir.mkdir()
-        model.save_pretrained(str(output_dir))
-        model.push_to_hub(new_model_name)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        # model.save_pretrained(str(output_dir))
+        # model.push_to_hub(new_model_name)
     return conf_matrix, f1, data #type: ignore
 
 
@@ -1340,7 +1295,7 @@ def get_llama2_embeddings(
         end = len(data)
     data = data[start:end]
     path_missing = folder_out / f"missing{id_pred}_{start}.json"
-    get_file_path = lambda idx_layer: folder_predictions / f"embeddings_chunk{id_pred}_layer_{idx_layer}_{start}.hdf5"
+    get_file_path = lambda idx_layer: folder_out / f"embeddings_chunk{id_pred}_layer_{idx_layer}_{start}.hdf5"
     if not path_missing.exists() and all(get_file_path(idx_layer).exists() for idx_layer in layers_ids):
         logger.info("Nothing to do, file is already here and no missing")
         return
@@ -1364,7 +1319,7 @@ def get_llama2_embeddings(
             embeddings = model(torch.tensor([tokenized_full_text], dtype=torch.int32))  # type: ignore
             for idx_layer in layers_ids:
                 embedding = embeddings.hidden_states[idx_layer]
-                pooled_embedding = pooling_fn(embedding).tolist()[0]
+                pooled_embedding = np.array(pooling_fn(embedding).tolist()[0],dtype=np.float32)
                 with h5py.File(get_file_path(idx_layer), "a") as fp:
                     fp.create_dataset(str(d['bug_id']),data=pooled_embedding,dtype="f")
             del embeddings
@@ -1399,11 +1354,22 @@ def merge_data_embeddings(
     with h5py.File(path_dst, "w") as fp:
         for p in sorted_path:
             print("Reading ", p)
-            with h5py.File(p, "r") as fp:
-                for (bug_id, embedding) in enumerate(fp.items()):
-                    fp.create_dataset(bug_id, data=embedding)
+            with h5py.File(p, "r") as fp2:
+                for (bug_id, embedding) in tqdm.tqdm(enumerate(fp2.items()),total=len(fp2)):
+                    data = np.copy(embedding)
+                    fp.create_dataset(str(bug_id), data=data, dtype="f")
             if auto_remove:
                 p.unlink()
+    sorted_path = list(folder_embeddings.rglob(f"{base_name}_*.json"))
+    L = []
+    for p in sorted_path:
+        print("Reading ", p)
+        with open(p) as fp:
+            L.extend(json.load(fp))
+        if auto_remove:
+            p.unlink()
+    with open(path_dst.parent / f"{base_name}_missing.json","w") as fp:
+        json.dump(L,fp)
 
 
 def get_nn_classifier(trial: 'optuna.Trial', input_size, output_size: int = 1):
@@ -1653,7 +1619,8 @@ if __name__ == "__main__":
         if path.exists():
             return path.resolve()
         else:
-            raise Exception(f"{p} is not a path to a directory")
+            print(f"Warning: {path.resolve()} does not exists")
+            return path.resolve()
 
     algorithms_choices = [
         "inference",
@@ -1669,7 +1636,14 @@ if __name__ == "__main__":
         "nn_classifier",
         "aggr_finetune",
         "split_datasets",
+        "embeddings_agg"
     ]
+    parser.add_argument(
+        "-algorithm",
+        choices=algorithms_choices,
+        help="Algorithm to execute",
+        default="inference",
+    )
     parser.add_argument(
         "-path_data_json",
         type=path_check,
@@ -1687,12 +1661,6 @@ if __name__ == "__main__":
         type=path_check,
         help="Root path to the main data folder",
         default=f"/project/def-aloise/{os.environ['USER']}/data/",
-    )
-    parser.add_argument(
-        "-algorithm",
-        choices=algorithms_choices,
-        help="Algorithm to execute",
-        default="inference",
     )
     parser.add_argument(
         "-token",
@@ -1833,6 +1801,7 @@ if __name__ == "__main__":
         help="choose which one of the dataset to use",
         default="eclipse_72k",
     )
+    parser.add_argument('extra_args', nargs=argparse.REMAINDER, help='Additional arguments')
     args = parser.parse_args()
     print(args)
     n_data = args.n_data
@@ -2068,9 +2037,10 @@ if __name__ == "__main__":
         layers_ids = eval(args.layers_ids)
         merge_data_embeddings(
             folder_embeddings=folder_embeddings,
-            path_dst=args.path_data_folder / "embeddings.hdf5",
+            path_dst=args.path_data_folder / f"{args.base_name}embeddings.hdf5",
             layer_id=layers_ids[0],
-            base_name=args.base_name
+            base_name=args.base_name,
+            auto_remove=False
         )
     elif args.algorithm == "aggr_finetune":
         folder_out: Path = args.path_data_folder / "train_class"
