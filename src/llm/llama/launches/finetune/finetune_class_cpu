@@ -1,29 +1,27 @@
 #!/bin/bash
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=v100l:1 # on cedar choose one v100l gpu but can be also p100l
-#SBATCH --cpus-per-task=1 # change this parameter to 2,4,6,... and increase "--num_workers" accordingly to see the effect on performance
+#SBATCH --cpus-per-task=10 # change this parameter to 2,4,6,... and increase "--num_workers" accordingly to see the effect on performance
 #SBATCH --time=00-01:00:00           # duration (JJ-HH:MM:SS)
 #SBATCH --output=log-%x-%j.out
 #SBATCH --error=log-%x-%j.err
 #SBATCH --mail-user=robin.moine456@gmail.com
 #SBATCH --mail-type=ALL
-#SBATCH --mem=64G # Request 8 GB of RAM
+#SBATCH --mem=70G # Request 8 GB of RAM
 
 # syntax of 
 # Capture the start time
 start_time=$(date +"%Y-%m-%d %H:%M:%S")
 
 # loading modules
-
 module load StdEnv/2020  gcc/9.3.0  cuda/11.4 python/3.11 arrow ## cuda/11.7 not work
 virtualenv $SLURM_TMPDIR/MYENV
 source $SLURM_TMPDIR/MYENV/bin/activate
 pip install --no-index --upgrade pip
 
-pip install $HOME/docstring_parser-0.15-py3-none-any.whl --no-index
-pip install $HOME/shtab-1.6.4-py3-none-any.whl --no-index
-pip install $HOME/tyro-0.5.10-py3-none-any.whl --no-index
-pip install $HOME/trl-0.7.2-py3-none-any.whl --no-index
+pip install /home/rmoine/docstring_parser-0.15-py3-none-any.whl --no-index
+pip install /home/rmoine/shtab-1.6.4-py3-none-any.whl --no-index
+pip install /home/rmoine/tyro-0.5.10-py3-none-any.whl --no-index
+pip install /home/rmoine/trl-0.7.2-py3-none-any.whl --no-index
 
 
 pip install peft --no-index
@@ -33,27 +31,31 @@ pip install datasets --no-index
 
 pip install xformers accelerate --no-index
 pip install seaborn --no-index
+pip install matplotlib --no-index
+pip install pandas --no-index
 pip install transformers --no-index
 pip install torch --no-index
 pip install h5py --no-index
+pip install fire --no-index
+pip install optuna --no-index
 
 nvidia-smi
 
 # Execution of the script: replace by python path_to_your_script
 # Do not forget to change the pathes to absolute pathes (dont hesitate to use $USER variable)
 dataset_choice="eclipse_72k"
-id_name=debug
-qlora_alpha=16
-qlora_r=2
-qlora_dropout=0.1
+id_name="_debug_$dataset_choice"
+lora_alpha=2
+lora_r=64
+lora_dropout=0.1
 algorithm=finetune_classification
-model_name=meta-llama/Llama-2-7b-chat-hf 
-new_model_name=Ro128/Llama-2-7b-chat-hf-$id_name-finetuning-gen
-lr=0.00001
-n_tokens_infered_max=200
+model_name="meta-llama/Llama-2-7b-chat-hf"
+learning_rate=0.00001
+limit_tokens=500
+tr_bs=1
 cd /project/def-aloise/$USER/
 
-python /project/def-aloise/$USER/main.py qlora_classification -dataset_choice $dataset_choice -path_data_folder /project/def-aloise/$USER/data/ -algorithm $algorithm -id $id_name -new_model_name $new_model_name -qlora_alpha $qlora_alpha -qlora_r $qlora_r -qlora_dropout $qlora_dropout -model_name $model_name -n_tokens_infered_max $n_tokens_infered_max -num_train_epochs 1 -lr $lr
+python /project/def-aloise/$USER/main.py qlora_classification --dataset_choice=$dataset_choice --id=$id_name --lora_alpha=$lora_alpha --lora_r=$lora_r --lora_dropout=$lora_dropout --model_name=$model_name --limit_tokens=$limit_tokens --num_train_epochs=1 --learning_rate=$learning_rate --tr_bs=$tr_bs --use_cpu=True
 
 
 # Capture the end time
