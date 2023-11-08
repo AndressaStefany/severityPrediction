@@ -28,6 +28,11 @@ from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
 from string import Template
 
+import sys
+sys.path.append('../llm/llama/')
+from main import DatasetName, default_datasetname, get_dataset_choice
+
+
 def process(l: str, do_prompt: bool = True, preprompt: bool = True, add_instructions: str = "") -> Optional[dict]:
     """The multiprocessing function that generates the dictionnary from a line of the eclipse_clear.json file"""
     global default_severities_to_del
@@ -356,8 +361,11 @@ def cross_validation_with_classifier(X: np.ndarray, y: np.ndarray, n_splits: int
 
     return pd.DataFrame(df_results)
 
-def save_data_to_disk(pipeline_fn: Callable, folder: Path, id: str = "", do_print: bool = False):
-    bug_reports = pd.read_csv(folder / 'eclipse_filtered.csv')
+def save_data_to_disk(pipeline_fn: Callable, folder: Path, id: str = "", do_print: bool = False, dataset_choice: DatasetName=default_datasetname):
+    dataset_choice = get_dataset_choice(dataset_choice)
+    with open(folder / f'{dataset_choice}.csv', 'r') as f:
+        bug_reports = np.genfromtxt(f, delimiter=',', names=True, dtype=None)
+    
     if do_print:
         print(bug_reports.info())
     pipeline,vectorizer = pipeline_fn()
