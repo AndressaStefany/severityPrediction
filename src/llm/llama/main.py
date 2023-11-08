@@ -914,12 +914,11 @@ class CustomTrainer(trl.SFTTrainer):
         label = inputs['label'].reshape((1,1)).to(torch.float)
         bug_id = inputs['bug_id']
         prediction = model(input)[0]
-        logger.info(f"{inputs=} {prediction=}")
-        loss = torch.nn.functional.cross_entropy(
+        prediction = torch.nn.functional.sigmoid(prediction)
+        loss = torch.nn.functional.binary_cross_entropy(
             input=prediction,
             target=label
         )
-        logger.info(f"{loss=} {label=} {prediction=} {bug_id=}")
         return loss
 
 class Dataset(torch.utils.data.Dataset):
@@ -946,8 +945,8 @@ class DataCollator(trf.data.DataCollatorForTokenClassification):
         return features
 @print_args
 def main_qlora_classification(
-    folder_out: str, #type: ignore
-    folder_data: str, #type: ignore
+    folder_out: Path,
+    folder_data: Path,
     dataset_choice: DatasetName,
     lora_alpha: int = 16,
     lora_dropout: float = 0.1,
@@ -1000,9 +999,9 @@ def main_qlora_classification(
     print("main_qlora_classification")
     arguments = locals()
     logger.info("main_qlora")
-    folder_out: Path = existing_path(folder_out, is_folder=True) / f"qlora_finetune_{id}"
+    folder_out = existing_path(folder_out, is_folder=True) / f"qlora_finetune_{id}"
     folder_out.mkdir(parents=True, exist_ok=True)
-    folder_data: Path = existing_path(folder_data, is_folder=False)
+    folder_data = existing_path(folder_data, is_folder=False)
     assert_valid_token(token)
     model_name = get_literal_value(model_name)
     if token != "":
