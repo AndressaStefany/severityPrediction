@@ -20,7 +20,7 @@ module load py-pandas/1.5.3-gcc-9.4.0-ohbmp5n
 pip install optuna --no-index
 
 # Start the script
-python /home/rmoine/severityPrediction/src/baseline/baseline_functions.py
+python /home/$USER/severityPrediction/src/baseline/baseline_functions.py algorithm SVC
 
 
 # Capture the end time
