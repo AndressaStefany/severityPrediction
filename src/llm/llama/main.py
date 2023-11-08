@@ -30,6 +30,7 @@ default_token: str = "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"
 default_model: ModelName = "meta-llama/Llama-2-13b-chat-hf"
 default_n_tokens_infered_max: int = 7364
 default_input_field: str = "description"
+default_datasetname = "eclipse_72k"
 
 # typehint imports
 if TYPE_CHECKING:
@@ -1438,29 +1439,22 @@ def get_nn_classifier(trial: 'optuna.Trial', input_size, output_size: int = 1):
         'tanh': nn.Tanh,
         'elu': nn.ELU,
         'prelu': nn.PReLU,
-        'linear': nn.Linear
+        # 'linear': nn.Linear
     }
     n_layers = trial.suggest_int("n_layers", 3, 10)
     layers = []
     in_features = input_size
     
-    out_features = trial.suggest_int(f"n_units_l0", 4, 128)
-    layers.append(nn.Linear(in_features, out_features))
-    in_features = out_features
-    prev_activation = 'linear'
-    
-    for i in range(1, n_layers):
+    # out_features = trial.suggest_int(f"n_units_l0", 4, 128)
+    # layers.append(nn.Linear(in_features, out_features))
+    # in_features = out_features
+
+    for i in range(0, n_layers):
         out_features = trial.suggest_int(f"n_units_l{i}", 4, 128)
         function = trial.suggest_categorical(f"layer_function_{i}", list(activation_functions.keys()))
-        
-        if prev_activation == function:
-            function = trial.suggest_categorical(f"layer_function_{i}", list(filter(lambda x: x != function, activation_functions.keys())))
         layers.append(nn.Linear(in_features, out_features))
         layers.append(activation_functions[function]())
-        
-        prev_activation = function
         in_features = out_features
-        
     # Add the last layer
     layers.append(nn.Linear(in_features, output_size))
     layers.append(nn.Sigmoid())
@@ -1478,10 +1472,10 @@ def train_test_classifier(trial: 'optuna.Trial',
         folder_path = f"/project/def-aloise/{os.environ['USER']}/data/"    
     
     hdf5_file_path = Path(folder_path) / f"embeddings_chunk_v4_eclipse_layer_-1_0.hdf5"
-    df = pd.read_json(folder_path / f"{dataset_name}.json")
+    df = pd.read_json(Path(folder_path) / f"{dataset_name}.json")
     train_dict, val_dict, test_dict = [], [], []
     
-    with open(folder_path / split_dataset_name, 'r') as file:
+    with open(Path(folder_path) / split_dataset_name, 'r') as file:
         idxs = json.load(file)
 
     with h5py.File(hdf5_file_path, 'r') as file:
