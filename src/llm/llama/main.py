@@ -1466,22 +1466,24 @@ def train_test_classifier(trial: 'optuna.Trial',
                           label_name: str='binary_severity',
                           folder_path: Optional[str]=None,
                           split_dataset_name: Optional[str]="split_eclipse_72k.json",
-                          dataset_name: Optional[str]="eclipse_72k"):
+                          dataset_name: Optional[str]="eclipse_72k",
+                          loss_weighting: Optional[bool]=True):
     if folder_path is None:
         folder_path = f"/project/def-aloise/{os.environ['USER']}/data/"    
     
-    hdf5_file_path = Path(folder_path) / f"embeddings_chunk_v4_eclipse_layer_-1_0.hdf5"
+    hdf5_file_path = Path(folder_path) / f"embeddings_eclipse_72k.hdf5"
     df = pd.read_json(Path(folder_path) / f"{dataset_name}.json")
     train_dict, val_dict, test_dict = [], [], []
     
     with open(Path(folder_path) / split_dataset_name, 'r') as file:
         idxs = json.load(file)
-
+    labels = []
     with h5py.File(hdf5_file_path, 'r') as file:
         for key, value in file.items():
             severity = df[df['bug_id']==int(key)][label_name]
             if int(key) in idxs['tr']:
                 train_dict.append({"bug_id": int(key), "embedding": np.array(value).tolist(), label_name: int(severity.iloc[0])})
+                labels.append(int(severity.iloc[0]))
             elif int(key) in idxs['val']:
                 val_dict.append({"bug_id": int(key), "embedding": np.array(value).tolist(), label_name: int(severity.iloc[0])})
             elif int(key) in idxs['test']:
@@ -1505,9 +1507,16 @@ def train_test_classifier(trial: 'optuna.Trial',
 
     model = get_nn_classifier(trial=trial, input_size=input_size, output_size=output_size)
     # Binary Cross Entropy Loss
-    pos_weight = trial.suggest_float("pos_weight", 0.1, 2.0)
-    pos_weight_tensor = torch.tensor(pos_weight)
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
+    if loss_weighting:
+        positive_samples = (labels == 1).sum()
+        negative_samples = (labels == 0).sum()
+        total_samples = positive_samples + negative_samples
+        pos_weight_value = negative_samples / positive_samples
+        
+        pos_weight_tensor = torch.tensor(pos_weight_value)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
+    else:
+        criterion = nn.BCEWithLogitsLoss()
     lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)  # lr = learning rate
 
