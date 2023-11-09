@@ -28,9 +28,14 @@ from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
 from string import Template
 
-import sys
-sys.path.append('../llm/llama/')
-from main import DatasetName, default_datasetname, get_dataset_choice
+
+# Code from src/llm/llama/main.py
+DatasetName = Literal["eclipse_72k","mozilla_200k"]
+default_datasetname = "eclipse_72k"
+
+def get_dataset_choice(dataset_choice: str) -> DatasetName:
+    assert isinstance(dataset_choice, str) and dataset_choice in get_args(DatasetName)
+    return dataset_choice# type: ignore
 
 
 def process(l: str, do_prompt: bool = True, preprompt: bool = True, add_instructions: str = "") -> Optional[dict]:
