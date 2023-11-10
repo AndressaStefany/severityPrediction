@@ -40,7 +40,7 @@ nvidia-smi
 
 # Execution of the script: replace by python path_to_your_script
 # Do not forget to change the pathes to absolute pathes (dont hesitate to use $USER variable)
-dataset_choice="eclipse_72k"
+dataset_choice="mozilla_200k"
 id_name="_$dataset_choice"
 lora_alpha=2
 lora_r=64
