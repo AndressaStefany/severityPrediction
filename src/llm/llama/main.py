@@ -1467,7 +1467,8 @@ def train_test_classifier(trial: 'optuna.Trial',
                           folder_path: Optional[str]=None,
                           split_dataset_name: Optional[str]="split_eclipse_72k.json",
                           dataset_name: Optional[str]="eclipse_72k",
-                          loss_weighting: Optional[bool]=True):
+                          loss_weighting: Optional[bool]=True,
+                          undersampling: Optional[bool]=False):
     if folder_path is None:
         folder_path = f"/project/def-aloise/{os.environ['USER']}/data/"    
     
@@ -1498,7 +1499,8 @@ def train_test_classifier(trial: 'optuna.Trial',
 
     # Define batch size and create a DataLoader
     batch_size = trial.suggest_categorical("batch_size",[1, 16, 32, 64])
-    train_dataloader = dt.DataLoader(train_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    if not undersampling:
+        train_dataloader = dt.DataLoader(train_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
     test_dataloader = dt.DataLoader(test_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
     val_dataloader = dt.DataLoader(val_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
     
@@ -1520,9 +1522,27 @@ def train_test_classifier(trial: 'optuna.Trial',
     lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)  # lr = learning rate
 
+    def dynamic_undersampling(dataset):
+        labels_0 = [d for d in dataset if d[label_name] == 0]
+        labels_1 = [d for d in dataset if d[label_name] == 1]
+
+        # Igualar o número de amostras para cada classe
+        if len(labels_0) > len(labels_1):
+            labels_0 = random.sample(labels_0, len(labels_1))
+        else:
+            labels_1 = random.sample(labels_1, len(labels_0))
+
+        balanced_dataset = labels_0 + labels_1
+        random.shuffle(balanced_dataset)
+
+        return balanced_dataset
+    # train step
     num_epochs = trial.suggest_categorical("num_epochs", [10, 50, 100])
     total_samples = len(train_dict)
     for epoch in range(num_epochs):
+        if undersampling:
+            balanced_train_dict = dynamic_undersampling(train_dict)
+            train_dataloader = dt.DataLoader(balanced_train_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
         for i, (bug_ids, inputs, labels) in enumerate(train_dataloader):
             optimizer.zero_grad()
             outputs = model(inputs)
@@ -1536,7 +1556,7 @@ def train_test_classifier(trial: 'optuna.Trial',
     model.eval()
     val_labels_list = []
     val_result_list = []
-    with torch.no_grad():
+    with torch.no_grad():        
         for bug_ids, inputs, labels in val_dataloader:
             outputs = model(inputs)
             predicted = (outputs > 0.5).float()
