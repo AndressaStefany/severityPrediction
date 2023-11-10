@@ -3,7 +3,7 @@
 #SBATCH --cpus-per-task=6 # change this parameter to 2,4,6,... and increase "--num_workers" accordingly to see the effect on performance
 #SBATCH --time=6-00:00:00           # duration (JJ-HH:MM:SS)
 #SBATCH --output=log-%x-%j.out
-#SBATCH --error=log-%x-%j.out
+#SBATCH --error=log-%x-%j.err
 #SBATCH --mail-user=robin.moine456@gmail.com
 #SBATCH --mail-type=ALL
 #SBATCH --mem=64G # Request 8 GB of RAM

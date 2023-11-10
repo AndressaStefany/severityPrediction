@@ -1801,50 +1801,33 @@ def get_nn_classifier(trial: "optuna.Trial", input_size, output_size: int = 1):
     return model
 
 
-def train_test_classifier(
-    trial: "optuna.Trial",
-    label_name: str = "binary_severity",
-    folder_path: Optional[str] = None,
-    split_dataset_name: Optional[str] = "split_eclipse_72k.json",
-    dataset_name: Optional[str] = "eclipse_72k",
-):
+def train_test_classifier(trial: 'optuna.Trial',
+                          label_name: str='binary_severity',
+                          folder_path: Optional[str]=None,
+                          split_dataset_name: Optional[str]="split_eclipse_72k.json",
+                          dataset_name: Optional[str]="eclipse_72k",
+                          loss_weighting: Optional[bool]=True,
+                          undersampling: Optional[bool]=False):
     if folder_path is None:
-        folder_path = f"/project/def-aloise/{os.environ['USER']}/data/"
-
-    hdf5_file_path = Path(folder_path) / f"embeddings_chunk_v4_eclipse_layer_-1_0.hdf5"
+        folder_path = f"/project/def-aloise/{os.environ['USER']}/data/"    
+    
+    hdf5_file_path = Path(folder_path) / f"embeddings_eclipse_72k.hdf5"
     df = pd.read_json(Path(folder_path) / f"{dataset_name}.json")
     train_dict, val_dict, test_dict = [], [], []
 
     with open(Path(folder_path) / split_dataset_name, "r") as file:
         idxs = json.load(file)
-
-    with h5py.File(hdf5_file_path, "r") as file:
+    labels = []
+    with h5py.File(hdf5_file_path, 'r') as file:
         for key, value in file.items():
-            severity = df[df["bug_id"] == int(key)][label_name]
-            if int(key) in idxs["tr"]:
-                train_dict.append(
-                    {
-                        "bug_id": int(key),
-                        "embedding": np.array(value).tolist(),
-                        label_name: int(severity.iloc[0]),
-                    }
-                )
-            elif int(key) in idxs["val"]:
-                val_dict.append(
-                    {
-                        "bug_id": int(key),
-                        "embedding": np.array(value).tolist(),
-                        label_name: int(severity.iloc[0]),
-                    }
-                )
-            elif int(key) in idxs["test"]:
-                test_dict.append(
-                    {
-                        "bug_id": int(key),
-                        "embedding": np.array(value).tolist(),
-                        label_name: int(severity.iloc[0]),
-                    }
-                )
+            severity = df[df['bug_id']==int(key)][label_name]
+            if int(key) in idxs['tr']:
+                train_dict.append({"bug_id": int(key), "embedding": np.array(value).tolist(), label_name: int(severity.iloc[0])})
+                labels.append(int(severity.iloc[0]))
+            elif int(key) in idxs['val']:
+                val_dict.append({"bug_id": int(key), "embedding": np.array(value).tolist(), label_name: int(severity.iloc[0])})
+            elif int(key) in idxs['test']:
+                test_dict.append({"bug_id": int(key), "embedding": np.array(value).tolist(), label_name: int(severity.iloc[0])})
             else:
                 raise ValueError(f"The bug_id {key} does not exist")
 
@@ -1859,33 +1842,53 @@ def train_test_classifier(
         )
 
     # Define batch size and create a DataLoader
-    batch_size = trial.suggest_categorical("batch_size", [1, 16, 32, 64])
-    train_dataloader = dt.DataLoader(
-        train_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
-    )
-    test_dataloader = dt.DataLoader(
-        test_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
-    )
-    val_dataloader = dt.DataLoader(
-        val_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
-    )
-
-    input_size = len(train_dict[0]["embedding"])
+    batch_size = trial.suggest_categorical("batch_size",[1, 16, 32, 64])
+    if not undersampling:
+        train_dataloader = dt.DataLoader(train_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    test_dataloader = dt.DataLoader(test_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    val_dataloader = dt.DataLoader(val_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    
+    input_size = len(train_dict[0]['embedding'])
     output_size = 1
 
     model = get_nn_classifier(
         trial=trial, input_size=input_size, output_size=output_size
     )
     # Binary Cross Entropy Loss
-    pos_weight = trial.suggest_float("pos_weight", 0.1, 2.0)
-    pos_weight_tensor = torch.tensor(pos_weight)
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
+    if loss_weighting:
+        positive_samples = (labels == 1).sum()
+        negative_samples = (labels == 0).sum()
+        total_samples = positive_samples + negative_samples
+        pos_weight_value = negative_samples / positive_samples
+        
+        pos_weight_tensor = torch.tensor(pos_weight_value)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
+    else:
+        criterion = nn.BCEWithLogitsLoss()
     lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)  # lr = learning rate
 
+    def dynamic_undersampling(dataset):
+        labels_0 = [d for d in dataset if d[label_name] == 0]
+        labels_1 = [d for d in dataset if d[label_name] == 1]
+
+        # Igualar o número de amostras para cada classe
+        if len(labels_0) > len(labels_1):
+            labels_0 = random.sample(labels_0, len(labels_1))
+        else:
+            labels_1 = random.sample(labels_1, len(labels_0))
+
+        balanced_dataset = labels_0 + labels_1
+        random.shuffle(balanced_dataset)
+
+        return balanced_dataset
+    # train step
     num_epochs = trial.suggest_categorical("num_epochs", [10, 50, 100])
     total_samples = len(train_dict)
     for epoch in range(num_epochs):
+        if undersampling:
+            balanced_train_dict = dynamic_undersampling(train_dict)
+            train_dataloader = dt.DataLoader(balanced_train_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
         for i, (bug_ids, inputs, labels) in enumerate(train_dataloader):
             optimizer.zero_grad()
             outputs = model(inputs)
@@ -1901,7 +1904,7 @@ def train_test_classifier(
     model.eval()
     val_labels_list = []
     val_result_list = []
-    with torch.no_grad():
+    with torch.no_grad():        
         for bug_ids, inputs, labels in val_dataloader:
             outputs = model(inputs)
             predicted = (outputs > 0.5).float()
