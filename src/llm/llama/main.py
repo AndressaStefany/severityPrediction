@@ -20,8 +20,6 @@ import random
 import fire
 import torch
 from torch import nn
-from transformers.trainer_callback import TrainerControl, TrainerState
-from transformers.training_args import TrainingArguments
 
 # tye hints
 LlamaTokenizer = Union["trf.LlamaTokenizer", "trf.LlamaTokenizerFast"]
@@ -448,6 +446,7 @@ def initialize_model(
         num_labels=num_labels,
         trust_remote_code=True,
     )
+    print(model)
     model.config.use_cache = False
     return model
 
@@ -1116,19 +1115,15 @@ class CustomTrainer(trl.SFTTrainer):
         self.tokenizer = tokenizer
         self.loss_fn = torch.nn.functional.binary_cross_entropy
         self.callbacks = callbacks
+        self.events = {c.event for c in callbacks}
         super().__init__(callbacks=callbacks, *args, **kwargs)
 
     def prediction_step(
         self, model, inputs, prediction_loss_only: bool, ignore_keys=None
     ) -> Tuple:
+        if "val" not in self.events:
+            return super().prediction_step(model, inputs, prediction_loss_only, ignore_keys)
         logger.info(f"prediction_step with batch size of {len(inputs['bug_id'])}")
-        try:
-            gc.collect()
-            torch.cuda.empty_cache()  # type: ignore
-        except Exception as e:
-            print("Exception clear")
-            print(e)
-            print("End exception clear")
         input = inputs["input"]
         pad_token = self.tokenizer(self.tokenizer.pad_token)["input_ids"][1]
         n_tokens = [len([e for e in elem if e != pad_token]) for elem in input.tolist()]
@@ -1152,7 +1147,18 @@ class CustomTrainer(trl.SFTTrainer):
                 event="pred",
                 num_samples=len(bug_id),
             )
-        return loss, predictions, trues  # to save GPU RAM
+        del loss
+        del prediction
+        del trues
+        try:
+            gc.collect()
+            torch.cuda.empty_cache()  # type: ignore
+        except Exception as e:
+            print("Exception clear")
+            print(e)
+            print("End exception clear")
+        
+        return None, None, None  # to save GPU RAM
 
     def compute_loss(self, model, inputs, *args, **kwargs):
         logger.info(f"compute_loss with batch size of {len(inputs['bug_id'])}")
@@ -1248,7 +1254,7 @@ def main_qlora_classification(
     learning_rate: float = 2e-4,
     limit_tokens: int = 7364,
     mapping_dict: Optional[dict] = None,
-    lim_size: int = 500,
+    lim_size: int = -1,
     id: str = "",
     use_cpu: bool = False,
 ) -> Tuple["np.ndarray", List[float], "pd.DataFrame"]:
@@ -1355,7 +1361,7 @@ def main_qlora_classification(
         logging_steps=1,
         learning_rate=learning_rate,
         fp16=not use_cpu,
-        optim="paged_adamw_32bit",
+        optim="paged_adamw_8bit",
         remove_unused_columns=False,
         evaluation_strategy="epoch",
         # eval_accumulation_steps=1,
@@ -1405,6 +1411,8 @@ def main_qlora_classification(
     trainer.train()
     with open(folder_out / "log_history.json", "w") as fp:
         json.dump(trainer.state.log_history, fp)
+    with open(folder_out / "parameters.json", "w") as f:
+        json.dump(arguments, indent=4, fp=f, cls=CustomEncoder)
 
 
 @print_args
@@ -1683,7 +1691,8 @@ def get_llama2_embeddings(
         tokenized_full_text = tokenized_full_text[:limit_tokens_sample]
         logger.info(f"{len(tokenized_full_text)=}")
         try:
-            embeddings = model(torch.tensor([tokenized_full_text], dtype=torch.int32))  # type: ignore
+            input_tensor = torch.tensor([tokenized_full_text], dtype=torch.int32)
+            embeddings = model(input_tensor)  # type: ignore
             embedding = embeddings.hidden_states[layer_id]
             pooled_embedding = np.array(
                 pooling_fn(embedding).tolist()[0], dtype=np.float32
@@ -1691,6 +1700,7 @@ def get_llama2_embeddings(
             with h5py.File(get_file_path(layer_id), "a") as fp:
                 fp.create_dataset(str(d["bug_id"]), data=pooled_embedding, dtype="f")
             del embeddings
+            del input_tensor
         except torch.cuda.OutOfMemoryError:
             logger.info(f"Error for {len(tokenized_full_text)} tokens")
             Lmissing.append(d)
