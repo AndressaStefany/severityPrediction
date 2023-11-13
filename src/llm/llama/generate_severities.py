@@ -40,7 +40,7 @@ def generate_inference(clear: bool = False):
 
 
 def generate_embeddings(clear: bool = False):
-    choice = 0
+    choice = 1
     dataset_choices = [
         "eclipse_72k",
         "mozilla_200k"
@@ -71,6 +71,7 @@ def generate_embeddings(clear: bool = False):
                     n_chunks=n_chunks,
                     model_name=model_name,
                     limit_tokens=limit_tokens,
+                    use_cpu=True,
                 )
             )
     with open(path_folder_out / f"start_emb_{dataset_choice}", "w") as f:

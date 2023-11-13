@@ -457,6 +457,7 @@ def initialize_model_inference(
     return_model: bool = True,
     hidden_states: bool = False,
     num_labels: int = 1,
+    quant: bool = True,
 ) -> Union[Tuple[LlamaTokenizer, "trf.LlamaForCausalLM"], LlamaTokenizer]:
     huggingface_hub.login(token=token)
     tokenizer = get_tokenizer(token=token, model_name=model_name)
@@ -467,6 +468,7 @@ def initialize_model_inference(
             hidden_states,
             trf.AutoModelForCausalLM,
             num_labels=num_labels,
+            quant=quant
         )
         return tokenizer, model
     else:
@@ -1003,7 +1005,7 @@ class LossAggregator(trf.trainer_callback.TrainerCallback):
         **kwargs,
     ):
         if "train" == self.event:
-            logger.info(f"gather_epoch {state.epoch} {self.event}")
+            # logger.info(f"gather_epoch {state.epoch} {self.event}")
             self.gather_epoch(args, state, control, **kwargs)
         return super().on_epoch_end(args, state, control, **kwargs)
 
@@ -1015,7 +1017,7 @@ class LossAggregator(trf.trainer_callback.TrainerCallback):
         **kwargs,
     ):
         if "val" == self.event:
-            logger.info(f"gather_epoch {state.epoch} {self.event}")
+            # logger.info(f"gather_epoch {state.epoch} {self.event}")
             self.gather_epoch(args, state, control, **kwargs)
         return super().on_evaluate(args, state, control, **kwargs)
 
@@ -1082,7 +1084,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
             n_tokens_show_max=self.n_tokens_infered_max,
             id=f"_epoch_{str(state.epoch).replace('.','-')}_{self.event}",
         )
-        logger.info(f"{conf_matrix=}")
+        # logger.info(f"{conf_matrix=}")
         self.epoch_buffer = []
 
     def on_epoch_end(
@@ -1093,7 +1095,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         **kwargs,
     ):
         if "train" == self.event:
-            logger.info(f"gather_epoch {state.epoch} {self.event}")
+            # logger.info(f"gather_epoch {state.epoch} {self.event}")
             self.gather_epoch(args, state, control, **kwargs)
         return super().on_epoch_end(args, state, control, **kwargs)
 
@@ -1105,7 +1107,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         **kwargs,
     ):
         if "val" == self.event:
-            logger.info(f"gather_epoch {state.epoch} {self.event}")
+            # logger.info(f"gather_epoch {state.epoch} {self.event}")
             self.gather_epoch(args, state, control, **kwargs)
         return super().on_evaluate(args, state, control, **kwargs)
 
@@ -1123,7 +1125,7 @@ class CustomTrainer(trl.SFTTrainer):
     ) -> Tuple:
         if "val" not in self.events:
             return super().prediction_step(model, inputs, prediction_loss_only, ignore_keys)
-        logger.info(f"prediction_step with batch size of {len(inputs['bug_id'])}")
+        # logger.info(f"prediction_step with batch size of {len(inputs['bug_id'])}")
         input = inputs["input"]
         pad_token = self.tokenizer(self.tokenizer.pad_token)["input_ids"][1]
         n_tokens = [len([e for e in elem if e != pad_token]) for elem in input.tolist()]
@@ -1161,7 +1163,7 @@ class CustomTrainer(trl.SFTTrainer):
         return None, None, None  # to save GPU RAM
 
     def compute_loss(self, model, inputs, *args, **kwargs):
-        logger.info(f"compute_loss with batch size of {len(inputs['bug_id'])}")
+        # logger.info(f"compute_loss with batch size of {len(inputs['bug_id'])}")
         try:
             gc.collect()
             torch.cuda.empty_cache()  # type: ignore
@@ -1227,7 +1229,7 @@ class DataCollator(trf.data.DataCollatorForTokenClassification):
         super().__init__(tokenizer=tokenizer, padding=padding, max_length=max_length)
 
     def torch_call(self, features) -> Dict:
-        logger.info(f"bs={len(features)}")
+        # logger.info(f"bs={len(features)}")
         inputs = [e["input"] for e in features]
         inputs = self.tokenizer(inputs, padding=True, return_tensors="pt")["input_ids"]
         labels = torch.cat(
@@ -1364,6 +1366,7 @@ def main_qlora_classification(
         optim="paged_adamw_8bit",
         remove_unused_columns=False,
         evaluation_strategy="epoch",
+        save_total_limit=2,
         # eval_accumulation_steps=1,
         logging_first_step=True,
         use_cpu=use_cpu,
@@ -1411,8 +1414,6 @@ def main_qlora_classification(
     trainer.train()
     with open(folder_out / "log_history.json", "w") as fp:
         json.dump(trainer.state.log_history, fp)
-    with open(folder_out / "parameters.json", "w") as f:
-        json.dump(arguments, indent=4, fp=f, cls=CustomEncoder)
 
 
 @print_args
@@ -1623,6 +1624,7 @@ def get_llama2_embeddings(
     id_pred: str = "",
     model_name: ModelName = default_model,  # type: ignore
     token: str = default_token,
+    use_cpu: bool = False
 ):
     """From a json file with the description use llama2 to generate the embeddings for each data sample. The intent of this function is to be called with multiple nodes on a slurm server to have faster results
 
@@ -1652,7 +1654,7 @@ def get_llama2_embeddings(
     pooling_fn: PoolingFn = get_pooling_operation(
         get_literal_value(pooling_op, PoolingOperationCode)
     )
-    tokenizer, model = initialize_model_inference(model_name, token, hidden_states=True)  # type: ignore
+    tokenizer, model = initialize_model_inference(model_name, token, hidden_states=True, quant=not use_cpu)  # type: ignore
     with open(path_data_preprocessed) as f:
         data_preprocessed = json.load(f)
     start, end = generate_seeds(
