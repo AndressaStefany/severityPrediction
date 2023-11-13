@@ -1479,6 +1479,7 @@ def train_test_classifier(trial: 'optuna.Trial',
     with open(Path(folder_path) / split_dataset_name, 'r') as file:
         idxs = json.load(file)
     labels = []
+    print("passou aquiiiiii h5py.File(hdf5_file_path, 'r')")
     with h5py.File(hdf5_file_path, 'r') as file:
         for key, value in file.items():
             severity = df[df['bug_id']==int(key)][label_name]
@@ -1503,22 +1504,27 @@ def train_test_classifier(trial: 'optuna.Trial',
         train_dataloader = dt.DataLoader(train_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
     test_dataloader = dt.DataLoader(test_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
     val_dataloader = dt.DataLoader(val_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
-    
+
     input_size = len(train_dict[0]['embedding'])
     output_size = 1
 
-    model = get_nn_classifier(trial=trial, input_size=input_size, output_size=output_size)
+    try:
+        model = get_nn_classifier(trial=trial, input_size=input_size, output_size=output_size)
+    except torch.cuda.OutOfMemoryError:
+        print("não conseguiu pegar o modeloooooooo")
     # Binary Cross Entropy Loss
     if loss_weighting:
-        positive_samples = (labels == 1).sum()
-        negative_samples = (labels == 0).sum()
-        total_samples = positive_samples + negative_samples
-        pos_weight_value = negative_samples / positive_samples
-        
+        labels_tensor = torch.tensor(labels)
+        positive_samples = (labels_tensor == 1).sum()
+        negative_samples = (labels_tensor == 0).sum()
+        total_samples = labels_tensor.sum()
+        pos_weight_value = negative_samples / total_samples
+
         pos_weight_tensor = torch.tensor(pos_weight_value)
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
     else:
         criterion = nn.BCEWithLogitsLoss()
+    print("add criteriooooon")
     lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)  # lr = learning rate
 
@@ -1539,23 +1545,26 @@ def train_test_classifier(trial: 'optuna.Trial',
     # train step
     num_epochs = trial.suggest_categorical("num_epochs", [10, 50, 100])
     total_samples = len(train_dict)
-    for epoch in range(num_epochs):
-        if undersampling:
-            balanced_train_dict = dynamic_undersampling(train_dict)
-            train_dataloader = dt.DataLoader(balanced_train_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
-        for i, (bug_ids, inputs, labels) in enumerate(train_dataloader):
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs, labels.reshape([-1,1]))
-            loss.backward()
-            optimizer.step()
-            if epoch % 10 == 0:
-                print(f'Epoch [{epoch + 1}/{num_epochs}], Step [{i + 1}/{total_samples//batch_size+1}], Loss: {loss.item():.4f}')
-
+    try:
+        for epoch in range(num_epochs):
+            if undersampling:
+                balanced_train_dict = dynamic_undersampling(train_dict)
+                train_dataloader = dt.DataLoader(balanced_train_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+            for i, (bug_ids, inputs, labels) in enumerate(train_dataloader):
+                optimizer.zero_grad()
+                outputs = model(inputs)
+                loss = criterion(outputs, labels.reshape([-1,1]))
+                loss.backward()
+                optimizer.step()
+                if epoch % 10 == 0:
+                    print(f'Epoch [{epoch + 1}/{num_epochs}], Step [{i + 1}/{total_samples//batch_size+1}], Loss: {loss.item():.4f}, batch_size: {batch_size}')
+    except torch.cuda.OutOfMemoryError:
+        print(f"Num epochs: {num_epochs}, batch_size: {batch_size}")
     # Validation step
     model.eval()
     val_labels_list = []
     val_result_list = []
+    print("Step validatiooooooooooon")
     with torch.no_grad():        
         for bug_ids, inputs, labels in val_dataloader:
             outputs = model(inputs)
@@ -1575,6 +1584,7 @@ def train_test_classifier(trial: 'optuna.Trial',
     model.eval()
     test_labels_list = []
     test_result_list = []
+    print("step teeeeest")
     with torch.no_grad():
         for bug_ids, inputs, labels in test_dataloader:
             outputs = model(inputs)
