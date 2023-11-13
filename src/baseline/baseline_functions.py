@@ -369,7 +369,7 @@ def cross_validation_with_classifier(X: np.ndarray, y: np.ndarray, n_splits: int
 def save_data_to_disk(pipeline_fn: Callable, folder: Path, id: str = "", do_print: bool = False, dataset_choice: DatasetName=default_datasetname):
     dataset_choice = get_dataset_choice(dataset_choice)
     with open(folder / f'{dataset_choice}.csv', 'r') as f:
-        bug_reports = np.genfromtxt(f, delimiter=',', names=True, dtype=None)
+        bug_reports = np.genfromtxt(f, delimiter=',', names=True, dtype='int,str,int,str,str')
     
     if do_print:
         print(bug_reports.info())
