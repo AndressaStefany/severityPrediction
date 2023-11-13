@@ -71,7 +71,7 @@ def generate_embeddings(clear: bool = False):
                     n_chunks=n_chunks,
                     model_name=model_name,
                     limit_tokens=limit_tokens,
-                    use_cpu=True,
+                    use_cpu=False,
                 )
             )
     with open(path_folder_out / f"start_emb_{dataset_choice}", "w") as f:
