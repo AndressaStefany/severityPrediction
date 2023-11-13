@@ -2,7 +2,7 @@
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=v100l:1 # on cedar choose one v100l gpu but can be also p100l
 #SBATCH --cpus-per-task=1 # change this parameter to 2,4,6,... and increase "--num_workers" accordingly to see the effect on performance
-#SBATCH --time=00-02:00:00           # duration (JJ-HH:MM:SS)
+#SBATCH --time=00-03:00:00           # duration (JJ-HH:MM:SS)
 #SBATCH --output=log-%x-%j.out
 #SBATCH --error=log-%x-%j.err
 #SBATCH --mail-user=robin.moine456@gmail.com
@@ -40,18 +40,17 @@ pip install seaborn --no-index
 pip install transformers --no-index
 pip install torch --no-index
 pip install h5py --no-index
+pip install fire --no-index
+pip install optuna --no-index
 
 # Execution of the script: replace by python path_to_your_script
 # Do not forget to change the pathes to absolute pathes (dont hesitate to use $USER variable)
-interval_idx=1
-path_data_json=/project/def-aloise/$USER/data/eclipse_72k.json
-id_name=_v4_eclipse
-model_name=meta-llama/Llama-2-13b-chat-hf
-layers_ids="(-1,)"
-n_tokens_infered_max=1000
-base_name=embeddings_chunk_v4_eclipse_
+folder_embeddings=/project/def-aloise/$USER/data/embeddings/embeddings_eclipse_72k_1000_meta-llama--Llama-2-13b-chat-hf/
+path_dst=/project/def-aloise/$USER/data/embeddings_eclipse_72k.hdf5
+base_name_hdf5=embeddings_chunk_eclipse_72k_1000_meta-llama--Llama-2-13b-chat-hf_
+base_name_missing=missing_eclipse_72k_1000_meta-llama--Llama-2-13b-chat-hf_
 
-python /project/def-aloise/$USER/main.py -path_data_json $path_data_json -path_data_folder /project/def-aloise/$USER/data/ -algorithm embeddings_agg -layers_ids $layers_ids -base_name $base_name
+python /project/def-aloise/$USER/main.py merge_data_embeddings --folder_embeddings=$folder_embeddings --path_dst=$path_dst --base_name_hdf5=$base_name_hdf5 --base_name_missing=$base_name_missing
 
 
 # Capture the end time
