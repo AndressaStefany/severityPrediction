@@ -1818,7 +1818,6 @@ def train_test_classifier(trial: 'optuna.Trial',
     with open(Path(folder_path) / split_dataset_name, "r") as file:
         idxs = json.load(file)
     labels = []
-    print("passou aquiiiiii h5py.File(hdf5_file_path, 'r')")
     with h5py.File(hdf5_file_path, 'r') as file:
         for key, value in file.items():
             severity = df[df['bug_id']==int(key)][label_name]
@@ -1830,7 +1829,8 @@ def train_test_classifier(trial: 'optuna.Trial',
             elif int(key) in idxs['test']:
                 test_dict.append({"bug_id": int(key), "embedding": np.array(value).tolist(), label_name: int(severity.iloc[0])})
             else:
-                raise ValueError(f"The bug_id {key} does not exist")
+                continue
+                # raise ValueError(f"The bug_id {key} does not exist")
 
     def collate_fn(data: List[dict]):
         bug_ids = [d["bug_id"] for d in data]
@@ -1855,7 +1855,7 @@ def train_test_classifier(trial: 'optuna.Trial',
     try:
         model = get_nn_classifier(trial=trial, input_size=input_size, output_size=output_size)
     except torch.cuda.OutOfMemoryError:
-        print("não conseguiu pegar o modeloooooooo")
+        print("OUT OF MEMORY ERROR when tried to take the Neural Network by Optuna.")
     # Binary Cross Entropy Loss
     if loss_weighting:
         labels_tensor = torch.tensor(labels)
@@ -1868,7 +1868,6 @@ def train_test_classifier(trial: 'optuna.Trial',
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
     else:
         criterion = nn.BCEWithLogitsLoss()
-    print("add criteriooooon")
     lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)  # lr = learning rate
 
@@ -1903,12 +1902,11 @@ def train_test_classifier(trial: 'optuna.Trial',
                 if epoch % 10 == 0:
                     print(f'Epoch [{epoch + 1}/{num_epochs}], Step [{i + 1}/{total_samples//batch_size+1}], Loss: {loss.item():.4f}, batch_size: {batch_size}')
     except torch.cuda.OutOfMemoryError:
-        print(f"Num epochs: {num_epochs}, batch_size: {batch_size}")
+        print(f"OUT OF MEMORY ERROR \n Num epochs: {num_epochs}, batch_size: {batch_size}")
     # Validation step
     model.eval()
     val_labels_list = []
     val_result_list = []
-    print("Step validatiooooooooooon")
     with torch.no_grad():        
         for bug_ids, inputs, labels in val_dataloader:
             outputs = model(inputs)
@@ -1937,7 +1935,6 @@ def train_test_classifier(trial: 'optuna.Trial',
     model.eval()
     test_labels_list = []
     test_result_list = []
-    print("step teeeeest")
     with torch.no_grad():
         for bug_ids, inputs, labels in test_dataloader:
             outputs = model(inputs)
