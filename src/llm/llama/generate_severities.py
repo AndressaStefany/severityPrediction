@@ -40,7 +40,7 @@ def generate_inference(clear: bool = False):
 
 
 def generate_embeddings(clear: bool = False):
-    choice = 1
+    choice = 0
     dataset_choices = [
         "eclipse_72k",
         "mozilla_200k"

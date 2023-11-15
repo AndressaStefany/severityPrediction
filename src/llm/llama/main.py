@@ -428,6 +428,7 @@ def initialize_model(
     base_class: Any = trf.AutoModelForCausalLM,
     num_labels: int = 1,
     quant: bool = True,
+    load_in_8bit: bool = True,
     *args, **kwargs
 ) -> "trf.LlamaForCausalLM":
     if hidden_states:
@@ -450,6 +451,8 @@ def initialize_model(
         token=token,
         num_labels=num_labels,
         trust_remote_code=True,
+        device_map="auto",
+        load_in_8bit=load_in_8bit,
     )
     print(model)
     model.config.use_cache = False
@@ -702,7 +705,6 @@ def compute_metrics_from_files(
         None
     """
     if data_full is not None:
-        print(data_full)
         data_full.to_json(folder_out / f"data{id}.json", orient="records", indent=4)
     with open(folder_out / f"metrics{id}.json", "w") as f:
         json.dump(
@@ -986,7 +988,7 @@ class LossAggregator(trf.trainer_callback.TrainerCallback):
         n_tokens: List[int],
         event: Literal["val", "train"],
     ):
-        if event in self.event:
+        if event == self.event:
             self.aggregator["loss"] += loss
             self.aggregator["num_samples"] += num_samples
 
@@ -1046,23 +1048,26 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
     def add_new_data(
         self,
         bug_ids: List[int],
-        predictions: List[int],
+        predictions: List[float],
         trues: List[int],
         loss: float,
         num_samples: int,
         n_tokens: List[int],
         event: Literal["val", "train"],
     ):
-        for bug_id, prediction, true, n in zip(bug_ids, predictions, trues, n_tokens):
-            self.epoch_buffer.append(
-                {
-                    "bug_id": bug_id,
-                    "prediction": int(np.round(prediction)),
-                    "probability": prediction,
-                    "binary_severity": true,
-                    "n_tokens": n,
-                }
-            )
+        if event == self.event:
+            for bug_id, prediction, true, n in zip(bug_ids, predictions, trues, n_tokens):
+                self.epoch_buffer.append(
+                    {
+                        "bug_id": bug_id,
+                        "prediction": int(np.round(prediction)),
+                        "probability": prediction,
+                        "binary_severity": true,
+                        "n_tokens": n,
+                        "loss":loss,
+                        "event": event,
+                    }
+                )
 
     def gather_epoch(
         self,
@@ -1122,11 +1127,9 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
 class CustomTrainer(trl.SFTTrainer):
     def __init__(self, tokenizer, callbacks: List, *args, **kwargs):
         self.tokenizer = tokenizer
-        self.loss_fn = torch.nn.functional.binary_cross_entropy
         self.callbacks = callbacks
         self.events = {c.event for c in callbacks}
         super().__init__(callbacks=callbacks, *args, **kwargs)
-
     def prediction_step(
         self, model, inputs, prediction_loss_only: bool, ignore_keys=None
     ) -> Tuple:
@@ -1139,21 +1142,21 @@ class CustomTrainer(trl.SFTTrainer):
         label = inputs["label"]
         bug_id = inputs["bug_id"]
         prediction = model(input)[0]
-        prediction = torch.nn.functional.sigmoid(prediction)
-        loss = self.loss_fn(
+        prediction_sigmoid = torch.nn.functional.sigmoid(prediction.detach().cpu())
+        loss = torch.nn.functional.binary_cross_entropy_with_logits(
             input=prediction,
             target=label,
         )
-        predictions = prediction.reshape((-1,)).tolist()
+        prediction_sigmoid = np.array(prediction_sigmoid.reshape((-1,)).tolist())
         trues = label.reshape((-1,)).tolist()
         for c in self.callbacks:
             c.add_new_data(
                 bug_id,
-                predictions=predictions,
+                predictions=prediction_sigmoid.tolist(),
                 trues=trues,
                 loss=loss.sum().item(),
                 n_tokens=n_tokens,
-                event="pred",
+                event="val",
                 num_samples=len(bug_id),
             )
         del loss
@@ -1184,12 +1187,8 @@ class CustomTrainer(trl.SFTTrainer):
         label = inputs["label"]
         bug_id = inputs["bug_id"]
         prediction = model(input)[0]
-        prediction = torch.nn.functional.sigmoid(prediction)
-        loss = self.loss_fn(
-            input=prediction,
-            target=label,
-        )
-        predictions = prediction.reshape((-1,)).tolist()
+        loss = torch.nn.functional.binary_cross_entropy_with_logits(input=prediction,target=label)
+        predictions = torch.nn.functional.sigmoid(prediction.detach().cpu().reshape((-1,))).tolist()
         trues = label.reshape((-1,)).tolist()
         for c in self.callbacks:
             c.add_new_data(
@@ -1319,14 +1318,15 @@ def main_qlora_classification(
         model_name=model_name,
         token=token,
         base_class=trf.AutoModelForSequenceClassification,
-        quant=not use_cpu,
+        quant=False,
+        load_in_8bit=True
     )
     logger.info("peft.LoraConfig")
     peft_config = peft.LoraConfig(  # type: ignore
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
         r=lora_r,
-        bias="none",
+        bias="none", #<--- replace "lora_only"
         inference_mode=False,
         task_type="SEQ_CLS",
     )
@@ -1334,9 +1334,10 @@ def main_qlora_classification(
     model.config.pad_token_id = 0
     # https://github.com/huggingface/transformers/blob/ce2e7ef3d96afaf592faf3337b7dd997c7ad4928/src/transformers/models/llama/modeling_llama.py#L906
     logger.info("get_peft_model")
-    # model = peft.get_peft_model(model, peft_config)# type: ignore
-    # model.print_trainable_parameters()
+    model = peft.prepare_model_for_int8_training(model)
+    model = peft.get_peft_model(model, peft_config)
     print(model)
+    model.print_trainable_parameters()
     # create datasets
     logger.info("generate_dataset")
     tr_data, val_data, train_path, valid_path = generate_dataset(
@@ -1358,8 +1359,8 @@ def main_qlora_classification(
     real_lim_size_val = lim_size
     if lim_size == -1:
         real_lim_size_val = len(val_data)
-    val_data = Dataset(tokenizer, val_data[:real_lim_size_val])
-    logger.info("training QLORA")
+    val_data = Dataset(tokenizer, val_data[:real_lim_size_tr])
+    logger.info(f"training QLORA {len(tr_data)} {len(val_data)}")
     # Set training parameters
     training_arguments = trf.TrainingArguments(
         output_dir=str(folder_out.resolve()),
@@ -1399,7 +1400,6 @@ def main_qlora_classification(
         model=model,
         train_dataset=tr_data,
         eval_dataset=val_data,
-        peft_config=peft_config,  # type: ignore
         tokenizer=tokenizer,
         args=training_arguments, 
         packing=False,
@@ -1413,12 +1413,9 @@ def main_qlora_classification(
             predictions_aggregator_val,
         ],
     )
-    for name, module in trainer.model.named_modules():
-        if "norm" in name:
-            module = module.to(torch.float32)  # type: ignore
     logger.info(f"{trainer.args._n_gpu=}")
-
-    trainer.train(resume_from_checkpoint=True)
+    with torch.autocast("cuda"): 
+        trainer.train(resume_from_checkpoint=False)
     with open(folder_out / "log_history.json", "w") as fp:
         json.dump(trainer.state.log_history, fp)
 
@@ -1632,6 +1629,7 @@ def get_llama2_embeddings(
     token: str = default_token,
     use_cpu: bool = False,
     limit_tokens: int = -1,
+    override: bool = False,
 ):
     """From a json file with the description use llama2 to generate the embeddings for each data sample. The intent of this function is to be called with multiple nodes on a slurm server to have faster results
 
@@ -1662,6 +1660,7 @@ def get_llama2_embeddings(
         get_literal_value(pooling_op, PoolingOperationCode)
     )
     tokenizer, model = initialize_model_inference(model_name, token, hidden_states=True, return_dict=True, quant=not use_cpu)  # type: ignore
+    model.eval()
     with open(path_data_preprocessed) as f:
         data_preprocessed = json.load(f)
     start, end = generate_seeds(
@@ -1680,19 +1679,17 @@ def get_llama2_embeddings(
         lambda layer_id: folder_out
         / f"embeddings_chunk{id_pred}_layer_{layer_id}_{start}.hdf5"
     )
-    if not path_missing.exists() and get_file_path(layer_id).exists():
-        logger.info("Nothing to do, file is already here and no missing")
-        return
-    if path_missing.exists():
-        logger.info("Restart from missing")
-        with open(path_missing) as fp:
-            data = json.load(fp)
-
     print(f"Running for {start=} {end=}")
     folder_predictions = folder_out
     folder_predictions.mkdir(exist_ok=True, parents=True)
-    Lmissing = []
+    ids_already_there = set()
+    if get_file_path(layer_id).exists():
+        with h5py.File(get_file_path(layer_id), "r") as fp:
+            ids_already_there = set(list(fp.keys()))
     for i, d in tqdm.tqdm(enumerate(data), total=len(data)):
+        already_computed = str(d["bug_id"]) in ids_already_there
+        if already_computed and not override:
+            continue
         tokenized_full_text = tokenizer.encode(d["description"])
         limit_tokens_sample = limit_tokens
         if limit_tokens == -1:
@@ -1701,22 +1698,23 @@ def get_llama2_embeddings(
         logger.info(f"{len(tokenized_full_text)=}")
         try:
             input_tensor = torch.tensor([tokenized_full_text], dtype=torch.int32)
-            embeddings = model(input_tensor)  # type: ignore
-            embedding = embeddings.hidden_states[layer_id]
-            pooled_embedding = np.array(
-                pooling_fn(embedding).tolist()[0], dtype=np.float32
-            )
+            with torch.no_grad():
+                embeddings = model(input_tensor)  # type: ignore
+                embedding = embeddings.hidden_states[layer_id]
+                pooled_embedding = np.array(
+                    pooling_fn(embedding).tolist()[0], dtype=np.float32
+                )
             with h5py.File(get_file_path(layer_id), "a") as fp:
-                fp.create_dataset(str(d["bug_id"]), data=pooled_embedding, dtype="f")
+                id = str(d["bug_id"])
+                if already_computed:
+                    del fp[id]
+                fp.create_dataset(id, data=pooled_embedding, dtype="f")
             del embeddings
             del input_tensor
         except torch.cuda.OutOfMemoryError as e:
             logger.info(f"Error for {len(tokenized_full_text)} tokens: {e}")
-            Lmissing.append(d)
         gc.collect()
         torch.cuda.empty_cache()  # type: ignore
-    with open(path_missing, "w") as fp:
-        json.dump(Lmissing, fp)
 
 
 @print_args
