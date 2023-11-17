@@ -1434,6 +1434,7 @@ def main_qlora_classification(
         json.dump(trainer.state.log_history, fp)
 
 
+
 def get_max_tokens(
     evaluator: MaxTokensEvaluator,
     min_token_length: int = 0,
@@ -1922,15 +1923,10 @@ def generate_train_test_split(path_data: str, folder_out: str, train_percent: fl
     negative_examples = [d for d in dataset if d["binary_severity"] == 0]
     num_positive_train = int(train_percent * len(positive_examples))
     num_negative_train = int(train_percent * len(negative_examples))
-    num_train_per_severity = min(num_positive_train, num_negative_train)
     balanced_train_set = (
-        positive_examples[:num_train_per_severity]
-        + negative_examples[:num_train_per_severity]
+        positive_examples[:num_positive_train]
+        + negative_examples[:num_negative_train]
     )
-    logger.info(
-        f"{num_train_per_severity=}, {len(positive_examples[:num_train_per_severity])=}, {len(negative_examples[:num_train_per_severity])=}"
-    )
-    assert len(balanced_train_set) == num_train_per_severity * 2
     remaining_examples = {
         1: positive_examples[num_positive_train:],
         0: negative_examples[num_negative_train:],
