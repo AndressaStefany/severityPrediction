@@ -969,10 +969,11 @@ def generate_dataset(
 
 
 class LossAggregator(trf.trainer_callback.TrainerCallback):
-    def __init__(self, event: Literal["train", "val"]) -> None:
+    def __init__(self, event: Literal["train", "val"], size: int) -> None:
         self.aggregator = {"loss": 0.0, "num_samples": 0}
         self.history = []
         self.event = event
+        self.size = size
         super().__init__()
 
     def set_loss_fn(self, loss_fn: str):
@@ -991,6 +992,9 @@ class LossAggregator(trf.trainer_callback.TrainerCallback):
         if event == self.event:
             self.aggregator["loss"] += loss
             self.aggregator["num_samples"] += num_samples
+            if not (self.aggregator["num_samples"] < self.size):
+                logger.info(f"Expecting to see in one epoch only one time the dataset with {self.size=}, not {self.aggregator['num_samples']=}")
+                raise Exception
 
     def gather_epoch(
         self,
@@ -1037,12 +1041,14 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         event: Literal["train", "val"],
         n_tokens_infered_max: int,
         folder_out: Path,
+        size: int
     ) -> None:
         self.history = []
         self.epoch_buffer = []
         self.event = event
         self.n_tokens_infered_max = n_tokens_infered_max
         self.folder_out = folder_out
+        self.size = size
         super().__init__()
 
     def add_new_data(
@@ -1068,6 +1074,9 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                         "event": event,
                     }
                 )
+            if len(self.epoch_buffer) >= self.size: 
+                logger.info(f"Expecting to see in one epoch only one time the dataset with {self.size=}, not {len(self.epoch_buffer)=}")
+                raise Exception
 
     def gather_epoch(
         self,
@@ -1130,6 +1139,7 @@ class CustomTrainer(trl.SFTTrainer):
         self.callbacks = callbacks
         self.events = {c.event for c in callbacks}
         super().__init__(callbacks=callbacks, *args, **kwargs)
+        logger.info(f"{len(self.get_train_dataloader())=} {len(self.get_eval_dataloader())=}")
     def prediction_step(
         self, model, inputs, prediction_loss_only: bool, ignore_keys=None
     ) -> Tuple:
@@ -1318,8 +1328,8 @@ def main_qlora_classification(
         model_name=model_name,
         token=token,
         base_class=trf.AutoModelForSequenceClassification,
-        quant=False,
-        load_in_8bit=True
+        quant=True,
+        load_in_8bit=False
     )
     logger.info("peft.LoraConfig")
     peft_config = peft.LoraConfig(  # type: ignore
@@ -1334,10 +1344,10 @@ def main_qlora_classification(
     model.config.pad_token_id = 0
     # https://github.com/huggingface/transformers/blob/ce2e7ef3d96afaf592faf3337b7dd997c7ad4928/src/transformers/models/llama/modeling_llama.py#L906
     logger.info("get_peft_model")
-    model = peft.prepare_model_for_int8_training(model)
-    model = peft.get_peft_model(model, peft_config)
+    # model = peft.prepare_model_for_int8_training(model)
+    # model = peft.get_peft_model(model, peft_config)
     print(model)
-    model.print_trainable_parameters()
+    # model.print_trainable_parameters()
     # create datasets
     logger.info("generate_dataset")
     tr_data, val_data, train_path, valid_path = generate_dataset(
@@ -1355,11 +1365,14 @@ def main_qlora_classification(
     real_lim_size_tr = lim_size
     if lim_size == -1:
         real_lim_size_tr = len(tr_data)
-    tr_data = Dataset(tokenizer, tr_data[:real_lim_size_tr])
+    tr_data = tr_data[:real_lim_size_tr]
     real_lim_size_val = lim_size
     if lim_size == -1:
         real_lim_size_val = len(val_data)
-    val_data = Dataset(tokenizer, val_data[:real_lim_size_tr])
+    val_data = val_data[:real_lim_size_val]
+    assert len(tr_data) > len(val_data)
+    tr_data = Dataset(tokenizer, tr_data)
+    val_data = Dataset(tokenizer, val_data)
     logger.info(f"training QLORA {len(tr_data)} {len(val_data)}")
     # Set training parameters
     training_arguments = trf.TrainingArguments(
@@ -1388,13 +1401,13 @@ def main_qlora_classification(
             1: "SEVERE",
         }
     logger.info("Set supervised fine-tuning parameters")
-    loss_aggregator_tr = LossAggregator(event="train")
+    loss_aggregator_tr = LossAggregator(event="train",size=len(tr_data))
     predictions_aggregator_tr = PredictionAggregator(
-        event="train", n_tokens_infered_max=limit_tokens, folder_out=folder_out
+        event="train", n_tokens_infered_max=limit_tokens, folder_out=folder_out,size=len(val_data)
     )
-    loss_aggregator_val = LossAggregator(event="val")
+    loss_aggregator_val = LossAggregator(event="val",size=len(val_data))
     predictions_aggregator_val = PredictionAggregator(
-        event="val", n_tokens_infered_max=limit_tokens, folder_out=folder_out
+        event="val", n_tokens_infered_max=limit_tokens, folder_out=folder_out,size=len(val_data)
     )
     trainer = CustomTrainer(  # type: ignore
         model=model,
@@ -1402,6 +1415,7 @@ def main_qlora_classification(
         eval_dataset=val_data,
         tokenizer=tokenizer,
         args=training_arguments, 
+        peft_config=peft_config,  # type: ignore
         packing=False,
         max_seq_length=limit_tokens + 5,
         formatting_func=lambda x: x,
@@ -1418,154 +1432,6 @@ def main_qlora_classification(
         trainer.train(resume_from_checkpoint=False)
     with open(folder_out / "log_history.json", "w") as fp:
         json.dump(trainer.state.log_history, fp)
-
-
-@print_args
-def main_qlora_generation(
-    file_examples: Path,
-    file_split: Path,
-    folder_out: Path,
-    lora_alpha: int = 16,
-    lora_dropout: float = 0.1,
-    lora_r: int = 64,
-    model_name: str = "meta-llama/Llama-2-13b-chat-hf",
-    token: str = "",
-    field_label: str = "binary_severity",
-    field_input: str = "llama_tokenized_description",
-    num_train_epochs: int = 1,
-    tr_bs: int = 1,
-    val_bs: int = 1,
-    optim: str = "paged_adamw_32bit",
-    save_steps: int = 25,
-    logging_steps: int = 25,
-    learning_rate: float = 2e-4,
-    weight_decay: float = 0.001,
-    fp16: bool = False,
-    bf16: bool = False,
-    max_grad_norm: float = 0.3,
-    max_steps: int = -1,
-    warmup_ratio: float = 0.03,
-    group_by_length: bool = True,
-    lr_scheduler_type: str = "constant",
-    eval_steps: int = 20,
-    limit_tokens: int = 7364,
-    new_model_name: str = "",
-):
-    """
-    Perform training and fine-tuning of a model for causal reasoning using LoRA.
-    Doc: https://miro.medium.com/v2/resize:fit:4800/format:webp/1*rOW5plKBuMlGgpD0SO8nZA.png
-
-    # Arguments
-        - new_model_name: str, name of the new model pretrained
-        - file_examples: Path, a file path to input data.
-        - folder_out: Path, a Path object representing the output folder for the results.
-        - model_name: str, the name or path of the pretrained model to use. Default: "meta-llama/Llama-2-13b-chat-hf"
-        - token: str, a token string. Default: ""
-        - lora_alpha: int, scaling factor for the weight matrices. alpha is a scaling factor that adjusts the magnitude of the combined result (base model output + low-rank adaptation). Default: 16
-        - lora_dropout: float, dropout probability of the LoRA layers. This parameter is used to avoid overfitting. Default: 0.1
-        - lora_r: int, this is the dimension of the low-rank matrix. Default: 64. It means for a layer initialy of size d_in x d_out we will have 2 lora layers of size d_in x r and r x d_out reducing the number of parameters
-        - num_train_epochs: int, the number of training epochs. Default: 1
-        - tr_bs: int, batch size for training. Default: 4
-        - val_bs: int, batch size for validation. Default: 4
-        - optim: str, optimization method. Possible values include "paged_adamw_32bit" and other optimization methods specific to the project. Default: "paged_adamw_32bit"
-        - save_steps: int, the frequency of saving model checkpoints during training. Default: 25
-        - logging_steps: int, the frequency of logging training progress. Default: 25
-        - learning_rate: float, the learning rate for training. Default: 2e-4
-        - weight_decay: float, the weight decay value for regularization. Default: 0.001
-        - fp16: bool, whether to use mixed-precision training with 16-bit floats. Default: False
-        - bf16: bool, whether to use 16-bit bfloat16 format. Default: False
-        - max_grad_norm: float, the maximum gradient norm for gradient clipping. Default: 0.3
-        - max_steps: int, the maximum number of training steps. Default: -1 (unlimited)
-        - warmup_ratio: float, the warmup ratio for learning rate scheduling. Default: 0.03
-        - group_by_length: bool, a flag to group data by sequence length. Default: True
-        - lr_scheduler_type: str, type of learning rate scheduler. Default: "constant"
-        - eval_steps: int, the frequency of evaluating the model during training. Default: 20
-        - train_size: float = 0.3, the size of the training dataset
-    """
-    logger.info("main_qlora_generation")
-    if token != "":
-        huggingface_hub.login(token=token)
-    if not folder_out.exists():
-        folder_out.mkdir(parents=True)
-
-    logger.info("initialize_model_inference")
-    tokenizer, model = initialize_model_inference(model_name, token, return_model=True)  # type: ignore
-    model.config.use_cache = False
-    model.config.pretraining_tp = 1
-    tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right"
-    logger.info("config elements")
-    peft_config = peft.LoraConfig(  # type: ignore
-        lora_alpha=lora_alpha,
-        lora_dropout=lora_dropout,
-        r=lora_r,
-        bias="none",
-        inference_mode=False,
-        task_type="CAUSAL_LM",
-    )
-    # Set training parameters
-    training_arguments = trf.TrainingArguments(
-        output_dir=str(folder_out.resolve()),
-        num_train_epochs=num_train_epochs,
-        per_device_train_batch_size=tr_bs,
-        gradient_accumulation_steps=val_bs,
-        optim=optim,
-        save_steps=save_steps,
-        logging_steps=logging_steps,
-        learning_rate=learning_rate,
-        weight_decay=weight_decay,
-        fp16=fp16,
-        bf16=bf16,
-        max_grad_norm=max_grad_norm,
-        max_steps=max_steps,
-        warmup_ratio=warmup_ratio,
-        group_by_length=group_by_length,
-        lr_scheduler_type=lr_scheduler_type,
-        report_to="all",  # type: ignore
-        evaluation_strategy="steps",
-        eval_steps=eval_steps,
-    )
-    # create datasets
-    logger.info("generate_dataset")
-    train_data, val_data, train_path, valid_path = generate_dataset(
-        folder_out=folder_out.parent,
-        file_examples=file_examples,
-        file_split=file_split,
-        field_input=field_input,
-        token=token,
-        model_name=model_name,
-        limit_tokens=limit_tokens,
-        id=f"_{model_name}_{limit_tokens}",
-    )
-    logger.info(f"Using {train_path} {valid_path}")
-    logger.info("load_dataset")
-    for i in range(len(train_data)):
-        train_data[i]["input"] += "\n" + str(train_data[i][field_label])
-    for i in range(len(val_data)):
-        val_data[i]["input"] += "\n" + str(val_data[i][field_label])
-    train_dataset = datasets.Dataset.from_list(train_data)  # type: ignore
-    valid_dataset = datasets.Dataset.from_list(val_data)  # type: ignore
-    # Set supervised fine-tuning parameters
-    logger.info("Set supervised fine-tuning parameters")
-    trainer = CustomTrainer(  # type: ignore
-        model=model,
-        train_dataset=train_dataset,  # type: ignore
-        eval_dataset=valid_dataset,  # type: ignore
-        peft_config=peft_config,  # type: ignore
-        dataset_text_field="input",
-        tokenizer=tokenizer,
-        args=training_arguments,
-        packing=False,
-        max_seq_length=limit_tokens + 10,
-    )
-    logger.info("Starting training QLORA")
-    trainer.train()
-    logger.info("Saving trained QLORA model")
-    if new_model_name != "":
-        output_dir = folder_out / "trained_model"
-        output_dir.mkdir()
-        trainer.model.save_pretrained(output_dir)
-        trainer.model.push_to_hub(new_model_name)
 
 
 def get_max_tokens(
