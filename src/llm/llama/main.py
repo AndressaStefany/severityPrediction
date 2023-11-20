@@ -1788,7 +1788,7 @@ def get_nn_classifier(trial: "optuna.Trial", input_size, output_size: int = 1):
         'prelu': nn.PReLU,
         # 'linear': nn.Linear
     }
-    n_layers = trial.suggest_int("n_layers", 3, 10)
+    n_layers = trial.suggest_int("n_layers", 1, 5)
     layers = []
     in_features = input_size
     
@@ -1868,13 +1868,9 @@ def train_test_classifier(trial: 'optuna.Trial',
     # Binary Cross Entropy Loss
     if loss_weighting:
         labels_tensor = torch.tensor(labels)
-        positive_samples = (labels_tensor == 1).sum()
-        negative_samples = (labels_tensor == 0).sum()
-        total_samples = labels_tensor.sum()
-        pos_weight_value = negative_samples / total_samples
-
-        pos_weight_tensor = torch.tensor(pos_weight_value)
-        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
+        pos_weight_value = (labels_tensor == 0).sum() / (labels_tensor == 1).sum()
+        # pos_weight_tensor = torch.tensor(pos_weight_value)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_value)
     else:
         criterion = nn.BCEWithLogitsLoss()
     lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
@@ -1895,10 +1891,17 @@ def train_test_classifier(trial: 'optuna.Trial',
 
         return balanced_dataset
     # train step
-    num_epochs = trial.suggest_categorical("num_epochs", [10, 50, 100])
+    # num_epochs = trial.suggest_categorical("num_epochs", [10, 50, 100])
+    num_epochs = 200
     total_samples = len(train_dict)
+    loss_train_list, loss_val_list, loss_test_list = [], [], []
+    conf_matrix_val_list = []
+    n_epochs_stop = 100
+    min_val_loss = np.Inf
+    early_stop = False
     try:
         for epoch in range(num_epochs):
+            total_loss = 0
             if undersampling:
                 balanced_train_dict = dynamic_undersampling(train_dict)
                 train_dataloader = dt.DataLoader(balanced_train_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
@@ -1908,42 +1911,61 @@ def train_test_classifier(trial: 'optuna.Trial',
                 loss = criterion(outputs, labels.reshape([-1,1]))
                 loss.backward()
                 optimizer.step()
-                if epoch % 10 == 0:
-                    print(f'Epoch [{epoch + 1}/{num_epochs}], Step [{i + 1}/{total_samples//batch_size+1}], Loss: {loss.item():.4f}, batch_size: {batch_size}')
+                total_loss += loss.item()
+                val_loss = total_loss / len(train_dict)
+                if val_loss < min_val_loss:
+                    epochs_no_improve = 0
+                    min_val_loss = val_loss
+                else:
+                    epochs_no_improve += 1
+                
+                if epoch > 5 and epochs_no_improve == n_epochs_stop:
+                    print('Early stopping!')
+                    early_stop = True
+                    break
+                else:
+                    continue
+
+            loss_train_list.append(total_loss/total_samples)
+
+            # Validation step
+            model.eval()
+            val_labels_list = []
+            val_result_list = []
+            total_loss = 0
+            with torch.no_grad():
+                for bug_ids, inputs, labels in val_dataloader:
+                    outputs = model(inputs)
+                    predicted = (outputs > 0.5).float()
+                    val_labels_list.extend(labels.tolist())
+                    result = [
+                        {
+                            "bug_id": bug_id,
+                            "binary_severity": label,
+                            "prediction": prediction[0],
+                        }
+                        for bug_id, label, prediction in zip(
+                            bug_ids.tolist(), labels.tolist(), predicted.tolist()
+                        )
+                    ]
+                    val_result_list.extend(result)
+                    loss = criterion(outputs, labels.reshape([-1,1]))
+                    total_loss += loss.item()
+                loss_val_list.append(total_loss/len(val_dict))
+            conf_matrix, _, _ = compute_metrics_from_list(val_result_list, pred_field="prediction")
+            conf_matrix_val_list.append({f"epoch_{epoch}": conf_matrix})
+            if early_stop:
+                print("Stopped")
+                break
+
     except torch.cuda.OutOfMemoryError:
         print(f"OUT OF MEMORY ERROR \n Num epochs: {num_epochs}, batch_size: {batch_size}")
-    # Validation step
-    model.eval()
-    val_labels_list = []
-    val_result_list = []
-    with torch.no_grad():        
-        for bug_ids, inputs, labels in val_dataloader:
-            outputs = model(inputs)
-            predicted = (outputs > 0.5).float()
-            val_labels_list.extend(labels.tolist())
-            result = [
-                {
-                    "bug_id": bug_id,
-                    "binary_severity": label,
-                    "prediction": prediction[0],
-                }
-                for bug_id, label, prediction in zip(
-                    bug_ids.tolist(), labels.tolist(), predicted.tolist()
-                )
-            ]
-            val_result_list.extend(result)
-    _, val_f1, _ = compute_metrics_from_list(val_result_list, pred_field="prediction")
-    _, val_class_count = np.unique(val_labels_list, return_counts=True)
-    val_class_proportion = val_class_count / len(val_labels_list)
-    val_weighted_avg_f1 = np.average(val_f1, weights=val_class_proportion)
-
-    # Print validation metrics
-    print(f"Validation F1 Score: {val_weighted_avg_f1}")
 
     # Test step
     model.eval()
     test_labels_list = []
     test_result_list = []
+    total_loss = 0
     with torch.no_grad():
         for bug_ids, inputs, labels in test_dataloader:
             outputs = model(inputs)
@@ -1960,9 +1982,18 @@ def train_test_classifier(trial: 'optuna.Trial',
                 )
             ]
             test_result_list.extend(result)
-    _, f1, _ = compute_metrics_from_list(test_result_list, pred_field="prediction")
+            loss = criterion(outputs, labels.reshape([-1,1]))
+            loss_test_list.append(loss.item())
+    conf_matrix_test, f1, _ = compute_metrics_from_list(test_result_list, pred_field="prediction")
     _, class_count = np.unique(test_labels_list, return_counts=True)
     test_class_proportion = class_count / len(test_labels_list)
+    
+    with open(Path(folder_path) / f"{trial.study.study_name}_trial_{trial.number}_loss.json", "w") as f:
+        json.dump({"loss_train": loss_train_list,
+                   "loss_val": loss_val_list,
+                   "loss_test": loss_test_list,
+                   "conf_matrix_val_list": conf_matrix_val_list,
+                   "conf_matrix_test": conf_matrix_test}, f)
 
     weighted_avg_f1 = np.average(f1, weights=test_class_proportion)
     return weighted_avg_f1
