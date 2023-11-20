@@ -1788,7 +1788,7 @@ def get_nn_classifier(trial: "optuna.Trial", input_size, output_size: int = 1):
         'prelu': nn.PReLU,
         # 'linear': nn.Linear
     }
-    n_layers = trial.suggest_int("n_layers", 1, 5)
+    n_layers = trial.suggest_int("n_layers", 2, 5)
     layers = []
     in_features = input_size
     
