@@ -992,7 +992,7 @@ class LossAggregator(trf.trainer_callback.TrainerCallback):
         if event == self.event:
             self.aggregator["loss"] += loss
             self.aggregator["num_samples"] += num_samples
-            if not (self.aggregator["num_samples"] < self.size):
+            if not (self.aggregator["num_samples"] < self.size+1):
                 logger.info(f"Expecting to see in one epoch only one time the dataset with {self.size=}, not {self.aggregator['num_samples']=}")
                 raise Exception
 
@@ -1074,7 +1074,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                         "event": event,
                     }
                 )
-            if len(self.epoch_buffer) >= self.size: 
+            if len(self.epoch_buffer) > self.size: 
                 logger.info(f"Expecting to see in one epoch only one time the dataset with {self.size=}, not {len(self.epoch_buffer)=}")
                 raise Exception
 
@@ -1085,6 +1085,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         control: "trf.TrainerControl",
         **kwargs,
     ):
+        logger.info(f"gather_epoch {state.epoch=}")
         if state.epoch < 1 or len(self.epoch_buffer) == 0:
             return
         for i in range(len(self.epoch_buffer)):
@@ -1115,6 +1116,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         control: "trf.TrainerControl",
         **kwargs,
     ):
+        logger.info(f"on_epoch_end {state.epoch=}")
         if "train" == self.event:
             # logger.info(f"gather_epoch {state.epoch} {self.event}")
             self.gather_epoch(args, state, control, **kwargs)
@@ -1127,6 +1129,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         control: "trf.TrainerControl",
         **kwargs,
     ):
+        logger.info(f"on_evaluate {state.epoch=}")
         if "val" == self.event:
             # logger.info(f"gather_epoch {state.epoch} {self.event}")
             self.gather_epoch(args, state, control, **kwargs)
@@ -1134,10 +1137,11 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
 
 
 class CustomTrainer(trl.SFTTrainer):
-    def __init__(self, tokenizer, callbacks: List, *args, **kwargs):
+    def __init__(self, tokenizer, callbacks: List, weighted: bool = False, *args, **kwargs):
         self.tokenizer = tokenizer
         self.callbacks = callbacks
         self.events = {c.event for c in callbacks}
+        self.weighted = weighted
         super().__init__(callbacks=callbacks, *args, **kwargs)
         logger.info(f"{len(self.get_train_dataloader())=} {len(self.get_eval_dataloader())=}")
     def prediction_step(
@@ -1211,7 +1215,16 @@ class CustomTrainer(trl.SFTTrainer):
                 num_samples=len(bug_id),
             )
         return loss
-
+    def _get_train_sampler(self) -> Any | None:
+        dataset: "Dataset" = self.train_dataset
+        if self.weighted:
+            weights = dataset.get_weights()
+            return torch.utils.data.WeightedRandomSampler(
+                weights=weights,
+                num_samples=len(weights),
+                replacement=False,
+            )
+        return super()._get_train_sampler()
 
 class Dataset(torch.utils.data.Dataset):
     def __init__(
@@ -1228,7 +1241,12 @@ class Dataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.l_dict)
-
+    def get_weights(self) -> List[float]:
+        num_tot = len(self.l_dict)
+        num_1 = sum(e['binary_severity'] for e in self.l_dict)
+        probas = {0:num_1/num_tot}
+        probas[1] = 1-probas[0]
+        return [probas[int(e['binary_severity'])] for e in self.l_dict]
     def __getitem__(self, i: int) -> Dict[str, "torch.Tensor"]:
         elem = {**self.l_dict[i]}
         input = elem[self.input_field]
@@ -1275,6 +1293,7 @@ def main_qlora_classification(
     lim_size: int = -1,
     id: str = "",
     use_cpu: bool = False,
+    tr_weighted_sampling: bool = False,
 ) -> Tuple["np.ndarray", List[float], "pd.DataFrame"]:
     """
     Perform training and fine-tuning of a model for causal reasoning using LoRA.
@@ -1370,7 +1389,6 @@ def main_qlora_classification(
     if lim_size == -1:
         real_lim_size_val = len(val_data)
     val_data = val_data[:real_lim_size_val]
-    assert len(tr_data) > len(val_data)
     tr_data = Dataset(tokenizer, tr_data)
     val_data = Dataset(tokenizer, val_data)
     logger.info(f"training QLORA {len(tr_data)} {len(val_data)}")
@@ -1426,6 +1444,7 @@ def main_qlora_classification(
             loss_aggregator_val,
             predictions_aggregator_val,
         ],
+        weighted=tr_weighted_sampling,
     )
     logger.info(f"{trainer.args._n_gpu=}")
     with torch.autocast("cuda"): 
