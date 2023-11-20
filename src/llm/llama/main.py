@@ -428,6 +428,7 @@ def initialize_model(
     base_class: Any = trf.AutoModelForCausalLM,
     num_labels: int = 1,
     quant: bool = True,
+    load_in_8bit: bool = True,
     *args, **kwargs
 ) -> "trf.LlamaForCausalLM":
     if hidden_states:
@@ -450,6 +451,8 @@ def initialize_model(
         token=token,
         num_labels=num_labels,
         trust_remote_code=True,
+        device_map="auto",
+        load_in_8bit=load_in_8bit,
     )
     print(model)
     model.config.use_cache = False
@@ -702,7 +705,6 @@ def compute_metrics_from_files(
         None
     """
     if data_full is not None:
-        print(data_full)
         data_full.to_json(folder_out / f"data{id}.json", orient="records", indent=4)
     with open(folder_out / f"metrics{id}.json", "w") as f:
         json.dump(
@@ -967,10 +969,11 @@ def generate_dataset(
 
 
 class LossAggregator(trf.trainer_callback.TrainerCallback):
-    def __init__(self, event: Literal["train", "val"]) -> None:
+    def __init__(self, event: Literal["train", "val"], size: int) -> None:
         self.aggregator = {"loss": 0.0, "num_samples": 0}
         self.history = []
         self.event = event
+        self.size = size
         super().__init__()
 
     def set_loss_fn(self, loss_fn: str):
@@ -986,9 +989,12 @@ class LossAggregator(trf.trainer_callback.TrainerCallback):
         n_tokens: List[int],
         event: Literal["val", "train"],
     ):
-        if event in self.event:
+        if event == self.event:
             self.aggregator["loss"] += loss
             self.aggregator["num_samples"] += num_samples
+            if not (self.aggregator["num_samples"] < self.size+1):
+                logger.info(f"Expecting to see in one epoch only one time the dataset with {self.size=}, not {self.aggregator['num_samples']=}")
+                raise Exception
 
     def gather_epoch(
         self,
@@ -1035,34 +1041,42 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         event: Literal["train", "val"],
         n_tokens_infered_max: int,
         folder_out: Path,
+        size: int
     ) -> None:
         self.history = []
         self.epoch_buffer = []
         self.event = event
         self.n_tokens_infered_max = n_tokens_infered_max
         self.folder_out = folder_out
+        self.size = size
         super().__init__()
 
     def add_new_data(
         self,
         bug_ids: List[int],
-        predictions: List[int],
+        predictions: List[float],
         trues: List[int],
         loss: float,
         num_samples: int,
         n_tokens: List[int],
         event: Literal["val", "train"],
     ):
-        for bug_id, prediction, true, n in zip(bug_ids, predictions, trues, n_tokens):
-            self.epoch_buffer.append(
-                {
-                    "bug_id": bug_id,
-                    "prediction": int(np.round(prediction)),
-                    "probability": prediction,
-                    "binary_severity": true,
-                    "n_tokens": n,
-                }
-            )
+        if event == self.event:
+            for bug_id, prediction, true, n in zip(bug_ids, predictions, trues, n_tokens):
+                self.epoch_buffer.append(
+                    {
+                        "bug_id": bug_id,
+                        "prediction": int(np.round(prediction)),
+                        "probability": prediction,
+                        "binary_severity": true,
+                        "n_tokens": n,
+                        "loss":loss,
+                        "event": event,
+                    }
+                )
+            if len(self.epoch_buffer) > self.size: 
+                logger.info(f"Expecting to see in one epoch only one time the dataset with {self.size=}, not {len(self.epoch_buffer)=}")
+                raise Exception
 
     def gather_epoch(
         self,
@@ -1071,6 +1085,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         control: "trf.TrainerControl",
         **kwargs,
     ):
+        logger.info(f"gather_epoch {state.epoch=}")
         if state.epoch < 1 or len(self.epoch_buffer) == 0:
             return
         for i in range(len(self.epoch_buffer)):
@@ -1101,6 +1116,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         control: "trf.TrainerControl",
         **kwargs,
     ):
+        logger.info(f"on_epoch_end {state.epoch=}")
         if "train" == self.event:
             # logger.info(f"gather_epoch {state.epoch} {self.event}")
             self.gather_epoch(args, state, control, **kwargs)
@@ -1113,6 +1129,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         control: "trf.TrainerControl",
         **kwargs,
     ):
+        logger.info(f"on_evaluate {state.epoch=}")
         if "val" == self.event:
             # logger.info(f"gather_epoch {state.epoch} {self.event}")
             self.gather_epoch(args, state, control, **kwargs)
@@ -1120,13 +1137,13 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
 
 
 class CustomTrainer(trl.SFTTrainer):
-    def __init__(self, tokenizer, callbacks: List, *args, **kwargs):
+    def __init__(self, tokenizer, callbacks: List, weighted: bool = False, *args, **kwargs):
         self.tokenizer = tokenizer
-        self.loss_fn = torch.nn.functional.binary_cross_entropy
         self.callbacks = callbacks
         self.events = {c.event for c in callbacks}
+        self.weighted = weighted
         super().__init__(callbacks=callbacks, *args, **kwargs)
-
+        logger.info(f"{len(self.get_train_dataloader())=} {len(self.get_eval_dataloader())=}")
     def prediction_step(
         self, model, inputs, prediction_loss_only: bool, ignore_keys=None
     ) -> Tuple:
@@ -1139,21 +1156,21 @@ class CustomTrainer(trl.SFTTrainer):
         label = inputs["label"]
         bug_id = inputs["bug_id"]
         prediction = model(input)[0]
-        prediction = torch.nn.functional.sigmoid(prediction)
-        loss = self.loss_fn(
+        prediction_sigmoid = torch.nn.functional.sigmoid(prediction.detach().cpu())
+        loss = torch.nn.functional.binary_cross_entropy_with_logits(
             input=prediction,
             target=label,
         )
-        predictions = prediction.reshape((-1,)).tolist()
+        prediction_sigmoid = np.array(prediction_sigmoid.reshape((-1,)).tolist())
         trues = label.reshape((-1,)).tolist()
         for c in self.callbacks:
             c.add_new_data(
                 bug_id,
-                predictions=predictions,
+                predictions=prediction_sigmoid.tolist(),
                 trues=trues,
                 loss=loss.sum().item(),
                 n_tokens=n_tokens,
-                event="pred",
+                event="val",
                 num_samples=len(bug_id),
             )
         del loss
@@ -1184,12 +1201,8 @@ class CustomTrainer(trl.SFTTrainer):
         label = inputs["label"]
         bug_id = inputs["bug_id"]
         prediction = model(input)[0]
-        prediction = torch.nn.functional.sigmoid(prediction)
-        loss = self.loss_fn(
-            input=prediction,
-            target=label,
-        )
-        predictions = prediction.reshape((-1,)).tolist()
+        loss = torch.nn.functional.binary_cross_entropy_with_logits(input=prediction,target=label)
+        predictions = torch.nn.functional.sigmoid(prediction.detach().cpu().reshape((-1,))).tolist()
         trues = label.reshape((-1,)).tolist()
         for c in self.callbacks:
             c.add_new_data(
@@ -1202,7 +1215,16 @@ class CustomTrainer(trl.SFTTrainer):
                 num_samples=len(bug_id),
             )
         return loss
-
+    def _get_train_sampler(self) -> Any | None:
+        dataset: "Dataset" = self.train_dataset
+        if self.weighted:
+            weights = dataset.get_weights()
+            return torch.utils.data.WeightedRandomSampler(
+                weights=weights,
+                num_samples=len(weights),
+                replacement=False,
+            )
+        return super()._get_train_sampler()
 
 class Dataset(torch.utils.data.Dataset):
     def __init__(
@@ -1219,7 +1241,12 @@ class Dataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.l_dict)
-
+    def get_weights(self) -> List[float]:
+        num_tot = len(self.l_dict)
+        num_1 = sum(e['binary_severity'] for e in self.l_dict)
+        probas = {0:num_1/num_tot}
+        probas[1] = 1-probas[0]
+        return [probas[int(e['binary_severity'])] for e in self.l_dict]
     def __getitem__(self, i: int) -> Dict[str, "torch.Tensor"]:
         elem = {**self.l_dict[i]}
         input = elem[self.input_field]
@@ -1266,6 +1293,7 @@ def main_qlora_classification(
     lim_size: int = -1,
     id: str = "",
     use_cpu: bool = False,
+    tr_weighted_sampling: bool = False,
 ) -> Tuple["np.ndarray", List[float], "pd.DataFrame"]:
     """
     Perform training and fine-tuning of a model for causal reasoning using LoRA.
@@ -1319,14 +1347,15 @@ def main_qlora_classification(
         model_name=model_name,
         token=token,
         base_class=trf.AutoModelForSequenceClassification,
-        quant=not use_cpu,
+        quant=True,
+        load_in_8bit=False
     )
     logger.info("peft.LoraConfig")
     peft_config = peft.LoraConfig(  # type: ignore
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
         r=lora_r,
-        bias="none",
+        bias="none", #<--- replace "lora_only"
         inference_mode=False,
         task_type="SEQ_CLS",
     )
@@ -1334,9 +1363,10 @@ def main_qlora_classification(
     model.config.pad_token_id = 0
     # https://github.com/huggingface/transformers/blob/ce2e7ef3d96afaf592faf3337b7dd997c7ad4928/src/transformers/models/llama/modeling_llama.py#L906
     logger.info("get_peft_model")
-    # model = peft.get_peft_model(model, peft_config)# type: ignore
-    # model.print_trainable_parameters()
+    # model = peft.prepare_model_for_int8_training(model)
+    # model = peft.get_peft_model(model, peft_config)
     print(model)
+    # model.print_trainable_parameters()
     # create datasets
     logger.info("generate_dataset")
     tr_data, val_data, train_path, valid_path = generate_dataset(
@@ -1354,12 +1384,14 @@ def main_qlora_classification(
     real_lim_size_tr = lim_size
     if lim_size == -1:
         real_lim_size_tr = len(tr_data)
-    tr_data = Dataset(tokenizer, tr_data[:real_lim_size_tr])
+    tr_data = tr_data[:real_lim_size_tr]
     real_lim_size_val = lim_size
     if lim_size == -1:
         real_lim_size_val = len(val_data)
-    val_data = Dataset(tokenizer, val_data[:real_lim_size_val])
-    logger.info("training QLORA")
+    val_data = val_data[:real_lim_size_val]
+    tr_data = Dataset(tokenizer, tr_data)
+    val_data = Dataset(tokenizer, val_data)
+    logger.info(f"training QLORA {len(tr_data)} {len(val_data)}")
     # Set training parameters
     training_arguments = trf.TrainingArguments(
         output_dir=str(folder_out.resolve()),
@@ -1387,21 +1419,21 @@ def main_qlora_classification(
             1: "SEVERE",
         }
     logger.info("Set supervised fine-tuning parameters")
-    loss_aggregator_tr = LossAggregator(event="train")
+    loss_aggregator_tr = LossAggregator(event="train",size=len(tr_data))
     predictions_aggregator_tr = PredictionAggregator(
-        event="train", n_tokens_infered_max=limit_tokens, folder_out=folder_out
+        event="train", n_tokens_infered_max=limit_tokens, folder_out=folder_out,size=len(val_data)
     )
-    loss_aggregator_val = LossAggregator(event="val")
+    loss_aggregator_val = LossAggregator(event="val",size=len(val_data))
     predictions_aggregator_val = PredictionAggregator(
-        event="val", n_tokens_infered_max=limit_tokens, folder_out=folder_out
+        event="val", n_tokens_infered_max=limit_tokens, folder_out=folder_out,size=len(val_data)
     )
     trainer = CustomTrainer(  # type: ignore
         model=model,
         train_dataset=tr_data,
         eval_dataset=val_data,
-        peft_config=peft_config,  # type: ignore
         tokenizer=tokenizer,
         args=training_arguments, 
+        peft_config=peft_config,  # type: ignore
         packing=False,
         max_seq_length=limit_tokens + 5,
         formatting_func=lambda x: x,
@@ -1412,163 +1444,14 @@ def main_qlora_classification(
             loss_aggregator_val,
             predictions_aggregator_val,
         ],
+        weighted=tr_weighted_sampling,
     )
-    for name, module in trainer.model.named_modules():
-        if "norm" in name:
-            module = module.to(torch.float32)  # type: ignore
     logger.info(f"{trainer.args._n_gpu=}")
-
-    trainer.train(resume_from_checkpoint=True)
+    with torch.autocast("cuda"): 
+        trainer.train(resume_from_checkpoint=False)
     with open(folder_out / "log_history.json", "w") as fp:
         json.dump(trainer.state.log_history, fp)
 
-
-@print_args
-def main_qlora_generation(
-    file_examples: Path,
-    file_split: Path,
-    folder_out: Path,
-    lora_alpha: int = 16,
-    lora_dropout: float = 0.1,
-    lora_r: int = 64,
-    model_name: str = "meta-llama/Llama-2-13b-chat-hf",
-    token: str = "",
-    field_label: str = "binary_severity",
-    field_input: str = "llama_tokenized_description",
-    num_train_epochs: int = 1,
-    tr_bs: int = 1,
-    val_bs: int = 1,
-    optim: str = "paged_adamw_32bit",
-    save_steps: int = 25,
-    logging_steps: int = 25,
-    learning_rate: float = 2e-4,
-    weight_decay: float = 0.001,
-    fp16: bool = False,
-    bf16: bool = False,
-    max_grad_norm: float = 0.3,
-    max_steps: int = -1,
-    warmup_ratio: float = 0.03,
-    group_by_length: bool = True,
-    lr_scheduler_type: str = "constant",
-    eval_steps: int = 20,
-    limit_tokens: int = 7364,
-    new_model_name: str = "",
-):
-    """
-    Perform training and fine-tuning of a model for causal reasoning using LoRA.
-    Doc: https://miro.medium.com/v2/resize:fit:4800/format:webp/1*rOW5plKBuMlGgpD0SO8nZA.png
-
-    # Arguments
-        - new_model_name: str, name of the new model pretrained
-        - file_examples: Path, a file path to input data.
-        - folder_out: Path, a Path object representing the output folder for the results.
-        - model_name: str, the name or path of the pretrained model to use. Default: "meta-llama/Llama-2-13b-chat-hf"
-        - token: str, a token string. Default: ""
-        - lora_alpha: int, scaling factor for the weight matrices. alpha is a scaling factor that adjusts the magnitude of the combined result (base model output + low-rank adaptation). Default: 16
-        - lora_dropout: float, dropout probability of the LoRA layers. This parameter is used to avoid overfitting. Default: 0.1
-        - lora_r: int, this is the dimension of the low-rank matrix. Default: 64. It means for a layer initialy of size d_in x d_out we will have 2 lora layers of size d_in x r and r x d_out reducing the number of parameters
-        - num_train_epochs: int, the number of training epochs. Default: 1
-        - tr_bs: int, batch size for training. Default: 4
-        - val_bs: int, batch size for validation. Default: 4
-        - optim: str, optimization method. Possible values include "paged_adamw_32bit" and other optimization methods specific to the project. Default: "paged_adamw_32bit"
-        - save_steps: int, the frequency of saving model checkpoints during training. Default: 25
-        - logging_steps: int, the frequency of logging training progress. Default: 25
-        - learning_rate: float, the learning rate for training. Default: 2e-4
-        - weight_decay: float, the weight decay value for regularization. Default: 0.001
-        - fp16: bool, whether to use mixed-precision training with 16-bit floats. Default: False
-        - bf16: bool, whether to use 16-bit bfloat16 format. Default: False
-        - max_grad_norm: float, the maximum gradient norm for gradient clipping. Default: 0.3
-        - max_steps: int, the maximum number of training steps. Default: -1 (unlimited)
-        - warmup_ratio: float, the warmup ratio for learning rate scheduling. Default: 0.03
-        - group_by_length: bool, a flag to group data by sequence length. Default: True
-        - lr_scheduler_type: str, type of learning rate scheduler. Default: "constant"
-        - eval_steps: int, the frequency of evaluating the model during training. Default: 20
-        - train_size: float = 0.3, the size of the training dataset
-    """
-    logger.info("main_qlora_generation")
-    if token != "":
-        huggingface_hub.login(token=token)
-    if not folder_out.exists():
-        folder_out.mkdir(parents=True)
-
-    logger.info("initialize_model_inference")
-    tokenizer, model = initialize_model_inference(model_name, token, return_model=True)  # type: ignore
-    model.config.use_cache = False
-    model.config.pretraining_tp = 1
-    tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right"
-    logger.info("config elements")
-    peft_config = peft.LoraConfig(  # type: ignore
-        lora_alpha=lora_alpha,
-        lora_dropout=lora_dropout,
-        r=lora_r,
-        bias="none",
-        inference_mode=False,
-        task_type="CAUSAL_LM",
-    )
-    # Set training parameters
-    training_arguments = trf.TrainingArguments(
-        output_dir=str(folder_out.resolve()),
-        num_train_epochs=num_train_epochs,
-        per_device_train_batch_size=tr_bs,
-        gradient_accumulation_steps=val_bs,
-        optim=optim,
-        save_steps=save_steps,
-        logging_steps=logging_steps,
-        learning_rate=learning_rate,
-        weight_decay=weight_decay,
-        fp16=fp16,
-        bf16=bf16,
-        max_grad_norm=max_grad_norm,
-        max_steps=max_steps,
-        warmup_ratio=warmup_ratio,
-        group_by_length=group_by_length,
-        lr_scheduler_type=lr_scheduler_type,
-        report_to="all",  # type: ignore
-        evaluation_strategy="steps",
-        eval_steps=eval_steps,
-    )
-    # create datasets
-    logger.info("generate_dataset")
-    train_data, val_data, train_path, valid_path = generate_dataset(
-        folder_out=folder_out.parent,
-        file_examples=file_examples,
-        file_split=file_split,
-        field_input=field_input,
-        token=token,
-        model_name=model_name,
-        limit_tokens=limit_tokens,
-        id=f"_{model_name}_{limit_tokens}",
-    )
-    logger.info(f"Using {train_path} {valid_path}")
-    logger.info("load_dataset")
-    for i in range(len(train_data)):
-        train_data[i]["input"] += "\n" + str(train_data[i][field_label])
-    for i in range(len(val_data)):
-        val_data[i]["input"] += "\n" + str(val_data[i][field_label])
-    train_dataset = datasets.Dataset.from_list(train_data)  # type: ignore
-    valid_dataset = datasets.Dataset.from_list(val_data)  # type: ignore
-    # Set supervised fine-tuning parameters
-    logger.info("Set supervised fine-tuning parameters")
-    trainer = CustomTrainer(  # type: ignore
-        model=model,
-        train_dataset=train_dataset,  # type: ignore
-        eval_dataset=valid_dataset,  # type: ignore
-        peft_config=peft_config,  # type: ignore
-        dataset_text_field="input",
-        tokenizer=tokenizer,
-        args=training_arguments,
-        packing=False,
-        max_seq_length=limit_tokens + 10,
-    )
-    logger.info("Starting training QLORA")
-    trainer.train()
-    logger.info("Saving trained QLORA model")
-    if new_model_name != "":
-        output_dir = folder_out / "trained_model"
-        output_dir.mkdir()
-        trainer.model.save_pretrained(output_dir)
-        trainer.model.push_to_hub(new_model_name)
 
 
 def get_max_tokens(
@@ -1632,6 +1515,7 @@ def get_llama2_embeddings(
     token: str = default_token,
     use_cpu: bool = False,
     limit_tokens: int = -1,
+    override: bool = False,
 ):
     """From a json file with the description use llama2 to generate the embeddings for each data sample. The intent of this function is to be called with multiple nodes on a slurm server to have faster results
 
@@ -1662,6 +1546,7 @@ def get_llama2_embeddings(
         get_literal_value(pooling_op, PoolingOperationCode)
     )
     tokenizer, model = initialize_model_inference(model_name, token, hidden_states=True, return_dict=True, quant=not use_cpu)  # type: ignore
+    model.eval()
     with open(path_data_preprocessed) as f:
         data_preprocessed = json.load(f)
     start, end = generate_seeds(
@@ -1680,19 +1565,17 @@ def get_llama2_embeddings(
         lambda layer_id: folder_out
         / f"embeddings_chunk{id_pred}_layer_{layer_id}_{start}.hdf5"
     )
-    if not path_missing.exists() and get_file_path(layer_id).exists():
-        logger.info("Nothing to do, file is already here and no missing")
-        return
-    if path_missing.exists():
-        logger.info("Restart from missing")
-        with open(path_missing) as fp:
-            data = json.load(fp)
-
     print(f"Running for {start=} {end=}")
     folder_predictions = folder_out
     folder_predictions.mkdir(exist_ok=True, parents=True)
-    Lmissing = []
+    ids_already_there = set()
+    if get_file_path(layer_id).exists():
+        with h5py.File(get_file_path(layer_id), "r") as fp:
+            ids_already_there = set(list(fp.keys()))
     for i, d in tqdm.tqdm(enumerate(data), total=len(data)):
+        already_computed = str(d["bug_id"]) in ids_already_there
+        if already_computed and not override:
+            continue
         tokenized_full_text = tokenizer.encode(d["description"])
         limit_tokens_sample = limit_tokens
         if limit_tokens == -1:
@@ -1701,22 +1584,23 @@ def get_llama2_embeddings(
         logger.info(f"{len(tokenized_full_text)=}")
         try:
             input_tensor = torch.tensor([tokenized_full_text], dtype=torch.int32)
-            embeddings = model(input_tensor)  # type: ignore
-            embedding = embeddings.hidden_states[layer_id]
-            pooled_embedding = np.array(
-                pooling_fn(embedding).tolist()[0], dtype=np.float32
-            )
+            with torch.no_grad():
+                embeddings = model(input_tensor)  # type: ignore
+                embedding = embeddings.hidden_states[layer_id]
+                pooled_embedding = np.array(
+                    pooling_fn(embedding).tolist()[0], dtype=np.float32
+                )
             with h5py.File(get_file_path(layer_id), "a") as fp:
-                fp.create_dataset(str(d["bug_id"]), data=pooled_embedding, dtype="f")
+                id = str(d["bug_id"])
+                if already_computed:
+                    del fp[id]
+                fp.create_dataset(id, data=pooled_embedding, dtype="f")
             del embeddings
             del input_tensor
         except torch.cuda.OutOfMemoryError as e:
             logger.info(f"Error for {len(tokenized_full_text)} tokens: {e}")
-            Lmissing.append(d)
         gc.collect()
         torch.cuda.empty_cache()  # type: ignore
-    with open(path_missing, "w") as fp:
-        json.dump(Lmissing, fp)
 
 
 @print_args
@@ -2089,15 +1973,10 @@ def generate_train_test_split(path_data: str, folder_out: str, train_percent: fl
     negative_examples = [d for d in dataset if d["binary_severity"] == 0]
     num_positive_train = int(train_percent * len(positive_examples))
     num_negative_train = int(train_percent * len(negative_examples))
-    num_train_per_severity = min(num_positive_train, num_negative_train)
     balanced_train_set = (
-        positive_examples[:num_train_per_severity]
-        + negative_examples[:num_train_per_severity]
+        positive_examples[:num_positive_train]
+        + negative_examples[:num_negative_train]
     )
-    logger.info(
-        f"{num_train_per_severity=}, {len(positive_examples[:num_train_per_severity])=}, {len(negative_examples[:num_train_per_severity])=}"
-    )
-    assert len(balanced_train_set) == num_train_per_severity * 2
     remaining_examples = {
         1: positive_examples[num_positive_train:],
         0: negative_examples[num_negative_train:],

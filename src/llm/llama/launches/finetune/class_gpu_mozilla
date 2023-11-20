@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=v100l:1 # on cedar choose one v100l gpu but can be also p100l
-#SBATCH --cpus-per-task=1 # change this parameter to 2,4,6,... and increase "--num_workers" accordingly to see the effect on performance
-#SBATCH --time=07-00:00:00           # duration (JJ-HH:MM:SS)
+#SBATCH --cpus-per-task=4 # change this parameter to 2,4,6,... and increase "--num_workers" accordingly to see the effect on performance
+#SBATCH --time=07-00:00:00
 #SBATCH --output=log-%x-%j.out
 #SBATCH --error=log-%x-%j.err
 #SBATCH --mail-user=robin.moine456@gmail.com
 #SBATCH --mail-type=ALL
-#SBATCH --mem=8G
+#SBATCH --mem=16G
 
 # syntax of 
 # Capture the start time
@@ -50,7 +50,7 @@ model_name="meta-llama/Llama-2-7b-chat-hf"
 learning_rate=0.00001
 limit_tokens=500
 tr_bs=4
-num_train_epochs=10
+num_train_epochs=500
 cd /project/def-aloise/$USER/
 # config_file=/project/def-aloise/$USER/default_config.yaml
 # export CUDA_VISIBLE_DEVICES=1,2,3

@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sn
 from matplotlib.collections import QuadMesh
-
+import warnings
 
 def get_new_fig(fn, figsize=[9, 9]):
     """Init graphics"""
@@ -242,7 +242,8 @@ def pp_matrix(
     ax.set_title(title)
     ax.set_xlabel(xlbl)
     ax.set_ylabel(ylbl)
-    plt.tight_layout()  # set layout slim
+    with warnings.catch_warnings():
+        plt.tight_layout()  # set layou*t slim
     return ax
 
 
