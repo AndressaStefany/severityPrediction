@@ -1663,14 +1663,16 @@ def merge_data_embeddings(
         json.dump(L, fp)
 
 
-def get_nn_classifier(trial: "optuna.Trial", input_size, output_size: int = 1):
+def get_nn_classifier(trial: "optuna.Trial", 
+                      input_size, 
+                      output_size: int = 1,
+                      dropout_layer: Optional[bool]=True):
     activation_functions = {
         'relu': nn.ReLU,
         'leaky_relu': nn.LeakyReLU,
         'tanh': nn.Tanh,
         'elu': nn.ELU,
         'prelu': nn.PReLU,
-        # 'linear': nn.Linear
     }
     n_layers = trial.suggest_int("n_layers", 2, 5)
     layers = []
@@ -1685,6 +1687,12 @@ def get_nn_classifier(trial: "optuna.Trial", input_size, output_size: int = 1):
         function = trial.suggest_categorical(f"layer_function_{i}", list(activation_functions.keys()))
         layers.append(nn.Linear(in_features, out_features))
         layers.append(activation_functions[function]())
+        
+        if dropout_layer:
+            dropout_rate = trial.suggest_categorical(f"dropout_rate_l{i}", [0.2, 0.3, 0.4, 0.5])
+            if i < n_layers - 1:
+                layers.append(nn.Dropout(p=dropout_rate))
+        
         in_features = out_features
     # Add the last layer
     layers.append(nn.Linear(in_features, output_size))
@@ -1779,19 +1787,32 @@ def train_test_classifier(trial: 'optuna.Trial',
     num_epochs = 200
     total_samples = len(train_dict)
     loss_train_list, loss_val_list, loss_test_list = [], [], []
-    conf_matrix_val_list = []
+    conf_matrix_train_list, conf_matrix_val_list = [], []
     n_epochs_stop = 100
     min_val_loss = np.Inf
     early_stop = False
     try:
         for epoch in range(num_epochs):
             total_loss = 0
+            train_result_list = []
             if undersampling:
                 balanced_train_dict = dynamic_undersampling(train_dict)
                 train_dataloader = dt.DataLoader(balanced_train_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
             for i, (bug_ids, inputs, labels) in enumerate(train_dataloader):
                 optimizer.zero_grad()
                 outputs = model(inputs)
+                predicted = (outputs > 0.5).float()
+                result = [
+                        {
+                            "bug_id": bug_id,
+                            "binary_severity": label,
+                            "prediction": prediction[0],
+                        }
+                        for bug_id, label, prediction in zip(
+                            bug_ids.tolist(), labels.tolist(), predicted.tolist()
+                        )
+                    ]
+                train_result_list.extend(result)
                 loss = criterion(outputs, labels.reshape([-1,1]))
                 loss.backward()
                 optimizer.step()
@@ -1811,6 +1832,8 @@ def train_test_classifier(trial: 'optuna.Trial',
                     continue
 
             loss_train_list.append(total_loss/total_samples)
+            conf_matrix, _, _ = compute_metrics_from_list(train_result_list, pred_field="prediction")
+            conf_matrix_train_list.append({f"epoch_{epoch}": conf_matrix.tolist()})
 
             # Validation step
             model.eval()
@@ -1837,7 +1860,7 @@ def train_test_classifier(trial: 'optuna.Trial',
                     total_loss += loss.item()
                 loss_val_list.append(total_loss/len(val_dict))
             conf_matrix, _, _ = compute_metrics_from_list(val_result_list, pred_field="prediction")
-            conf_matrix_val_list.append({f"epoch_{epoch}": conf_matrix})
+            conf_matrix_val_list.append({f"epoch_{epoch}": conf_matrix.tolist()})
             if early_stop:
                 print("Stopped")
                 break
@@ -1876,8 +1899,9 @@ def train_test_classifier(trial: 'optuna.Trial',
         json.dump({"loss_train": loss_train_list,
                    "loss_val": loss_val_list,
                    "loss_test": loss_test_list,
+                   "conf_matrix_train_list": conf_matrix_train_list,
                    "conf_matrix_val_list": conf_matrix_val_list,
-                   "conf_matrix_test": conf_matrix_test}, f)
+                   "conf_matrix_test": conf_matrix_test.tolist()}, f)
 
     weighted_avg_f1 = np.average(f1, weights=test_class_proportion)
     return weighted_avg_f1
