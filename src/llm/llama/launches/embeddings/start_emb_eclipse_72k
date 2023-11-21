@@ -1,0 +1,11 @@
+#/bin/bash
+sbatch /project/def-aloise/rmoine/launches/embeddings/emb_0_eclipse_72k
+sbatch /project/def-aloise/rmoine/launches/embeddings/emb_1_eclipse_72k
+sbatch /project/def-aloise/rmoine/launches/embeddings/emb_2_eclipse_72k
+sbatch /project/def-aloise/rmoine/launches/embeddings/emb_3_eclipse_72k
+sbatch /project/def-aloise/rmoine/launches/embeddings/emb_4_eclipse_72k
+sbatch /project/def-aloise/rmoine/launches/embeddings/emb_5_eclipse_72k
+sbatch /project/def-aloise/rmoine/launches/embeddings/emb_6_eclipse_72k
+sbatch /project/def-aloise/rmoine/launches/embeddings/emb_7_eclipse_72k
+sbatch /project/def-aloise/rmoine/launches/embeddings/emb_8_eclipse_72k
+sbatch /project/def-aloise/rmoine/launches/embeddings/emb_9_eclipse_72k

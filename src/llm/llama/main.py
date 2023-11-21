@@ -254,6 +254,11 @@ def print_args(func):
 
     return inner
 
+def remove_args(func):
+    def inner(*args, **kwargs):
+        return func(**kwargs)
+
+    return inner
 
 def classify(answer: str) -> int:
     """Return 0 if not severe, 1 if severe and -1 if unknown"""
@@ -968,73 +973,6 @@ def generate_dataset(
         return train_data, valid_data, train_path, valid_path
 
 
-class LossAggregator(trf.trainer_callback.TrainerCallback):
-    def __init__(self, event: Literal["train", "val"], size: int) -> None:
-        self.aggregator = {"loss": 0.0, "num_samples": 0}
-        self.history = []
-        self.event = event
-        self.size = size
-        super().__init__()
-
-    def set_loss_fn(self, loss_fn: str):
-        self.loss_fn = loss_fn
-
-    def add_new_data(
-        self,
-        bug_id: List[int],
-        predictions: List[int],
-        trues: List[int],
-        loss: float,
-        num_samples: int,
-        n_tokens: List[int],
-        event: Literal["val", "train"],
-    ):
-        if event == self.event:
-            self.aggregator["loss"] += loss
-            self.aggregator["num_samples"] += num_samples
-            if not (self.aggregator["num_samples"] < self.size+1):
-                logger.info(f"Expecting to see in one epoch only one time the dataset with {self.size=}, not {self.aggregator['num_samples']=}")
-                raise Exception
-
-    def gather_epoch(
-        self,
-        args: "trf.TrainingArguments",
-        state: "trf.TrainerState",
-        control: "trf.TrainerControl",
-        **kwargs,
-    ):
-        if state.epoch < 1:
-            return
-        loss_dict: dict = {**self.aggregator}
-        self.aggregator = {"loss": 0.0, "num_samples": 0}
-        loss_dict["epoch"] = state.epoch
-        self.history.append(loss_dict)
-
-    def on_epoch_end(
-        self,
-        args: "trf.TrainingArguments",
-        state: "trf.TrainerState",
-        control: "trf.TrainerControl",
-        **kwargs,
-    ):
-        if "train" == self.event:
-            # logger.info(f"gather_epoch {state.epoch} {self.event}")
-            self.gather_epoch(args, state, control, **kwargs)
-        return super().on_epoch_end(args, state, control, **kwargs)
-
-    def on_evaluate(
-        self,
-        args: "trf.TrainingArguments",
-        state: "trf.TrainerState",
-        control: "trf.TrainerControl",
-        **kwargs,
-    ):
-        if "val" == self.event:
-            # logger.info(f"gather_epoch {state.epoch} {self.event}")
-            self.gather_epoch(args, state, control, **kwargs)
-        return super().on_evaluate(args, state, control, **kwargs)
-
-
 class PredictionAggregator(trf.trainer_callback.TrainerCallback):
     def __init__(
         self,
@@ -1044,7 +982,8 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         size: int
     ) -> None:
         self.history = []
-        self.epoch_buffer = []
+        self.buffer = {}
+        self.current_epoch = 1
         self.event = event
         self.n_tokens_infered_max = n_tokens_infered_max
         self.folder_out = folder_out
@@ -1060,10 +999,14 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         num_samples: int,
         n_tokens: List[int],
         event: Literal["val", "train"],
+        epoch: float,
     ):
         if event == self.event:
             for bug_id, prediction, true, n in zip(bug_ids, predictions, trues, n_tokens):
-                self.epoch_buffer.append(
+                epoch_int = int(epoch)
+                if epoch_int not in self.buffer:
+                    self.buffer[epoch_int] = []
+                self.buffer[epoch_int].append(
                     {
                         "bug_id": bug_id,
                         "prediction": int(np.round(prediction)),
@@ -1072,68 +1015,30 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                         "n_tokens": n,
                         "loss":loss,
                         "event": event,
+                        "epoch": epoch,
                     }
                 )
-            if len(self.epoch_buffer) > self.size: 
-                logger.info(f"Expecting to see in one epoch only one time the dataset with {self.size=}, not {len(self.epoch_buffer)=}")
-                raise Exception
-
-    def gather_epoch(
-        self,
-        args: "trf.TrainingArguments",
-        state: "trf.TrainerState",
-        control: "trf.TrainerControl",
-        **kwargs,
-    ):
-        logger.info(f"gather_epoch {state.epoch=}")
-        if state.epoch < 1 or len(self.epoch_buffer) == 0:
-            return
-        for i in range(len(self.epoch_buffer)):
-            self.epoch_buffer[i]["epoch"] = state.epoch
-        conf_matrix, f1, data_full = compute_metrics_from_list(
-            fields_data=self.epoch_buffer,
-            pred_field="prediction",
-            n_tokens_infered_max=self.n_tokens_infered_max,
-        )
-        compute_metrics_from_files(
-            conf_matrix=conf_matrix,
-            f1=f1,
-            folder_out=self.folder_out,
-            data_full=data_full,
-            true_field="binary_severity",
-            pred_field="prediction",
-            n_tokens_infered_max=self.n_tokens_infered_max,
-            n_tokens_show_max=self.n_tokens_infered_max,
-            id=f"_epoch_{str(state.epoch).replace('.','-')}_{self.event}",
-        )
-        # logger.info(f"{conf_matrix=}")
-        self.epoch_buffer = []
-
-    def on_epoch_end(
-        self,
-        args: "trf.TrainingArguments",
-        state: "trf.TrainerState",
-        control: "trf.TrainerControl",
-        **kwargs,
-    ):
-        logger.info(f"on_epoch_end {state.epoch=}")
-        if "train" == self.event:
-            # logger.info(f"gather_epoch {state.epoch} {self.event}")
-            self.gather_epoch(args, state, control, **kwargs)
-        return super().on_epoch_end(args, state, control, **kwargs)
-
-    def on_evaluate(
-        self,
-        args: "trf.TrainingArguments",
-        state: "trf.TrainerState",
-        control: "trf.TrainerControl",
-        **kwargs,
-    ):
-        logger.info(f"on_evaluate {state.epoch=}")
-        if "val" == self.event:
-            # logger.info(f"gather_epoch {state.epoch} {self.event}")
-            self.gather_epoch(args, state, control, **kwargs)
-        return super().on_evaluate(args, state, control, **kwargs)
+                if len(self.buffer[epoch_int]) >= self.size: 
+                    logger.info(f"Last batch had size {num_samples} with {bug_ids=}\nExpecting to see in one epoch only one time the dataset with {self.size=}, not {len(self.buffer[epoch_int])=}")
+                    conf_matrix, f1, data_full = compute_metrics_from_list(
+                        fields_data=self.buffer[epoch_int],
+                        pred_field="prediction",
+                        n_tokens_infered_max=self.n_tokens_infered_max,
+                    )
+                    id = f"_epoch_{str(epoch_int).replace('.','-')}_{self.event}"
+                    compute_metrics_from_files(
+                        conf_matrix=conf_matrix, 
+                        f1=f1,
+                        folder_out=self.folder_out,
+                        data_full=data_full,
+                        true_field="binary_severity",
+                        pred_field="prediction",
+                        n_tokens_infered_max=self.n_tokens_infered_max,
+                        n_tokens_show_max=self.n_tokens_infered_max,
+                        id=id,
+                    )
+                    with open(self.folder_out / f"pred_aggr{id}.json", "w") as fp:
+                        json.dump(self.buffer,fp)
 
 
 class CustomTrainer(trl.SFTTrainer):
@@ -1172,6 +1077,7 @@ class CustomTrainer(trl.SFTTrainer):
                 n_tokens=n_tokens,
                 event="val",
                 num_samples=len(bug_id),
+                epoch=self.state.epoch,
             )
         del loss
         del prediction
@@ -1213,10 +1119,11 @@ class CustomTrainer(trl.SFTTrainer):
                 n_tokens=n_tokens,
                 event="train",
                 num_samples=len(bug_id),
+                epoch=self.state.epoch,
             )
         return loss
     def _get_train_sampler(self) -> Any | None:
-        dataset: "Dataset" = self.train_dataset
+        dataset: "Dataset" = self.train_dataset# type: ignore
         if self.weighted:
             weights = dataset.get_weights()
             return torch.utils.data.WeightedRandomSampler(
@@ -1272,16 +1179,16 @@ class DataCollator(trf.data.DataCollatorForTokenClassification):
         bug_id = [e["bug_id"] for e in features]
         return {"input": inputs, "label": labels, "bug_id": bug_id}
 
-
+@remove_args
 @print_args
 def main_qlora_classification(
-    dataset_choice: DatasetName,
+    dataset_choice: DatasetName,# type: ignore
     folder_out: Path = default_folder_data,
     folder_data: Path = default_folder_data,
     lora_alpha: int = 16,
     lora_dropout: float = 0.1,
     lora_r: int = 64,
-    model_name: str = default_model,
+    model_name: str = default_model,# type: ignore
     token: str = default_token,
     field_input: str = "description",
     num_train_epochs: int = 1,
@@ -1290,11 +1197,11 @@ def main_qlora_classification(
     learning_rate: float = 2e-4,
     limit_tokens: int = 7364,
     mapping_dict: Optional[dict] = None,
-    lim_size: int = -1,
+    lim_size: int = 127,
     id: str = "",
     use_cpu: bool = False,
     tr_weighted_sampling: bool = False,
-) -> Tuple["np.ndarray", List[float], "pd.DataFrame"]:
+) -> Tuple["np.ndarray", List[float], "pd.DataFrame"]:# type: ignore
     """
     Perform training and fine-tuning of a model for causal reasoning using LoRA.
     Doc: https://miro.medium.com/v2/resize:fit:4800/format:webp/1*rOW5plKBuMlGgpD0SO8nZA.png
@@ -1334,7 +1241,7 @@ def main_qlora_classification(
     folder_out.mkdir(parents=True, exist_ok=True)
     folder_data = existing_path(folder_data, is_folder=True)
     assert_valid_token(token)
-    model_name = get_literal_value(model_name)
+    model_name: ModelName = get_literal_value(model_name)
     if token != "":
         huggingface_hub.login(token=token)
     with open(folder_out / "parameters.json", "w") as f:
@@ -1369,13 +1276,16 @@ def main_qlora_classification(
     # model.print_trainable_parameters()
     # create datasets
     logger.info("generate_dataset")
+    model_name_dataset: ModelName = model_name
+    if model_name == "meta-llama/Llama-2-13b-chat-hf":
+        model_name_dataset = "meta-llama/Llama-2-7b-chat-hf"
     tr_data, val_data, train_path, valid_path = generate_dataset(
         folder_out=folder_data,
         folder_data=folder_data,
         field_input=field_input,
         dataset_choice=dataset_choice,
         token=token,
-        model_name=model_name,  # type: ignore
+        model_name=model_name_dataset,  # type: ignore
         id=f"_{model_name}{id}_{limit_tokens}",
         n_tokens_infered_max=limit_tokens,
     )
@@ -1419,11 +1329,9 @@ def main_qlora_classification(
             1: "SEVERE",
         }
     logger.info("Set supervised fine-tuning parameters")
-    loss_aggregator_tr = LossAggregator(event="train",size=len(tr_data))
     predictions_aggregator_tr = PredictionAggregator(
-        event="train", n_tokens_infered_max=limit_tokens, folder_out=folder_out,size=len(val_data)
+        event="train", n_tokens_infered_max=limit_tokens, folder_out=folder_out,size=len(tr_data)
     )
-    loss_aggregator_val = LossAggregator(event="val",size=len(val_data))
     predictions_aggregator_val = PredictionAggregator(
         event="val", n_tokens_infered_max=limit_tokens, folder_out=folder_out,size=len(val_data)
     )
@@ -1439,15 +1347,13 @@ def main_qlora_classification(
         formatting_func=lambda x: x,
         data_collator=DataCollator(tokenizer, False, limit_tokens),
         callbacks=[
-            loss_aggregator_tr,
             predictions_aggregator_tr,
-            loss_aggregator_val,
             predictions_aggregator_val,
         ],
         weighted=tr_weighted_sampling,
     )
     logger.info(f"{trainer.args._n_gpu=}")
-    with torch.autocast("cuda"): 
+    with torch.autocast("cuda"): #type: ignore
         trainer.train(resume_from_checkpoint=False)
     with open(folder_out / "log_history.json", "w") as fp:
         json.dump(trainer.state.log_history, fp)
@@ -1503,7 +1409,7 @@ def get_pooling_operation(pooling_code: "PoolingOperationCode") -> "PoolingFn":
 def get_llama2_embeddings(
     folder_out: str,  # type: ignore
     folder_data: str,  # type: ignore
-    dataset_choice: DatasetName,
+    dataset_choice: DatasetName,#type: ignore
     pooling_op: PoolingOperationCode,
     layer_id: int = -1,
     seed_start: Optional[int] = None,
