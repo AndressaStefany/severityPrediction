@@ -27,6 +27,7 @@ from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
 from string import Template
+import fire
 
 
 # Code from src/llm/llama/main.py
@@ -250,8 +251,12 @@ def pipeline_custom() -> Pipeline:
     """
     return Pipeline(custom_transformations())
     
-    
-def paper_common_transformations() -> List[Tuple[str,FunctionTransformer]]:
+
+def old_extract_x_y(df: pd.DataFrame) -> Tuple:
+    return df['preprocess_desc'].values, df['binary_severity'].values
+
+
+def full_paper_common_transformations() -> List[Tuple[str,FunctionTransformer]]:
     """Reproduces the pipeline of the article of [Lamkanfi et al. Comparing Mining Algorithms for Predicting the Severity of a Reported Bug](https://ieeexplore.ieee.org/abstract/document/5741332?casa_token=dnUxAhCPIfYAAAAA:EdGf86hHjs7WSgDOSKP9EGYDDeJzi2KWT4b9qQhqfAG931MWlbafeZaTlSC3KbwFrhJxIjpfEW4)
     
     In this pipeline, the urls and the codes of the bugs are not removed.
@@ -259,15 +264,27 @@ def paper_common_transformations() -> List[Tuple[str,FunctionTransformer]]:
     # Output
         - List[Tuple[str,FunctionTransformer]], the common transformations to apply
     """
-    def extract_x_y(df: pd.DataFrame) -> Tuple:
-        return df['preprocess_desc'].values, df['binary_severity'].values
     return [
         ('bug_severity_filter', FunctionTransformer(filter_bug_severity, kw_args={'severity_col': 'bug_severity'})),
         ('binary_feature', FunctionTransformer(create_binary_feature, kw_args={'severity_col': 'bug_severity'})),
         ('preprocessor', FunctionTransformer(preprocess_text, kw_args={'col_to_process': 'description'})),
-        ('extract_x_y', FunctionTransformer(extract_x_y))
+        ('extract_x_y', FunctionTransformer(old_extract_x_y))
     ]
+    
+def extract_x_y(df: pd.DataFrame) -> Tuple:
+    return df['stemmed_description'].values, df['binary_severity'].values
 
+def paper_common_transformations() -> List[Tuple[str,FunctionTransformer]]:
+    """Reproduces the pipeline of the article of [Lamkanfi et al. Comparing Mining Algorithms for Predicting the Severity of a Reported Bug](https://ieeexplore.ieee.org/abstract/document/5741332?casa_token=dnUxAhCPIfYAAAAA:EdGf86hHjs7WSgDOSKP9EGYDDeJzi2KWT4b9qQhqfAG931MWlbafeZaTlSC3KbwFrhJxIjpfEW4)
+    
+    In this pipeline, the urls and the codes of the bugs are not removed. We assume that all preprocessing and stemming has been already done and that we have binary_severity and stemmed_description
+    
+        
+    # Output
+        - List[Tuple[str,FunctionTransformer]], the common transformations to apply
+    """
+    return [('extract_x_y', FunctionTransformer(extract_x_y))]
+    
 def pipeline_naive_bayes(is_binomial: bool = False) -> Tuple[Pipeline,CountVectorizer]:
     """Get the pipeline of the project using the naive bayes methods
 
@@ -366,10 +383,38 @@ def cross_validation_with_classifier(X: np.ndarray, y: np.ndarray, n_splits: int
 
     return pd.DataFrame(df_results)
 
+def train_valid_test(X: np.ndarray, y: np.ndarray, split: Dict[str,List[int]], train_fun: Optional[Callable] = None, num_rep: int = 5, **classifier_args):
+    if train_fun is None:
+        train_fun = partial_train
+    classifier = get_classifier(**classifier_args)
+    df_results = []
+    for seed in range(num_rep):
+        print(f"Seed {seed}: ",end="")
+        train_indices = split["tr"]
+        test_indices = split["val"]
+        y_train, y_train_pred = train_fun(X,y,classifier,train_indices)
+        train_accuracy = accuracy_score(y_train, y_train_pred.round(decimals=0).astype(int))
+        
+        del y_train_pred
+        del y_train
+        X_test = X[test_indices]
+        y_pred = classifier.predict(X_test)
+        y_test = y[test_indices]
+        fpr, tpr, thresholds = roc_curve(y_test, y_pred)
+        roc_auc = auc(fpr, tpr)
+
+        test_accuracy = accuracy_score(y_test, y_pred.round(decimals=0).astype(int))
+        df_results.append({ "seed": seed, "classifier": classifier.__class__.__name__, "train_fun": train_fun.__name__, "train_accuracy": train_accuracy, "test_accuracy": test_accuracy , "fold_id": 0, "roc_auc": roc_auc, **classifier_args})
+        
+    return pd.DataFrame(df_results)
+        
+    
 def save_data_to_disk(pipeline_fn: Callable, folder: Path, id: str = "", do_print: bool = False, dataset_choice: DatasetName=default_datasetname):
     dataset_choice = get_dataset_choice(dataset_choice)
-    with open(folder / f'{dataset_choice}.csv', 'r') as f:
-        bug_reports = np.genfromtxt(f, delimiter=',', names=True, dtype='int,str,int,str,str')
+    bug_reports = pd.read_json(folder / f'{dataset_choice}.json')
+    bug_reports.loc[:,"description"] = bug_reports.loc[:,"stemmed_description"]
+    bug_reports.loc[:,"preprocess_desc"] = bug_reports.loc[:,"stemmed_description"]
+    
     
     if do_print:
         print(bug_reports.info())
@@ -395,10 +440,10 @@ def read_data_from_disk(folder: Path, id: str = "", full: bool = True):
     y = np.load(folder / f"y_{id}.npy")
     return X,y
 
-def generate_data(data_path: Path):
-    save_data_to_disk(lambda :pipeline_naive_bayes(is_binomial=True),data_path,id="nb_bino")
-    save_data_to_disk(lambda :pipeline_naive_bayes(is_binomial=False),data_path,id="nb_non_bino")
-    save_data_to_disk(pipeline_1NN_SVM,data_path,id="svm_knn")
+def generate_data(data_path: Path, dataset: DatasetName):
+    save_data_to_disk(lambda :pipeline_naive_bayes(is_binomial=True),data_path,id="nb_bino",dataset_choice=dataset)
+    save_data_to_disk(lambda :pipeline_naive_bayes(is_binomial=False),data_path,id="nb_non_bino",dataset_choice=dataset)
+    save_data_to_disk(pipeline_1NN_SVM,data_path,id="svm_knn",dataset_choice=dataset)
 def get_classifier(classifier_name: str,**kwargs):
     if classifier_name == "BernoulliNB":
         return BernoulliNB(**kwargs)
@@ -468,7 +513,7 @@ class TrialAdapter:
             return self.args[args[0]] #type: ignore
 
 
-def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None, trial_mode: bool = True, num_rep: int = 5):
+def run_optuna(trial: optuna.Trial, dataset: str, models: Optional[List[ClassifierName]] = None, trial_mode: bool = True, num_rep: int = 5):
     if trial_mode:
         trial = TrialAdapter(trial=trial) #type: ignore
     else:
@@ -479,13 +524,13 @@ def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None
     classifier_name = trial.suggest_categorical("classifier_name",models)
     kwargs = {}
     if classifier_name == "BernoulliNB":
-        id="nb_bino"
+        id=f"nb_bino_{dataset}"
         full = False
     elif classifier_name in ["MultinomialNB","GaussianNB","ComplementNB"]:
-        id="nb_non_bino"
+        id=f"nb_non_bino_{dataset}"
         full = False
     elif classifier_name in ["SVC","KNeighborsClassifier"]:
-        id="svm_knn"
+        id=f"svm_knn_{dataset}"
         full = True
     else:
         raise ValueError(f"classifier_name {classifier_name} is not a possible name")
@@ -535,9 +580,9 @@ def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None
             "p": trial.suggest_categorical("p",[1, 2, 3]),  # Power parameter for the Minkowski metric (1 for Manhattan, 2 for Euclidean, 3 Minkwski)
         }
     X,y = read_data_from_disk(folder, id, full=full)
-    with open("./data/out.txt","a") as f:
-        f.write("start "+str(kwargs)+"\n")
-    df = cross_validation_with_classifier(X,y,train_fun=partial_train if not full else train,**kwargs,num_rep=num_rep)
+    with open(f"data/split_idx_{dataset}.json", "w") as fp:
+        split = json.load(fp)
+    df = train_valid_test(X,y,split=split, train_fun=partial_train if not full else train,**kwargs,num_rep=num_rep)
     del X
     del y
     value = df["test_accuracy"].mean()
@@ -545,39 +590,51 @@ def run_optuna(trial: optuna.Trial,models: Optional[List[ClassifierName]] = None
         f.write("end "+str(kwargs)+f" with {value}\n")
     return value
 
-def hyperparameter_search(id: str, models: Optional[List[ClassifierName]] = None, n_jobs: int = 4, num_rep: int = 5):
+def hyperparameter_search(id: str, dataset: str, models: Optional[List[ClassifierName]] = None, n_jobs: int = 4, num_rep: int = 5):
     optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
+    id += "_"+dataset
+    # prepare the data
+    folder_out = Path("data/")
+    path_idx = folder_out / f"split_idx_{dataset}.json"
+    if not path_idx.exists():
+        df = pd.read_json(folder_out / f"{dataset}.json")
+        with open(folder_out / f"split_{dataset}.json") as fp:
+            split = json.load(fp)
+        for k in split:
+            split[k] = list(df[df["bug_id"].isin(split[k])].index)
+        with open(path_idx, "w") as fp:
+            json.dump(split, fp)
     study_name = f"study-{id}"  # Unique identifier of the study.
     storage_name = "sqlite:///{}.db".format(study_name)
-    with open("./data/out.txt","w") as f:
-        f.write("Start\n")
     study = optuna.create_study(direction="maximize",study_name=study_name, storage=storage_name, load_if_exists=True)
-    study.optimize(lambda trial:run_optuna(trial,models=models,num_rep=num_rep),n_trials=100,n_jobs=n_jobs)
+    study.optimize(lambda trial:run_optuna(trial,models=models,num_rep=num_rep,dataset=dataset),n_trials=100,n_jobs=n_jobs)
     with open(f"data/study-{id}-best.json",'w') as f:
         json.dump({
             "best_params": study.best_params,
             "best_value": study.best_value
         },f)
 
-if __name__ == "__main__":
-    # import psutil
-
-    # virtual_memory = psutil.virtual_memory()
-    # print(f"Available Memory: {virtual_memory.available / (1024 ** 3):.2f} GB")
-    # data_path = Path("./data/")
-    # generate_data(data_path)
-    # run_trainings(data_path)
-    import argparse
-    parser = argparse.ArgumentParser(description="Select between SVC and KNN algorithms")
-    parser.add_argument("algorithm", choices=["bayesian", "SVC", "KNN"], help="Choose the algorithm (SVC or KNN)")
-
-    args = parser.parse_args()
-    if args.algorithm == "bayesian":
-        hyperparameter_search("bayesian-networks",["BernoulliNB","ComplementNB","GaussianNB","MultinomialNB"],n_jobs=1)
-    elif args.algorithm == "SVC":
-        hyperparameter_search("svc",["SVC"],n_jobs=2)
-    elif args.algorithm == "KNN":
-        hyperparameter_search("knn",["KNeighborsClassifier"],n_jobs=2)
+def generate_dataset(dataset: DatasetName):
+    assert isinstance(dataset, str) and dataset in get_args(DatasetName)
+    data_path = Path("./data/")
+    generate_data(data_path,dataset=dataset)
+    
+AlgorithmName = Literal["bayesian","SVC","KNN"]
+def launch_search(algorithm: AlgorithmName, dataset: DatasetName, n_jobs: int = 4):
+    assert isinstance(algorithm, str) and algorithm in get_args(AlgorithmName)
+    assert isinstance(dataset, str) and dataset in get_args(DatasetName)
+    if algorithm == "bayesian":
+        hyperparameter_search("bayesian-networks",dataset,["BernoulliNB","ComplementNB","GaussianNB","MultinomialNB"],n_jobs=n_jobs)
+    elif algorithm == "SVC":
+        hyperparameter_search("svc",dataset,["SVC"],n_jobs=n_jobs)
+    elif algorithm == "KNN":
+        hyperparameter_search("knn",dataset,["KNeighborsClassifier"],n_jobs=n_jobs)
     else:
         raise Exception
-    # reproduce_best(data_path)
+if __name__ == "__main__":
+    fire.Fire(
+        {
+            "generate_dataset": generate_dataset,
+            "launch_search": launch_search,
+        }
+    )
