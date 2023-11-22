@@ -422,13 +422,13 @@ def save_data_to_disk(pipeline_fn: Callable, folder: Path, id: str = "", do_prin
     X, y = pipeline.fit_transform(bug_reports)
     if do_print:
         print_pipeline(pipeline,bug_reports)
-    memmapped_array = np.memmap(folder / f"X_{id}.npy",dtype=np.float32,mode="w+",shape=X.shape)
+    memmapped_array = np.memmap(folder / f"X_{id}_{dataset_choice}.npy",dtype=np.float32,mode="w+",shape=X.shape)
     memmapped_array[:] = X[:]
     memmapped_array.flush()
-    with open(folder / f"X_{id}.shape", "w") as shape_file:
+    with open(folder / f"X_{id}_{dataset_choice}.shape", "w") as shape_file:
         shape_file.write(f"({X.shape[0]},{X.shape[1]})")
-    np.save(folder / f"X_full_{id}.npy",X)
-    np.save(folder / f"y_{id}.npy",y)
+    np.save(folder / f"X_full_{id}_{dataset_choice}.npy",X)
+    np.save(folder / f"y_{id}_{dataset_choice}.npy",y)
     
 def read_data_from_disk(folder: Path, id: str = "", full: bool = True):
     if full:
@@ -513,7 +513,7 @@ class TrialAdapter:
             return self.args[args[0]] #type: ignore
 
 
-def run_optuna(trial: optuna.Trial, dataset: str, models: Optional[List[ClassifierName]] = None, trial_mode: bool = True, num_rep: int = 5):
+def run_optuna(trial: optuna.Trial, dataset: str, models: Optional[List[ClassifierName]] = None, trial_mode: bool = True, num_rep: int = 5, num_samples: int = 1000):
     if trial_mode:
         trial = TrialAdapter(trial=trial) #type: ignore
     else:

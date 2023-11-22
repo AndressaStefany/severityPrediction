@@ -20,7 +20,7 @@ import random
 import fire
 import torch
 from torch import nn
-from pytorchtools import EarlyStopping
+
 
 # tye hints
 LlamaTokenizer = Union["trf.LlamaTokenizer", "trf.LlamaTokenizerFast"]
@@ -82,6 +82,7 @@ imports = [
     "import evaluate",
     "import optuna",
     "import accelerate",
+    "from pytorchtools import EarlyStopping"
 ]
 for i in imports:
     try:
@@ -1041,7 +1042,21 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                     with open(self.folder_out / f"pred_aggr{id}.json", "w") as fp:
                         json.dump(self.buffer,fp)
 
-
+# class LlamaTrainingModel(torch.nn.Module):
+#     def __init__(self, model_name: ModelName, token: str = default_token, *args, **kwargs) -> None:
+#         super().__init__(*args, **kwargs)
+#         self.model: trf.LlamaForSequenceClassification = initialize_model(# type: ignore
+#             model_name=model_name,
+#             token=token,
+#             base_class=trf.AutoModelForSequenceClassification,
+#             quant=True,
+#             load_in_8bit=False
+#         )
+#     def forward(self, input_ids=None, attention_mask=None,labels=None):
+#         out = self.model(input_ids=input_ids, attention_mask=attention_mask)
+#         loss = None
+#         if labels is not None:
+            
 class CustomTrainer(trl.SFTTrainer):
     def __init__(self, tokenizer, callbacks: List, weighted: bool = False, *args, **kwargs):
         self.tokenizer = tokenizer
@@ -1062,17 +1077,14 @@ class CustomTrainer(trl.SFTTrainer):
         label = inputs["label"]
         bug_id = inputs["bug_id"]
         prediction = model(input)[0]
-        prediction_sigmoid = torch.nn.functional.sigmoid(prediction.detach().cpu())
-        loss = torch.nn.functional.binary_cross_entropy_with_logits(
-            input=prediction,
-            target=label,
-        )
-        prediction_sigmoid = np.array(prediction_sigmoid.reshape((-1,)).tolist())
+        prediction_sigmoid = torch.nn.functional.sigmoid(prediction)
+        loss = torch.nn.functional.binary_cross_entropy(input=prediction_sigmoid,target=label)
+        predictions = prediction_sigmoid.detach().cpu().reshape((-1,)).tolist()
         trues = label.reshape((-1,)).tolist()
         for c in self.callbacks:
             c.add_new_data(
                 bug_id,
-                predictions=prediction_sigmoid.tolist(),
+                predictions=predictions,
                 trues=trues,
                 loss=loss.sum().item(),
                 n_tokens=n_tokens,
@@ -1108,8 +1120,9 @@ class CustomTrainer(trl.SFTTrainer):
         label = inputs["label"]
         bug_id = inputs["bug_id"]
         prediction = model(input)[0]
-        loss = torch.nn.functional.binary_cross_entropy_with_logits(input=prediction,target=label)
-        predictions = torch.nn.functional.sigmoid(prediction.detach().cpu().reshape((-1,))).tolist()
+        prediction_sigmoid = torch.nn.functional.sigmoid(prediction)
+        loss = torch.nn.functional.binary_cross_entropy(input=prediction_sigmoid,target=label)
+        predictions = prediction_sigmoid.detach().cpu().reshape((-1,)).tolist()
         trues = label.reshape((-1,)).tolist()
         for c in self.callbacks:
             c.add_new_data(
@@ -1354,8 +1367,7 @@ def main_qlora_classification(
         weighted=tr_weighted_sampling,
     )
     logger.info(f"{trainer.args._n_gpu=}")
-    with torch.autocast("cuda"): #type: ignore
-        trainer.train(resume_from_checkpoint=False)
+    trainer.train(resume_from_checkpoint=False)
     with open(folder_out / "log_history.json", "w") as fp:
         json.dump(trainer.state.log_history, fp)
 
