@@ -1759,7 +1759,7 @@ def train_test_classifier(trial: 'optuna.Trial',
     # Define batch size and create a DataLoader
     batch_size = trial.suggest_categorical("batch_size",[1, 16, 32, 64])
     if not undersampling:
-        train_dataloader = dt.DataLoader(train_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+        train_dataloader = dt.DataLoader(train_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, drop_last=True)
     test_dataloader = dt.DataLoader(test_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
     val_dataloader = dt.DataLoader(val_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
 
@@ -1802,7 +1802,11 @@ def train_test_classifier(trial: 'optuna.Trial',
             train_result_list, val_result_list = [], []
             if undersampling:
                 balanced_train_dict = dynamic_undersampling(train_dict)
-                train_dataloader = dt.DataLoader(balanced_train_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+                train_dataloader = dt.DataLoader(balanced_train_dict,
+                                                 batch_size=batch_size,
+                                                 shuffle=True,
+                                                 collate_fn=collate_fn,
+                                                 drop_last=True)
             model.train() # prep model for training
             for i, (bug_ids, inputs, labels) in enumerate(train_dataloader):
                 optimizer.zero_grad()
