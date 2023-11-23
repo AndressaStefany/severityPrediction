@@ -513,7 +513,7 @@ class TrialAdapter:
             return self.args[args[0]] #type: ignore
 
 
-def run_optuna(trial: optuna.Trial, dataset: str, models: Optional[List[ClassifierName]] = None, trial_mode: bool = True, num_rep: int = 5, num_samples: int = 1000):
+def run_optuna(trial: optuna.Trial, dataset: str, models: Optional[List[ClassifierName]] = None, trial_mode: bool = True, num_rep: int = 5):
     if trial_mode:
         trial = TrialAdapter(trial=trial) #type: ignore
     else:
@@ -590,16 +590,19 @@ def run_optuna(trial: optuna.Trial, dataset: str, models: Optional[List[Classifi
         f.write("end "+str(kwargs)+f" with {value}\n")
     return value
 
-def hyperparameter_search(id: str, dataset: str, models: Optional[List[ClassifierName]] = None, n_jobs: int = 4, num_rep: int = 5):
+def hyperparameter_search(id: str, dataset: str, models: Optional[List[ClassifierName]] = None, n_jobs: int = 4, num_rep: int = 5, num_samples: int = -1):
     optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
     id += "_"+dataset
     # prepare the data
     folder_out = Path("data/")
     path_idx = folder_out / f"split_idx_{dataset}.json"
+    with open(folder_out / f"split_{dataset}.json") as fp:
+        split = json.load(fp)
+    if num_samples != -1:
+        split["tr"] = split["tr"][:num_samples]
+    id += f"_{num_samples}_samples"
     if not path_idx.exists():
         df = pd.read_json(folder_out / f"{dataset}.json")
-        with open(folder_out / f"split_{dataset}.json") as fp:
-            split = json.load(fp)
         for k in split:
             split[k] = list(df[df["bug_id"].isin(split[k])].index)
         with open(path_idx, "w") as fp:
