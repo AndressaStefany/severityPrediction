@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=v100l:1 # on cedar choose one v100l gpu but can be also p100l
-#SBATCH --cpus-per-task=4 # change this parameter to 2,4,6,... and increase "--num_workers" accordingly to see the effect on performance
-#SBATCH --time=07-00:00:00 
+#SBATCH --cpus-per-task=1
+#SBATCH --time=00-00:30:00
 #SBATCH --output=log-%x-%j.out
 #SBATCH --error=log-%x-%j.err
 #SBATCH --mail-user=robin.moine456@gmail.com
 #SBATCH --mail-type=ALL
-#SBATCH --mem=16G
+#SBATCH --mem=8G
 
 # syntax of 
 # Capture the start time
@@ -40,12 +40,12 @@ nvidia-smi
 # Do not forget to change the pathes to absolute pathes (dont hesitate to use $USER variable)
 dataset_choice="eclipse_72k"
 id_name="_$dataset_choice"
-lora_alpha=2
+lora_alpha=4
 lora_r=64
 lora_dropout=0.1
 algorithm=finetune_classification
 model_name="meta-llama/Llama-2-7b-chat-hf"
-learning_rate=0.00001
+learning_rate=0.0001
 limit_tokens=500
 tr_bs=4
 num_train_epochs=500

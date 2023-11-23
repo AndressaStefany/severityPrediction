@@ -2,12 +2,12 @@
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=v100l:1 # on cedar choose one v100l gpu but can be also p100l
 #SBATCH --cpus-per-task=1 # change this parameter to 2,4,6,... and increase "--num_workers" accordingly to see the effect on performance
-#SBATCH --time=00-02:00:00           # duration (JJ-HH:MM:SS)
+#SBATCH --time=00-01:00:00           # duration (JJ-HH:MM:SS)
 #SBATCH --output=log-%x-%j.out
 #SBATCH --error=log-%x-%j.err
 #SBATCH --mail-user=robin.moine456@gmail.com
 #SBATCH --mail-type=ALL
-#SBATCH --mem=32G # Request 8 GB of RAM
+#SBATCH --mem=8G # Request 8 GB of RAM
 
 # syntax of 
 # Capture the start time
