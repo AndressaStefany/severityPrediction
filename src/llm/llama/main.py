@@ -700,6 +700,7 @@ def compute_metrics_from_files(
     n_tokens_show_min: int = 0,
     backend: Optional[str] = "agg",
     id: str = "",
+    title: str = "",
 ):
     """Taking the path of the predictions folder, it computes the statistics with the predictions (confusion matrix, precision, recall, f1-score). The confusion matrix is plotted into a png file
 
@@ -711,6 +712,8 @@ def compute_metrics_from_files(
     # Return
         None
     """
+    if title == "":
+        title = f"n_tokens in [{n_tokens_show_min},{n_tokens_show_max}["
     if data_full is not None:
         data_full.to_json(folder_out / f"data{id}.json", orient="records", indent=4)
     with open(folder_out / f"metrics{id}.json", "w") as f:
@@ -746,7 +749,7 @@ def compute_metrics_from_files(
         unique_values=possibilities_pred,
         limit_tokens=n_tokens_infered_max,
         backend=backend,  # type: ignore
-        title=f"Confusion matrix\nfor field {pred_field}\n{n_tokens_infered_max=}\nn_tokens_shown in [{n_tokens_show_min};{n_tokens_show_max}[",
+        title=title,
         id=id,
     )
     if data_full is not None:
@@ -1038,6 +1041,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                         n_tokens_infered_max=self.n_tokens_infered_max,
                         n_tokens_show_max=self.n_tokens_infered_max,
                         id=id,
+                        title=f"epoch {epoch_int}\n{self.event}\n[0,{self.n_tokens_infered_max}["
                     )
                     with open(self.folder_out / f"pred_aggr{id}.json", "w") as fp:
                         json.dump(self.buffer,fp)
@@ -1063,6 +1067,7 @@ class CustomTrainer(trl.SFTTrainer):
         self.callbacks = callbacks
         self.events = {c.event for c in callbacks}
         self.weighted = weighted
+        self.criterion = nn.BCELoss()
         super().__init__(callbacks=callbacks, *args, **kwargs)
         logger.info(f"{len(self.get_train_dataloader())=} {len(self.get_eval_dataloader())=}")
     def prediction_step(
@@ -1071,41 +1076,10 @@ class CustomTrainer(trl.SFTTrainer):
         if "val" not in self.events:
             return super().prediction_step(model, inputs, prediction_loss_only, ignore_keys)
         # logger.info(f"prediction_step with batch size of {len(inputs['bug_id'])}")
-        input = inputs["input"]
-        pad_token = self.tokenizer(self.tokenizer.pad_token)["input_ids"][1]
-        n_tokens = [len([e for e in elem if e != pad_token]) for elem in input.tolist()]
-        label = inputs["label"]
-        bug_id = inputs["bug_id"]
-        prediction = model(input)[0]
-        prediction_sigmoid = torch.nn.functional.sigmoid(prediction)
-        loss = torch.nn.functional.binary_cross_entropy(input=prediction_sigmoid,target=label)
-        predictions = prediction_sigmoid.detach().cpu().reshape((-1,)).tolist()
-        trues = label.reshape((-1,)).tolist()
-        for c in self.callbacks:
-            c.add_new_data(
-                bug_id,
-                predictions=predictions,
-                trues=trues,
-                loss=loss.sum().item(),
-                n_tokens=n_tokens,
-                event="val",
-                num_samples=len(bug_id),
-                epoch=self.state.epoch,
-            )
-        del loss
-        del prediction
-        del trues
-        try:
-            gc.collect()
-            torch.cuda.empty_cache()  # type: ignore
-        except Exception as e:
-            print("Exception clear")
-            print(e)
             print("End exception clear")
-        
+        self.compute(model, inputs, "val")
         return None, None, None  # to save GPU RAM
-
-    def compute_loss(self, model, inputs, *args, **kwargs):
+    def compute(self, model, inputs, event, *args, **kwargs):
         # logger.info(f"compute_loss with batch size of {len(inputs['bug_id'])}")
         try:
             gc.collect()
@@ -1120,9 +1094,8 @@ class CustomTrainer(trl.SFTTrainer):
         label = inputs["label"]
         bug_id = inputs["bug_id"]
         prediction = model(input)[0]
-        prediction_sigmoid = torch.nn.functional.sigmoid(prediction)
-        loss = torch.nn.functional.binary_cross_entropy(input=prediction_sigmoid,target=label)
-        predictions = prediction_sigmoid.detach().cpu().reshape((-1,)).tolist()
+        predictions = torch.nn.functional.sigmoid(prediction.reshape((-1,)).detach().cpu()).tolist()
+        loss = self.criterion(torch.nn.functional.sigmoid(prediction),label)
         trues = label.reshape((-1,)).tolist()
         for c in self.callbacks:
             c.add_new_data(
@@ -1131,18 +1104,21 @@ class CustomTrainer(trl.SFTTrainer):
                 trues=trues,
                 loss=loss.sum().item(),
                 n_tokens=n_tokens,
-                event="train",
+                event=event,
                 num_samples=len(bug_id),
                 epoch=self.state.epoch,
             )
         return loss
+        
+    def compute_loss(self, model, inputs, *args, **kwargs):
+        return self.compute(model, inputs, "train")
     def _get_train_sampler(self) -> Any | None:
         dataset: "Dataset" = self.train_dataset# type: ignore
         if self.weighted:
-            weights = dataset.get_weights()
+            weights,num_0, num_1 = dataset.get_weights()
             return torch.utils.data.WeightedRandomSampler(
                 weights=weights,
-                num_samples=len(weights),
+                num_samples=min(num_0,num_1)*2,
                 replacement=False,
             )
         return super()._get_train_sampler()
@@ -1167,7 +1143,7 @@ class Dataset(torch.utils.data.Dataset):
         num_1 = sum(e['binary_severity'] for e in self.l_dict)
         probas = {0:num_1/num_tot}
         probas[1] = 1-probas[0]
-        return [probas[int(e['binary_severity'])] for e in self.l_dict]
+        return [probas[int(e['binary_severity'])] for e in self.l_dict],num_tot-num_1,num_1
     def __getitem__(self, i: int) -> Dict[str, "torch.Tensor"]:
         elem = {**self.l_dict[i]}
         input = elem[self.input_field]
@@ -1211,7 +1187,7 @@ def main_qlora_classification(
     learning_rate: float = 2e-4,
     limit_tokens: int = 7364,
     mapping_dict: Optional[dict] = None,
-    lim_size: int = 127,
+    lim_size: int = -1,
     id: str = "",
     use_cpu: bool = False,
     tr_weighted_sampling: bool = False,
@@ -1367,6 +1343,7 @@ def main_qlora_classification(
         weighted=tr_weighted_sampling,
     )
     logger.info(f"{trainer.args._n_gpu=}")
+    # with torch.autocast("cuda"):
     trainer.train(resume_from_checkpoint=False)
     with open(folder_out / "log_history.json", "w") as fp:
         json.dump(trainer.state.log_history, fp)
