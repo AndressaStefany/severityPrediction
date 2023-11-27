@@ -22,6 +22,7 @@ from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import accuracy_score, roc_curve, auc
 import pandas as pd
 from pathlib import Path
+import datetime
 
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
@@ -30,6 +31,17 @@ from string import Template
 import fire
 
 
+def print_args(func):
+    def inner(*args, **kwargs):
+        print("Current time:", datetime.datetime.now())
+        print("*" * 100)
+        print("Start", func.__name__)
+        print("With *args", args)
+        print("With **kwargs", kwargs)
+        print("-" * 100)
+        return func(*args, **kwargs)
+
+    return inner
 # Code from src/llm/llama/main.py
 DatasetName = Literal["eclipse_72k","mozilla_200k"]
 default_datasetname = "eclipse_72k"
@@ -590,6 +602,7 @@ def run_optuna(trial: optuna.Trial, dataset: str, models: Optional[List[Classifi
         f.write("end "+str(kwargs)+f" with {value}\n")
     return value
 
+@print_args
 def hyperparameter_search(id: str, dataset: str, models: Optional[List[ClassifierName]] = None, n_jobs: int = 4, num_rep: int = 5, num_samples: int = -1):
     optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
     id += "_"+dataset
