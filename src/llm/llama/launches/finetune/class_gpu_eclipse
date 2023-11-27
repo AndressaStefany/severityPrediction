@@ -2,7 +2,7 @@
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=v100l:1 # on cedar choose one v100l gpu but can be also p100l
 #SBATCH --cpus-per-task=1
-#SBATCH --time=00-00:30:00
+#SBATCH --time=02-23:59:59 
 #SBATCH --output=log-%x-%j.out
 #SBATCH --error=log-%x-%j.err
 #SBATCH --mail-user=robin.moine456@gmail.com

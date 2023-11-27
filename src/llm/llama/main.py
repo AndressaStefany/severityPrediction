@@ -17,10 +17,7 @@ import psutil
 import multiprocessing as mp
 import functools
 import random
-import fire
-import torch
 from torch import nn
-from pytorchtools import EarlyStopping
 
 # tye hints
 LlamaTokenizer = Union["trf.LlamaTokenizer", "trf.LlamaTokenizerFast"]
@@ -59,9 +56,11 @@ if TYPE_CHECKING:
     import evaluate
     import optuna
     import accelerate
+    import fire
 
 
 imports = [
+    "import fire",
     "import transformers as trf",
     "import torch",
     "import torch.nn as nn",
@@ -92,6 +91,10 @@ for i in imports:
 
 try:
     from src.baseline.baseline_functions import *  # type: ignore
+except Exception:
+    pass
+try:
+    from pytorchtools import EarlyStopping #type: ignore
 except Exception:
     pass
 
@@ -911,7 +914,7 @@ class Evaluator:
 def generate_dataset(
     folder_out: Union[str, Path],  # type: ignore
     folder_data: Union[str, Path],  # type: ignore
-    dataset_choice: DatasetName,
+    dataset_choice: DatasetName,  # type: ignore
     field_input: str,
     token: str = default_token,
     model_name: ModelName = default_model,
@@ -1045,21 +1048,6 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                     )
                     with open(self.folder_out / f"pred_aggr{id}.json", "w") as fp:
                         json.dump(self.buffer,fp)
-
-# class LlamaTrainingModel(torch.nn.Module):
-#     def __init__(self, model_name: ModelName, token: str = default_token, *args, **kwargs) -> None:
-#         super().__init__(*args, **kwargs)
-#         self.model: trf.LlamaForSequenceClassification = initialize_model(# type: ignore
-#             model_name=model_name,
-#             token=token,
-#             base_class=trf.AutoModelForSequenceClassification,
-#             quant=True,
-#             load_in_8bit=False
-#         )
-#     def forward(self, input_ids=None, attention_mask=None,labels=None):
-#         out = self.model(input_ids=input_ids, attention_mask=attention_mask)
-#         loss = None
-#         if labels is not None:
             
 class CustomTrainer(trl.SFTTrainer):
     def __init__(self, tokenizer, callbacks: List, weighted: bool = False, *args, **kwargs):
@@ -1069,14 +1057,11 @@ class CustomTrainer(trl.SFTTrainer):
         self.weighted = weighted
         self.criterion = nn.BCELoss()
         super().__init__(callbacks=callbacks, *args, **kwargs)
-        logger.info(f"{len(self.get_train_dataloader())=} {len(self.get_eval_dataloader())=}")
     def prediction_step(
         self, model, inputs, prediction_loss_only: bool, ignore_keys=None
     ) -> Tuple:
         if "val" not in self.events:
             return super().prediction_step(model, inputs, prediction_loss_only, ignore_keys)
-        # logger.info(f"prediction_step with batch size of {len(inputs['bug_id'])}")
-            print("End exception clear")
         self.compute(model, inputs, "val")
         return None, None, None  # to save GPU RAM
     def compute(self, model, inputs, event, *args, **kwargs):
@@ -1112,17 +1097,14 @@ class CustomTrainer(trl.SFTTrainer):
         
     def compute_loss(self, model, inputs, *args, **kwargs):
         return self.compute(model, inputs, "train")
-    def _get_train_sampler(self) -> Any | None:
-        dataset: "Dataset" = self.train_dataset# type: ignore
+    def _get_train_sampler(self):
         if self.weighted:
-            weights,num_0, num_1 = dataset.get_weights()
-            return torch.utils.data.WeightedRandomSampler(
-                weights=weights,
-                num_samples=min(num_0,num_1)*2,
-                replacement=False,
+            dataset: "Dataset" = self.train_dataset# type: ignore
+            return BalancedRandomSampler(
+                dataset
             )
         return super()._get_train_sampler()
-
+    
 class Dataset(torch.utils.data.Dataset):
     def __init__(
         self,
@@ -1138,12 +1120,13 @@ class Dataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.l_dict)
-    def get_weights(self) -> List[float]:
-        num_tot = len(self.l_dict)
-        num_1 = sum(e['binary_severity'] for e in self.l_dict)
-        probas = {0:num_1/num_tot}
-        probas[1] = 1-probas[0]
-        return [probas[int(e['binary_severity'])] for e in self.l_dict],num_tot-num_1,num_1
+    
+    def get_groups(self) -> Dict[int,List[int]]:
+        """Returns the list of indices with 0 severity and 1 severity"""
+        group_0 = [i for i,d in enumerate(self.l_dict) if d["binary_severity"] == 0]
+        group_1 = [i for i,d in enumerate(self.l_dict) if d["binary_severity"] == 1]
+        return {0:group_0, 1:group_1}
+    
     def __getitem__(self, i: int) -> Dict[str, "torch.Tensor"]:
         elem = {**self.l_dict[i]}
         input = elem[self.input_field]
@@ -1152,6 +1135,21 @@ class Dataset(torch.utils.data.Dataset):
         return {"input": input, "label": label, "bug_id": bug_id}
 
 
+class BalancedRandomSampler(torch.utils.data.Sampler[int]):
+    def __init__(self, dataset: Dataset):
+        self.groups = dataset.get_groups()
+        n_0,n_1 = len(self.groups[0]),len(self.groups[1])
+        self.min_class = 0 if n_0 <= n_1 else 1
+        self.length_group = min(n_0,n_1)
+    def __iter__(self) -> Iterator[int]:
+        random.shuffle(self.groups[1-self.min_class])
+        samples_ids = [*self.groups[self.min_class],*self.groups[1-self.min_class][:self.length_group]]
+        random.shuffle(samples_ids)
+        for i in samples_ids:
+            yield i
+    def __len__(self) -> int:
+        return self.length_group*2
+        
 class DataCollator(trf.data.DataCollatorForTokenClassification):
     def __init__(self, tokenizer, padding: bool, max_length: int):
         self.token_pad = tokenizer.eos_token_id
@@ -1319,8 +1317,14 @@ def main_qlora_classification(
             1: "SEVERE",
         }
     logger.info("Set supervised fine-tuning parameters")
+    tr_size = len(tr_data)
+    if tr_weighted_sampling:
+        sampler = BalancedRandomSampler(
+            tr_data
+        )
+        tr_size = len(sampler)
     predictions_aggregator_tr = PredictionAggregator(
-        event="train", n_tokens_infered_max=limit_tokens, folder_out=folder_out,size=len(tr_data)
+        event="train", n_tokens_infered_max=limit_tokens, folder_out=folder_out,size=tr_size
     )
     predictions_aggregator_val = PredictionAggregator(
         event="val", n_tokens_infered_max=limit_tokens, folder_out=folder_out,size=len(val_data)

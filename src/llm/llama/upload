@@ -5,12 +5,12 @@ pwd
 dos2unix ./launches/*;
 dos2unix ./launches/*/*;
 user=rmoine
-server=narval
-# scp -r ./launches $user@$server.computecanada.ca:/project/def-aloise/$user/
-# scp -r ./*.py $user@$server.computecanada.ca:/project/def-aloise/$user/
-scp -r ../../baseline/*.py $user@$server.computecanada.ca:/project/def-aloise/$user/
-dos2unix ../../baseline/*;
-scp -r ../../baseline/* $user@$server.computecanada.ca:/project/def-aloise/$user/
+server=cedar
+scp -r ./launches $user@$server.computecanada.ca:/project/def-aloise/$user/
+scp -r ./*.py $user@$server.computecanada.ca:/project/def-aloise/$user/
+# scp -r ../../baseline/*.py $user@$server.computecanada.ca:/project/def-aloise/$user/
+# dos2unix ../../baseline/*;
+# scp -r ../../baseline/* $user@$server.computecanada.ca:/project/def-aloise/$user/
 # scp -r ./*.ipynb $user@$server.computecanada.ca:/project/def-aloise/$user/
 # scp -r ./*.yaml $user@$server.computecanada.ca:/project/def-aloise/$user/
 # scp -r ../../../data/split_eclipse_72k.json $user@$server.computecanada.ca:/project/def-aloise/$user/data/
