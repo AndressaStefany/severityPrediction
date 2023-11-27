@@ -1652,11 +1652,11 @@ def train_test_classifier(trial: 'optuna.Trial',
         )
 
     # Define batch size and create a DataLoader
-    batch_size = trial.suggest_categorical("batch_size",[1, 16, 32, 64])
+    batch_size = trial.suggest_categorical("batch_size",[2, 16, 32, 64])
     if not undersampling:
         train_dataloader = dt.DataLoader(train_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, drop_last=True)
     test_dataloader = dt.DataLoader(test_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
-    val_dataloader = dt.DataLoader(val_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    val_dataloader = dt.DataLoader(val_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, drop_last=True)
 
     input_size = len(train_dict[0]['embedding'])
     output_size = 1
