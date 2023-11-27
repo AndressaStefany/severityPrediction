@@ -50,12 +50,12 @@ if TYPE_CHECKING:
     import sklearn.metrics as skMetr
     import sklearn.model_selection as skMsel
     import tqdm
-    import datasets
+    import datasets #type: ignore
     import h5py
-    import bitsandbytes as bnb
-    import evaluate
+    import bitsandbytes as bnb #type: ignore
+    import evaluate #type: ignore
     import optuna
-    import accelerate
+    import accelerate #type: ignore
     import fire
 
 
@@ -119,7 +119,7 @@ def get_literal_value(model_name: str, literal: Any = ModelName) -> Any:
     return model_name  # type: ignore
 
 
-def get_dataset_choice(dataset_choice: str) -> DatasetName:
+def get_dataset_choice(dataset_choice: str) -> DatasetName: #type: ignore
     assert isinstance(dataset_choice, str) and dataset_choice in get_args(DatasetName)
     return dataset_choice  # type: ignore
 
@@ -376,14 +376,7 @@ class FinetuneMaxTokens(MaxTokensEvaluator):
         if folder_out.exists():
             shutil.rmtree(folder_out)
         folder_out.mkdir(parents=True, exist_ok=True)
-        main_qlora_generation(
-            Path("./tmp.json"),
-            folder_out=folder_out,
-            field_label="binary_severity",
-            field_input="llama_tokenized_description",
-            limit_tokens=n_tokens,
-            **self.kwargs,
-        )
+        raise NotImplemented
 
 
 def get_max_mix(token_lengths, tokenizer: "LlamaTokenizer", pipeline: "trf.Pipeline"):
