@@ -1021,26 +1021,13 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                 )
                 if len(self.buffer[epoch_int]) >= self.size: 
                     logger.info(f"Last batch had size {num_samples} with {bug_ids=}\nExpecting to see in one epoch only one time the dataset with {self.size=}, not {len(self.buffer[epoch_int])=}")
-                    conf_matrix, f1, data_full = compute_metrics_from_list(
+                    _, _, data_full = compute_metrics_from_list(
                         fields_data=self.buffer[epoch_int],
                         pred_field="prediction",
                         n_tokens_infered_max=self.n_tokens_infered_max,
                     )
                     id = f"_epoch_{str(epoch_int).replace('.','-')}_{self.event}"
-                    compute_metrics_from_files(
-                        conf_matrix=conf_matrix, 
-                        f1=f1,
-                        folder_out=self.folder_out,
-                        data_full=data_full,
-                        true_field="binary_severity",
-                        pred_field="prediction",
-                        n_tokens_infered_max=self.n_tokens_infered_max,
-                        n_tokens_show_max=self.n_tokens_infered_max,
-                        id=id,
-                        title=f"epoch {epoch_int}\n{self.event}\n[0,{self.n_tokens_infered_max}["
-                    )
-                    with open(self.folder_out / f"pred_aggr{id}.json", "w") as fp:
-                        json.dump(self.buffer,fp)
+                    data_full.to_json(self.folder_out / f"data{id}.json", orient="records", indent=4)
             
 class CustomTrainer(trl.SFTTrainer):
     def __init__(self, tokenizer, callbacks: List, weighted: bool = False, *args, **kwargs):
@@ -1267,7 +1254,7 @@ def main_qlora_classification(
         dataset_choice=dataset_choice,
         token=token,
         model_name=model_name_dataset,  # type: ignore
-        id=f"_{model_name}{id}_{limit_tokens}",
+        id=f"_{model_name_dataset}_{dataset_choice}_{limit_tokens}",
         n_tokens_infered_max=limit_tokens,
     )
     logger.info(f"Using {train_path} {valid_path}")
@@ -1336,6 +1323,7 @@ def main_qlora_classification(
         callbacks=[
             predictions_aggregator_tr,
             predictions_aggregator_val,
+            trf.EarlyStoppingCallback(early_stopping_patience=3, early_stopping_threshold=1e-3)
         ],
         weighted=tr_weighted_sampling,
     )
