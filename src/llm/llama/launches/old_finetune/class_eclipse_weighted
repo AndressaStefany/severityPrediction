@@ -36,9 +36,9 @@ nvidia-smi
 # Do not forget to change the pathes to absolute pathes (dont hesitate to use $USER variable)
 dataset_choice="eclipse_72k"
 tr_weighted_sampling=True
-id_name="_weighted_$dataset_choice"
+id_name="_$SLURM_JOB_ID"
 lora_alpha=4
-lora_r=64
+lora_r=10
 lora_dropout=0.1
 algorithm=finetune_classification
 model_name="meta-llama/Llama-2-7b-chat-hf"

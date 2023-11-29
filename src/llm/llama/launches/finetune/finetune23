@@ -1,19 +1,16 @@
 #!/bin/bash
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=v100l:1 # on cedar choose one v100l gpu but can be also p100l
-#SBATCH --cpus-per-task=1
-#SBATCH --time=02-23:59:59 
+#SBATCH --gpus-per-node=v100l:1 
+#SBATCH --cpus-per-task=1 
+#SBATCH --time=03-00:00:00
 #SBATCH --output=log-%x-%j.out
 #SBATCH --error=log-%x-%j.err
 #SBATCH --mail-user=robin.moine456@gmail.com
 #SBATCH --mail-type=ALL
 #SBATCH --mem=8G
 
-# syntax of 
-# Capture the start time
 start_time=$(date +"%Y-%m-%d %H:%M:%S")
 
-# loading modules
 module load StdEnv/2020  gcc/9.3.0  cuda/11.4 arrow python/3.10.2 cudnn
 virtualenv $SLURM_TMPDIR/MYENV
 source $SLURM_TMPDIR/MYENV/bin/activate
@@ -22,39 +19,40 @@ pip install /home/rmoine/docstring_parser-0.15-py3-none-any.whl --no-index
 pip install /home/rmoine/shtab-1.6.4-py3-none-any.whl --no-index
 pip install /home/rmoine/tyro-0.5.10-py3-none-any.whl --no-index
 pip install /home/rmoine/trl-0.7.2-py3-none-any.whl --no-index
-
 pip install bitsandbytes==0.41.1 --no-index 
 pip install transformers torch peft accelerate xformers scikit-learn sentencepiece huggingface_hub protobuf tqdm nltk --no-index
 pip install datasets --no-index
-
 pip install seaborn --no-index
 pip install matplotlib --no-index
 pip install pandas --no-index
 pip install h5py --no-index
 pip install fire --no-index
 pip install optuna --no-index
-# pip install -r /project/def-aloise/rmoine/requirements.txt
-nvidia-smi
 
-# Execution of the script: replace by python path_to_your_script
-# Do not forget to change the pathes to absolute pathes (dont hesitate to use $USER variable)
-dataset_choice="eclipse_72k"
-id_name="_$dataset_choice"
-lora_alpha=4
-lora_r=64
-lora_dropout=0.1
-algorithm=finetune_classification
+dataset_choice=eclipse_72k
+lora_r=5
+id_name="_$SLURM_JOB_ID"
+lora_alpha=10
+lora_dropout=0.2
 model_name="meta-llama/Llama-2-7b-chat-hf"
 learning_rate=0.0001
 limit_tokens=500
 tr_bs=4
 num_train_epochs=500
+tr_weighted_sampling=True
 cd /project/def-aloise/$USER/
-# config_file=/project/def-aloise/$USER/default_config.yaml
-# export CUDA_VISIBLE_DEVICES=1,2,3
 
-# # accelerate launch --config_file $config_file /project/def-aloise/$USER/main.py qlora_classification --dataset_choice=$dataset_choice --id=$id_name --lora_alpha=$lora_alpha --lora_r=$lora_r --lora_dropout=$lora_dropout --model_name=$model_name --limit_tokens=$limit_tokens --num_train_epochs=1 --learning_rate=$learning_rate --tr_bs=$tr_bs
-python /project/def-aloise/$USER/main.py qlora_classification --dataset_choice=$dataset_choice --id=$id_name --lora_alpha=$lora_alpha --lora_r=$lora_r --lora_dropout=$lora_dropout --model_name=$model_name --limit_tokens=$limit_tokens --num_train_epochs=$num_train_epochs --learning_rate=$learning_rate --tr_bs=$tr_bs
+python /project/def-aloise/$USER/main.py qlora_classification \
+        --dataset_choice=$dataset_choice \
+        --id=$id_name \
+        --lora_alpha=$lora_alpha \
+        --lora_r=$lora_r \
+        --lora_dropout=$lora_dropout \
+        --model_name=$model_name \
+        --limit_tokens=$limit_tokens \
+        --num_train_epochs=$num_train_epochs \
+        --learning_rate=$learning_rate \
+        --tr_bs=$tr_bs
 
 
 # Capture the end time

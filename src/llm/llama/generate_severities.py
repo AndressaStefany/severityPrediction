@@ -4,14 +4,11 @@ import itertools as it
 import random
 
 def generate_inference(clear: bool = False):
-    mapping = [
-        ["_nltk", "/project/def-aloise/$USER/data/data_preprocessed_tokens_v2.json"],
-        ["_trunc", "/project/def-aloise/$USER/data/data_preprocessed_tokens_v3.json"],
+    dataset_choices = [
+        "eclipse_72k",
+        "mozilla_200k"
     ]
-    model_name = "meta-llama/Llama-2-13b-chat-hf"
-    [id, path_data_json] = mapping[0]
     n_chunks = 10
-    n_tokens_infered_max = 7364
     path_file = Path(__file__)
     path_template = (
         path_file.parent.parent.parent.parent
@@ -19,25 +16,31 @@ def generate_inference(clear: bool = False):
         / "templates"
         / "template_inference.txt"
     )
+    folder_out = path_file.parent / "launches" / "inference"
+    folder_out.mkdir(parents=True,exist_ok=True)
     with open(path_template) as f:
         template = Template(f.read())
     if clear:
         for f in path_file.parent.rglob("inference_*"):
             f.unlink()
-    for i in range(n_chunks):
-        with open(path_file.parent / f"inference{id}_{i}", "w") as f:
-            f.write(
-                template.substitute(
-                    id=i,
-                    n_chunks=n_chunks,
-                    path_data_json=path_data_json,
-                    id_name=id,
-                    model_name=model_name,
-                    n_tokens_infered_max=n_tokens_infered_max,
+    root = "/project/def-aloise/rmoine/launches/finetune/"
+    Llaunches = ["#!/bin/bash"]
+    for dataset_choice in dataset_choices:
+        for interval_idx in range(n_chunks):
+            name = f"inference_{interval_idx}"
+            with open(folder_out / name, "w") as f:
+                f.write(
+                    template.substitute(
+                        dataset_choice=dataset_choice,
+                        n_chunks=n_chunks,
+                        interval_idx=interval_idx,
+                    )
                 )
-            )
-    with open(path_file.parent / f"launch{id}_all_inference", "w") as f:
-        f.write("\n".join([f"sbatch ./inference{id}_{i}" for i in range(n_chunks)]))
+            Llaunches.append(name)
+    with open(folder_out / f"launch_inference", "w") as f:
+        f.write("\n".join([f"sb "+root+e for e in Llaunches]))
+    with open(folder_out / f"cancel_inference", "w") as f:
+        f.write("\n".join([f"scancel -n "+root+e for e in Llaunches]))
 
 
 def generate_embeddings(clear: bool = False):
@@ -153,4 +156,4 @@ def generate_finetune(clear: bool = False):
         fp.write("\n".join(["scancel -n"+ e for e in Llaunches]))
 
 if __name__ == "__main__":
-    generate_finetune()
+    generate_inference()

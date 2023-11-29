@@ -523,9 +523,10 @@ def main_inference(
     seed_end: Optional[int] = None,
     n_chunks: Optional[int] = None,
     interval_idx: Optional[int] = None,
+    id_name: str = "",
 ):
     folder_data = existing_path(folder_data,is_folder=True)
-    folder_out = existing_path(folder_data, is_folder=True) / f"inference_{id}"
+    folder_out = existing_path(folder_data, is_folder=True) / f"inference_{id_name}"
     folder_out.mkdir(parents=True, exist_ok=True)
     path_data_json = folder_data / f"{dataset_choice}.json"
     path_data_json: Path = existing_path(path_data_json, is_folder=False)
