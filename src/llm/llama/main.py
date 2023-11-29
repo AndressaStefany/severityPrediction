@@ -514,90 +514,92 @@ def build_prompt(
 
 @print_args
 def main_inference(
-    path_data_json: str,  # type: ignore
+    folder_data: Path = default_folder_data,
+    dataset_choice: DatasetName = default_datasetname,  # type: ignore
     model_name: str = default_model,
     token: str = default_token,
     n_tokens_infered_max: int = 7364,
-    id_pred: str = "",
-    n_data: Optional[int] = None,
     seed_start: Optional[int] = None,
     seed_end: Optional[int] = None,
     n_chunks: Optional[int] = None,
     interval_idx: Optional[int] = None,
 ):
+    folder_data = existing_path(folder_data,is_folder=True)
+    folder_out = existing_path(folder_data, is_folder=True) / f"inference_{id}"
+    folder_out.mkdir(parents=True, exist_ok=True)
+    path_data_json = folder_data / f"{dataset_choice}.json"
     path_data_json: Path = existing_path(path_data_json, is_folder=False)
+    arguments = locals()
+    with open(folder_out / "parameters.json", "w") as f:
+        json.dump(arguments, indent=4, fp=f, cls=CustomEncoder)
     assert model_name in get_args(
         ModelName
     ), f"Expecting model name to be in {get_args(ModelName)} not {model_name}"
     assert len(token) > 3 and token[:3] == "hf_"
+    with open(path_data_json) as f:
+        data_preprocessed = json.load(f)
     seed_start, seed_end = generate_seeds(
-        n_data, seed_start, seed_end, n_chunks, interval_idx
+        len(data_preprocessed), seed_start, seed_end, n_chunks, interval_idx
     )
 
     tokenizer, model = initialize_model_inference(model_name, token)  # type: ignore
     pipeline = trf.pipeline(
         "text-generation", model=model, tokenizer=tokenizer, device_map="auto"
     )
-    with open(path_data_json) as f:
-        data_preprocessed = json.load(f)
     data = data_preprocessed["data"]
     template = data_preprocessed["template"]
     data = data[seed_start:seed_end]
     responses = []
-    folder_predictions = path_data_json.parent / "predictions"
-    folder_predictions.mkdir(exist_ok=True, parents=True)
-    with open(folder_predictions / f"metadata.meta", "w") as f:
-        json.dump({"data_path": str(path_data_json.resolve())}, f, indent=2)
-    for i, d in tqdm.tqdm(enumerate(data), total=len(data)):
-        # gc.collect()
-        # torch.cuda.empty_cache()  # type: ignore
-        answer = float("nan")
-        severity = float("nan")
-        text, tokenized_full_text = build_prompt(
-            template["llama_tokenized_template"],
-            d["llama_tokenized_description"],
-            template["template_index_insert"],
-            tokenizer,
-            limit_tokens=n_tokens_infered_max,
-        )
-        n_tokens = len(tokenized_full_text)
-        assert n_tokens < n_tokens_infered_max
-        try:
-            [answer] = pipeline(  # type: ignore
-                text,
-                do_sample=True,
-                top_k=1,
-                num_return_sequences=1,
-                eos_token_id=tokenizer.eos_token_id,
-                return_full_text=False,
+    model.eval()
+    path_out = folder_out / f"predictions_{seed_start}_{seed_end}.json"
+    with open(path_out, "w") as f:
+        f.write("")
+    with torch.no_grad():
+        for i, d in tqdm.tqdm(enumerate(data), total=len(data)):
+            # gc.collect()
+            # torch.cuda.empty_cache()  # type: ignore
+            answer = float("nan")
+            severity = float("nan")
+            text, tokenized_full_text = build_prompt(
+                template["llama_tokenized_template"],
+                d["llama_tokenized_description"],
+                template["template_index_insert"],
+                tokenizer,
+                limit_tokens=n_tokens_infered_max,
             )
-            answer = answer["generated_text"]  # type: ignore
-            if not isinstance(answer, str):
-                raise Exception("Unknown result answer: " + str(answer))
-            severity = classify(answer)
-        except Exception:
-            severity = -2
+            n_tokens = len(tokenized_full_text)
+            assert n_tokens < n_tokens_infered_max
+            try:
+                [answer] = pipeline(  # type: ignore
+                    text,
+                    do_sample=True,
+                    top_k=1,
+                    num_return_sequences=1,
+                    eos_token_id=tokenizer.eos_token_id,
+                    return_full_text=False,
+                )
+                answer = answer["generated_text"]  # type: ignore
+                if not isinstance(answer, str):
+                    raise Exception("Unknown result answer: " + str(answer))
+                severity = classify(answer)
+            except Exception:
+                severity = -2
 
-        responses.append(
-            {
-                **d,
-                "answer": answer,
-                f"severity_pred": severity,
-                f"input": text,
-            }
-        )
-        if i % 5 == 0:
-            with open(
-                folder_predictions
-                / f"predictions_v100l_chunk_{seed_start}_{id_pred}.json",
-                "w",
-            ) as f:
-                json.dump(responses, f)
-
-    with open(
-        folder_predictions / f"predictions_v100l_chunk_{seed_start}_{id_pred}.json", "w"
-    ) as f:
-        json.dump(responses, f, indent=2)
+            responses.append(
+                {
+                    **d,
+                    "answer": answer,
+                    f"severity_pred": severity,
+                    f"input": text,
+                }
+            )
+            if i % 5 == 0:
+                with open(path_out, "a") as f:
+                    f.write(json.dumps("\n".join(responses)+"\n"))
+                responses = []
+        if len(responses) > 0:
+            with open(path_out, "a") as f:
+                f.write(json.dumps("\n".join(responses)+"\n"))
 
 
 def extract_fields_from_json(folder_path: Path) -> List[Dict]:
@@ -1169,6 +1171,8 @@ def main_qlora_classification(
     id: str = "",
     use_cpu: bool = False,
     tr_weighted_sampling: bool = False,
+    early_stopping_patience: int = 3, 
+    early_stopping_threshold: float = 1e-3,
 ) -> Tuple["np.ndarray", List[float], "pd.DataFrame"]:# type: ignore
     """
     Perform training and fine-tuning of a model for causal reasoning using LoRA.
@@ -1323,7 +1327,10 @@ def main_qlora_classification(
         callbacks=[
             predictions_aggregator_tr,
             predictions_aggregator_val,
-            trf.EarlyStoppingCallback(early_stopping_patience=3, early_stopping_threshold=1e-3)
+            trf.EarlyStoppingCallback(
+                early_stopping_patience=early_stopping_patience, 
+                early_stopping_threshold=early_stopping_threshold,
+            )
         ],
         weighted=tr_weighted_sampling,
     )
@@ -2067,7 +2074,7 @@ if __name__ == "__main__":
     fire.Fire(
         {
             "split_datasets": generate_train_test_split,
-            "inference": main_inference,
+            "main_inference": main_inference,
             "compute_metrics": main_compute_metrics,
             "generate_dataset": generate_dataset,
             "qlora_classification": main_qlora_classification,
