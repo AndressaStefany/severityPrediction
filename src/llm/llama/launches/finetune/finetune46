@@ -38,7 +38,7 @@ model_name="meta-llama/Llama-2-7b-chat-hf"
 learning_rate=1e-05
 limit_tokens=500
 tr_bs=4
-num_train_epochs=500
+num_train_epochs=10
 tr_weighted_sampling=True
 cd /project/def-aloise/$USER/
 
