@@ -622,8 +622,9 @@ def hyperparameter_search(id: str, dataset: str, models: Optional[List[Classifie
             json.dump(split, fp)
     study_name = f"study-{id}"  # Unique identifier of the study.
     storage_name = "sqlite:///{}.db".format(study_name)
-    study = optuna.create_study(direction="maximize",study_name=study_name, storage=storage_name, load_if_exists=True)
-    study.optimize(lambda trial:run_optuna(trial,models=models,num_rep=num_rep,dataset=dataset),n_trials=100,n_jobs=n_jobs)
+    sampler = optuna.samplers.RandomSampler(seed=0)
+    study = optuna.create_study(direction="maximize",study_name=study_name, storage=storage_name, load_if_exists=True, sampler=sampler)
+    study.optimize(lambda trial:run_optuna(trial,models=models,num_rep=num_rep,dataset=dataset),n_trials=50,n_jobs=n_jobs)
     with open(f"data/study-{id}-best.json",'w') as f:
         json.dump({
             "best_params": study.best_params,
