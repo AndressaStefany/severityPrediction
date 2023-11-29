@@ -524,6 +524,7 @@ def main_inference(
     n_chunks: Optional[int] = None,
     interval_idx: Optional[int] = None,
     id_name: str = "",
+    field_input: str = "description",
 ):
     folder_data = existing_path(folder_data,is_folder=True)
     folder_out = existing_path(folder_data, is_folder=True) / f"inference_{id_name}"
@@ -547,8 +548,11 @@ def main_inference(
     pipeline = trf.pipeline(
         "text-generation", model=model, tokenizer=tokenizer, device_map="auto"
     )
-    data = data_preprocessed["data"]
-    template = data_preprocessed["template"]
+    with open(path_data_json) as f:
+        data_preprocessed = json.load(f)
+    data: List[PreprocessedData] = data_preprocessed
+    with open(path_data_json.parent / "template.json") as fp:
+        template = json.load(fp)
     data = data[seed_start:seed_end]
     responses = []
     model.eval()
@@ -561,9 +565,11 @@ def main_inference(
             # torch.cuda.empty_cache()  # type: ignore
             answer = float("nan")
             severity = float("nan")
+            tokens_ids: List[int] = tokenizer(d[field_input])["input_ids"]  # type: ignore
+            tokenized: List[str] = tokenizer.convert_ids_to_tokens(tokens_ids)  # type: ignore
             text, tokenized_full_text = build_prompt(
                 template["llama_tokenized_template"],
-                d["llama_tokenized_description"],
+                tokenized,
                 template["template_index_insert"],
                 tokenizer,
                 limit_tokens=n_tokens_infered_max,
@@ -587,20 +593,20 @@ def main_inference(
                 severity = -2
 
             responses.append(
-                {
+                json.dumps({
                     **d,
                     "answer": answer,
                     f"severity_pred": severity,
                     f"input": text,
-                }
+                })
             )
             if i % 5 == 0:
                 with open(path_out, "a") as f:
-                    f.write(json.dumps("\n".join(responses)+"\n"))
+                    f.write("\n".join(responses)+"\n")
                 responses = []
         if len(responses) > 0:
             with open(path_out, "a") as f:
-                f.write(json.dumps("\n".join(responses)+"\n"))
+                f.write("\n".join(responses)+"\n")
 
 
 def extract_fields_from_json(folder_path: Path) -> List[Dict]:
@@ -976,14 +982,39 @@ def generate_dataset(
             valid_data = json.load(f)
         return train_data, valid_data, train_path, valid_path
 
-
+class EarlyStoppingTrainer:
+    def __init__(self, 
+                early_stopping_patience: int, 
+                early_stopping_threshold: float
+                ):
+        self.early_stopping_patience = early_stopping_patience
+        self.early_stopping_threshold = early_stopping_threshold
+        # early_stopping_patience_counter denotes the number of times validation metrics failed to improve.
+        self.early_stopping_patience_counter = 0
+    def check_metric_value(self, state, control, metric_value):
+        # best_metric is set by code for load_best_model
+        operator = np.less
+        if state.best_metric is None or (
+            operator(metric_value, state.best_metric)
+            and abs(metric_value - state.best_metric) > self.early_stopping_threshold
+        ):
+            self.early_stopping_patience_counter = 0
+            state.best_metric = metric_value
+        else:
+            self.early_stopping_patience_counter += 1
+    
+    def on_evaluate(self, state, control, metric_value, **kwargs):
+        self.check_metric_value(state, control, metric_value)
+        if self.early_stopping_patience_counter >= self.early_stopping_patience:
+            control.should_training_stop = True
 class PredictionAggregator(trf.trainer_callback.TrainerCallback):
     def __init__(
         self,
         event: Literal["train", "val"],
         n_tokens_infered_max: int,
         folder_out: Path,
-        size: int
+        size: int,
+        early_stopping: Optional[EarlyStoppingTrainer] = None
     ) -> None:
         self.history = []
         self.buffer = {}
@@ -992,10 +1023,14 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         self.n_tokens_infered_max = n_tokens_infered_max
         self.folder_out = folder_out
         self.size = size
+        self.early_stopping = early_stopping
+        self.batch_id = 0
         super().__init__()
 
     def add_new_data(
         self,
+        state,
+        control,
         bug_ids: List[int],
         predictions: List[float],
         trues: List[int],
@@ -1006,6 +1041,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         epoch: float,
     ):
         if event == self.event:
+            self.batch_id += 1
             for bug_id, prediction, true, n in zip(bug_ids, predictions, trues, n_tokens):
                 epoch_int = int(epoch)
                 if epoch_int not in self.buffer:
@@ -1020,6 +1056,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                         "loss":loss,
                         "event": event,
                         "epoch": epoch,
+                        "batch_id": self.batch_id
                     }
                 )
                 if len(self.buffer[epoch_int]) >= self.size: 
@@ -1030,6 +1067,10 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                         n_tokens_infered_max=self.n_tokens_infered_max,
                     )
                     id = f"_epoch_{str(epoch_int).replace('.','-')}_{self.event}"
+                    batches = data_full.drop_duplicates("batch_id")
+                    loss_avg = batches["loss"].sum() / len(self.buffer[epoch_int])
+                    if self.early_stopping is not None:
+                        self.early_stopping.on_evaluate(state, control, loss_avg)
                     data_full.to_json(self.folder_out / f"data{id}.json", orient="records", indent=4)
             
 class CustomTrainer(trl.SFTTrainer):
@@ -1067,6 +1108,8 @@ class CustomTrainer(trl.SFTTrainer):
         trues = label.reshape((-1,)).tolist()
         for c in self.callbacks:
             c.add_new_data(
+                self.state,
+                self.control,
                 bug_id,
                 predictions=predictions,
                 trues=trues,
@@ -1312,7 +1355,11 @@ def main_qlora_classification(
         event="train", n_tokens_infered_max=limit_tokens, folder_out=folder_out,size=tr_size
     )
     predictions_aggregator_val = PredictionAggregator(
-        event="val", n_tokens_infered_max=limit_tokens, folder_out=folder_out,size=len(val_data)
+        event="val", n_tokens_infered_max=limit_tokens, folder_out=folder_out,size=len(val_data),
+        early_stopping=EarlyStoppingTrainer(
+            early_stopping_patience=early_stopping_patience,
+            early_stopping_threshold=early_stopping_threshold,
+        )
     )
     trainer = CustomTrainer(  # type: ignore
         model=model,
@@ -1327,11 +1374,7 @@ def main_qlora_classification(
         data_collator=DataCollator(tokenizer, False, limit_tokens),
         callbacks=[
             predictions_aggregator_tr,
-            predictions_aggregator_val,
-            trf.EarlyStoppingCallback(
-                early_stopping_patience=early_stopping_patience, 
-                early_stopping_threshold=early_stopping_threshold,
-            )
+            predictions_aggregator_val
         ],
         weighted=tr_weighted_sampling,
     )
