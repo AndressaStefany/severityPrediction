@@ -2,6 +2,7 @@ import re
 import logging
 import sys
 import string
+import random
 import numpy as np
 import pandas as pd
 from typing import * #type: ignore
@@ -611,6 +612,8 @@ def hyperparameter_search(id: str, dataset: str, models: Optional[List[Classifie
     path_idx = folder_out / f"split_idx_{dataset}.json"
     with open(folder_out / f"split_{dataset}.json") as fp:
         split = json.load(fp)
+    random.seed(0)
+    random.shuffle(split["tr"])
     if num_samples != -1:
         split["tr"] = split["tr"][:num_samples]
     id += f"_{num_samples}_samples"
