@@ -1,0 +1,21 @@
+#!/bin/bash
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_0;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_1;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_2;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_3;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_4;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_5;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_6;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_7;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_8;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_9;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_10;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_11;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_12;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_13;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_14;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_15;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_16;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_17;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_18;
+scancel -n /project/def-aloise/rmoine/launches/inference/inference_19;

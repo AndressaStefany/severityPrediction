@@ -9,11 +9,12 @@
 #SBATCH --mail-type=ALL
 #SBATCH --mem=8G
 
-start_time=$$(date +"%Y-%m-%d %H:%M:%S")
+start_time=$(date +"%Y-%m-%d %H:%M:%S")
 
 module load StdEnv/2020  gcc/9.3.0  cuda/11.4 arrow python/3.10.2 cudnn
-virtualenv $$SLURM_TMPDIR/MYENV
-source $$SLURM_TMPDIR/MYENV/bin/activate
+virtualenv $SLURM_TMPDIR/MYENV
+source $SLURM_TMPDIR/MYENV/bin/activate
+
 pip install /home/rmoine/docstring_parser-0.15-py3-none-any.whl --no-index
 pip install /home/rmoine/shtab-1.6.4-py3-none-any.whl --no-index
 pip install /home/rmoine/tyro-0.5.10-py3-none-any.whl --no-index
@@ -28,28 +29,38 @@ pip install h5py --no-index
 pip install fire --no-index
 pip install optuna --no-index
 
+dataset_choice=mozilla_200k
+lora_r=10
+id_name="_$SLURM_JOB_ID"
+lora_alpha=10
+lora_dropout=0.2
+model_name="meta-llama/Llama-2-7b-chat-hf"
+learning_rate=0.0001
+limit_tokens=500
+tr_bs=4
+num_train_epochs=10
+tr_weighted_sampling=False
+cd /project/def-aloise/$USER/
 
-dataset_choice=$dataset_choice
-id_name="_$$SLURM_JOB_ID"
-model_name="meta-llama/Llama-2-13b-chat-hf"
-n_tokens_infered_max=7364
-n_chunks=$n_chunks
-interval_idx=$interval_idx
+python /project/def-aloise/$USER/main.py qlora_classification \
+        --dataset_choice=$dataset_choice \
+        --id=$id_name \
+        --lora_alpha=$lora_alpha \
+        --lora_r=$lora_r \
+        --lora_dropout=$lora_dropout \
+        --model_name=$model_name \
+        --limit_tokens=$limit_tokens \
+        --num_train_epochs=$num_train_epochs \
+        --learning_rate=$learning_rate \
+        --tr_bs=$tr_bs
 
-cd /project/def-aloise/$$USER/
-
-python /project/def-aloise/$$USER/main.py main_inference \
-        --dataset_choice=$$dataset_choice \
-        --id_name=$$id_name \
-        --model_name=$$model_name \
-        --n_tokens_infered_max=$$n_tokens_infered_max \
-        --n_chunks=$$n_chunks \
-        --interval_idx=$$interval_idx
 
 # Capture the end time
-end_time=$$(date +"%Y-%m-%d %H:%M:%S")
+end_time=$(date +"%Y-%m-%d %H:%M:%S")
+
 # Calculate and display the execution time
-start_seconds=$$(date -d "$$start_time" '+%s')
-end_seconds=$$(date -d "$$end_time" '+%s')
-execution_time=$$((end_seconds - start_seconds))
-echo "Execution time: $$execution_time seconds"
+start_seconds=$(date -d "$start_time" '+%s')
+end_seconds=$(date -d "$end_time" '+%s')
+execution_time=$((end_seconds - start_seconds))
+
+echo "Execution time: $execution_time seconds"
