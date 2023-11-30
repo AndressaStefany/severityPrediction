@@ -1568,7 +1568,7 @@ def get_nn_classifier(trial: "optuna.Trial",
         'elu': nn.ELU,
         'prelu': nn.PReLU,
     }
-    n_layers = trial.suggest_int("n_layers", 2, 5)
+    n_layers = trial.suggest_int("n_layers", 1, 4)
     layers = []
     in_features = input_size
 
@@ -1637,6 +1637,18 @@ def train_test_classifier(trial: 'optuna.Trial',
             else:
                 continue
                 # raise ValueError(f"The bug_id {key} does not exist")
+    # normalization of embeddings
+    all_embeddings = [entry['embedding'] for entry in train_dict]
+    all_embeddings = np.array(all_embeddings)
+    min_values = np.min(all_embeddings, axis=0)
+    max_values = np.max(all_embeddings, axis=0)
+    
+    for entry in tqdm.tqdm(train_dict):
+        entry['embedding'] = (np.array(entry['embedding']) - min_values) / (max_values - min_values)
+    for entry in val_dict:
+        entry['embedding'] = (np.array(entry['embedding']) - min_values) / (max_values - min_values)
+    for entry in test_dict:
+        entry['embedding'] = (np.array(entry['embedding']) - min_values) / (max_values - min_values)
 
     def collate_fn(data: List[dict]):
         bug_ids = [d["bug_id"] for d in data]
@@ -1666,9 +1678,9 @@ def train_test_classifier(trial: 'optuna.Trial',
     if loss_weighting:
         labels_tensor = torch.tensor(labels)
         pos_weight_value = (labels_tensor == 0).sum() / (labels_tensor == 1).sum()
-        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_value)
+        criterion = nn.BCELoss(pos_weight=pos_weight_value)
     else:
-        criterion = nn.BCEWithLogitsLoss()
+        criterion = nn.BCELoss()
     lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)  # lr = learning rate
 
@@ -1814,8 +1826,20 @@ def get_nn(path_data_folder: Optional[str] = None):
         storage=storage_name,
         load_if_exists=True,
     )
-    n_jobs = 1
-    study.optimize(train_test_classifier, n_trials=10, n_jobs=n_jobs)
+    # n_jobs = 1
+    # study.optimize(train_test_classifier, n_trials=10, n_jobs=n_jobs)
+    train_test_classifier(optuna.trial.FixedTrial({
+        "batch_size": 16,
+        "n_layers": 4,
+        "n_units_l0": 60,
+        "layer_function_0": "prelu",
+        "n_units_l1": 51,
+        "layer_function_1": "elu",
+        "n_units_l2": 87,
+        "layer_function_2": "elu",
+        "n_units_l3": 97,
+        "layer_function_3": "leaky_relu",
+        "lr": 0.0021440526947264296}))
     with open(Path(path_data_folder) / f"{study_name}_results.json", "w") as f:
         json.dump({"best_params": study.best_params, "best_value": study.best_value}, f)
 
