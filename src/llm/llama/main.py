@@ -1159,6 +1159,14 @@ class CustomTrainer(trl.SFTTrainer):
         return super()._get_train_sampler()
     
 class Dataset(torch.utils.data.Dataset):
+    """Custom dataset for binary classification problem where the data are provided as json
+    
+    # Arguments
+    - tokenizer, the tokenizer (deprecated, will be removed as unused)
+    - l_dict: List[dict], the data containing input_field and label_field and bug_id (int) fields in each dict
+    - input_field: str = "input", where to get the input text (str)
+    - label_field: str = "binary_severity", where to get the label (int) in each dict
+    """
     def __init__(
         self,
         tokenizer,
@@ -1169,15 +1177,23 @@ class Dataset(torch.utils.data.Dataset):
         self.l_dict = l_dict
         self.input_field = input_field
         self.label_field = label_field
-        self.tokenizer = tokenizer
 
     def __len__(self):
+        """Number of samples of the dataset. Will be the value return if we do len(my_dataset_object)"""
         return len(self.l_dict)
     
     def get_groups(self) -> Dict[int,List[int]]:
-        """Returns the list of indices with 0 severity and 1 severity"""
-        group_0 = [i for i,d in enumerate(self.l_dict) if d["binary_severity"] == 0]
-        group_1 = [i for i,d in enumerate(self.l_dict) if d["binary_severity"] == 1]
+        """Get the groups of each class:
+        
+        # Return
+        - Dict[int, List[int]], group each dataset index by the severity: 
+        {
+            0: [1,5,6], --> If the samples of index 1, 5 and 6 in l_dict are non severe
+            1: [0,2,3,4,7,8,9] --> If the samples of index 0,2,3,4,7,8,9 in l_dict are severe
+        }
+        """
+        group_0 = [i for i,d in enumerate(self.l_dict) if d[self.label_field] == 0]
+        group_1 = [i for i,d in enumerate(self.l_dict) if d[self.label_field] == 1]
         return {0:group_0, 1:group_1}
     
     def __getitem__(self, i: int) -> Dict[str, "torch.Tensor"]:
