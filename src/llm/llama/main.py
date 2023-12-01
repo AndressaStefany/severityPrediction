@@ -1189,18 +1189,32 @@ class Dataset(torch.utils.data.Dataset):
 
 
 class BalancedRandomSampler(torch.utils.data.Sampler[int]):
+    """Defines which indexes of the dataset to use for the training dataset
+    In this case, it will put as much SEVERE as NON SEVERE samples
+    
+    # Arguments
+    - dataset: Dataset, the dataset that we will balance (must have get_groups method)
+    """
     def __init__(self, dataset: Dataset):
         self.groups = dataset.get_groups()
         n_0,n_1 = len(self.groups[0]),len(self.groups[1])
+        # We extract the minority class
         self.min_class = 0 if n_0 <= n_1 else 1
+        # We get also the minority class number of samples
         self.length_group = min(n_0,n_1)
     def __iter__(self) -> Iterator[int]:
+        """Method that will be called to get the trianing samples in a for loop. Will be called each epoch"""
+        # First we shuffle the samples to take from different majority class elements at each epoch 
         random.shuffle(self.groups[1-self.min_class])
+        # We build the indexes: [ ..., ..., ... all indexes from minority class ..., ..., same number of indexes as the minority class from the majority class , ...]
         samples_ids = [*self.groups[self.min_class],*self.groups[1-self.min_class][:self.length_group]]
+        # We shuffle the indexes to mix together the minority and majority class
         random.shuffle(samples_ids)
+        # And then generate the iterator by using the generator syntax
         for i in samples_ids:
             yield i
     def __len__(self) -> int:
+        """For easier use and because we know it we provide the length of the data with the BalancedRandomSampler active"""
         return self.length_group*2
         
 class DataCollator(trf.data.DataCollatorForTokenClassification):
