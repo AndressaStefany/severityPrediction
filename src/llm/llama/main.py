@@ -950,7 +950,7 @@ def generate_dataset(
     n_tokens_infered_max: int = -1,
     id: str = "",
 ):
-    """Generates the dataset for the finetuning"""
+    """Generates the dataset for the finetuning and put them in cache json files"""
     folder_out: Path = existing_path(folder_out, is_folder=True)
     folder_data: Path = existing_path(folder_data, is_folder=True)
     file_examples = existing_path(
@@ -1010,6 +1010,7 @@ def generate_dataset(
         return train_data, valid_data, train_path, valid_path
 
 class EarlyStoppingTrainer:
+    """Class that manages the early stopping by comparing the metric_value to the best metric_value seen with a patience and a min_delta of improvement provided"""
     def __init__(self, 
                 early_stopping_patience: int, 
                 early_stopping_threshold: float
@@ -1035,6 +1036,7 @@ class EarlyStoppingTrainer:
         if self.early_stopping_patience_counter >= self.early_stopping_patience:
             control.should_training_stop = True
 class PredictionAggregator(trf.trainer_callback.TrainerCallback):
+    """Class that manages saving data (in/out) for each step and allows to stop the training if early stopping is provided"""
     def __init__(
         self,
         event: Literal["train", "val"],
@@ -1067,6 +1069,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         event: Literal["val", "train"],
         epoch: float,
     ):
+        """Function to save data of the prediction or training depending of the self.event watch Stops the training if early stopping asks to with the current validation loss for the epoch"""
         if event == self.event:
             self.batch_id += 1
             for bug_id, prediction, true, n in zip(bug_ids, predictions, trues, n_tokens):
