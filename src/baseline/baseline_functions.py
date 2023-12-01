@@ -10,6 +10,7 @@ from typing import * #type: ignore
 # from rich.progress import Progress
 import optuna
 import json
+import logging
 
 from scipy.sparse import csr_matrix
 from sklearn.pipeline import Pipeline
@@ -356,15 +357,13 @@ def partial_train(X: np.ndarray,y: np.ndarray,classifier,train_indices: np.ndarr
         y_train_pred = np.concatenate([y_train_pred,classifier.predict(X_train)],axis=0)
     return y_train, y_train_pred
 
-def train(X: np.ndarray,y: np.ndarray,classifier,train_indices: np.ndarray):
-        X_train = (X[train_indices])
-        y_train = (y[train_indices])
-        classifier.fit(X_train, y_train)
+def train(X_tr: np.ndarray,y_tr: np.ndarray,classifier):
+        classifier.fit(X_tr, y_tr)
         if isinstance(classifier,SVC) or isinstance(classifier, KNeighborsClassifier):
-            y_train_pred = classifier.predict_proba(X_train)[:,1]
+            y_train_pred = classifier.predict_proba(X_tr)[:,1]
         else:
-            y_train_pred = classifier.predict_probas(X_train)
-        return y_train, y_train_pred
+            y_train_pred = classifier.predict_probas(X_tr)
+        return y_tr, y_train_pred
         
 def cross_validation_with_classifier(X: np.ndarray, y: np.ndarray, n_splits: int = 5, train_fun: Optional[Callable] = None, num_rep: int = 5, **classifier_args):
     if train_fun is None:
@@ -383,9 +382,9 @@ def cross_validation_with_classifier(X: np.ndarray, y: np.ndarray, n_splits: int
             
             del y_train_pred
             del y_train
-            X_test = X[test_indices]
+            X_test = X[test_indices][:1000]
             y_pred = classifier.predict(X_test)
-            y_test = y[test_indices]
+            y_test = y[test_indices][:1000]
             fpr, tpr, thresholds = roc_curve(y_test, y_pred)
             roc_auc = auc(fpr, tpr)
 
@@ -396,33 +395,28 @@ def cross_validation_with_classifier(X: np.ndarray, y: np.ndarray, n_splits: int
 
     return pd.DataFrame(df_results)
 
-def train_valid_test(X: np.ndarray, y: np.ndarray, split: Dict[str,List[int]], train_fun: Optional[Callable] = None, num_rep: int = 5, **classifier_args):
+def train_valid_test(logger: logging.Logger, X_tr: np.ndarray, y_tr: np.ndarray, X_val: np.ndarray, y_val: np.ndarray, train_fun: Optional[Callable] = None, num_rep: int = 5, **classifier_args):
     if train_fun is None:
         train_fun = partial_train
     classifier = get_classifier(**classifier_args)
     df_results = []
-    for seed in range(num_rep):
-        print(f"Seed {seed}: ",end="")
-        train_indices = split["tr"]
-        test_indices = split["val"]
-        y_train, y_train_pred = train_fun(X,y,classifier,train_indices)
-        train_accuracy = accuracy_score(y_train, y_train_pred.round(decimals=0).astype(int))
-        
-        del y_train_pred
-        del y_train
-        X_test = X[test_indices]
-        y_pred = classifier.predict(X_test)
-        y_test = y[test_indices]
-        fpr, tpr, thresholds = roc_curve(y_test, y_pred)
-        roc_auc = auc(fpr, tpr)
+    logger.info(f"Train data loaded {X_tr.shape=} {y_tr.shape=}")
+    y_train, y_train_pred = train_fun(X_tr,y_tr,classifier)
+    train_accuracy = accuracy_score(y_train, y_train_pred.round(decimals=0).astype(int))
+    
+    del y_train_pred
+    del y_train
+    y_pred = classifier.predict(X_val)
+    fpr, tpr, thresholds = roc_curve(y_val, y_pred)
+    roc_auc = auc(fpr, tpr)
 
-        test_accuracy = accuracy_score(y_test, y_pred.round(decimals=0).astype(int))
-        df_results.append({ "seed": seed, "classifier": classifier.__class__.__name__, "train_fun": train_fun.__name__, "train_accuracy": train_accuracy, "test_accuracy": test_accuracy , "fold_id": 0, "roc_auc": roc_auc, **classifier_args})
+    test_accuracy = accuracy_score(y_val, y_pred.round(decimals=0).astype(int))
+    df_results.append({ "seed": 0, "classifier": classifier.__class__.__name__, "train_fun": train_fun.__name__, "train_accuracy": train_accuracy, "test_accuracy": test_accuracy , "fold_id": 0, "roc_auc": roc_auc, **classifier_args})
         
     return pd.DataFrame(df_results)
         
     
-def save_data_to_disk(pipeline_fn: Callable, folder: Path, id: str = "", do_print: bool = False, dataset_choice: DatasetName=default_datasetname):
+def save_data_to_disk(split: dict, num_samples: Tuple[int], pipeline_fn: Callable, folder: Path, id: str = "", do_print: bool = False, dataset_choice: DatasetName=default_datasetname):
     dataset_choice = get_dataset_choice(dataset_choice)
     bug_reports = pd.read_json(folder / f'{dataset_choice}.json')
     bug_reports.loc[:,"description"] = bug_reports.loc[:,"stemmed_description"]
@@ -433,30 +427,46 @@ def save_data_to_disk(pipeline_fn: Callable, folder: Path, id: str = "", do_prin
         print(bug_reports.info())
     pipeline,vectorizer = pipeline_fn()
     X, y = pipeline.fit_transform(bug_reports)
+    X = X.astype(np.float16)
+    y = y.astype(np.float16)
     if do_print:
         print_pipeline(pipeline,bug_reports)
-    memmapped_array = np.memmap(folder / f"X_{id}_{dataset_choice}.npy",dtype=np.float32,mode="w+",shape=X.shape)
-    memmapped_array[:] = X[:]
-    memmapped_array.flush()
-    with open(folder / f"X_{id}_{dataset_choice}.shape", "w") as shape_file:
-        shape_file.write(f"({X.shape[0]},{X.shape[1]})")
-    np.save(folder / f"X_full_{id}_{dataset_choice}.npy",X)
-    np.save(folder / f"y_{id}_{dataset_choice}.npy",y)
-    
-def read_data_from_disk(folder: Path, id: str = "", full: bool = True):
-    if full:
-        X = np.load(folder / f"X_full_{id}.npy")
-    else:
-        with open(folder / f"X_{id}.shape", "r") as shape_file:
-            shape = eval(shape_file.read().strip())
-        X = np.memmap(folder / f"X_{id}.npy", dtype='float32', mode='r',shape=shape)
-    y = np.load(folder / f"y_{id}.npy")
-    return X,y
+    # memmapped_array = np.memmap(folder / f"X_{id}_{dataset_choice}.npy",dtype=np.float16,mode="w+",shape=X.shape)
+    # memmapped_array[:] = X[:]
+    # memmapped_array.flush()
+    # with open(folder / f"X_{id}_{dataset_choice}.shape", "w") as shape_file:
+    #     shape_file.write(f"({X.shape[0]},{X.shape[1]})")
+    random.seed(0)
+    random.shuffle(split["tr"])
+    random.shuffle(split["val"])
+    df = pd.read_json(folder / f"{dataset_choice}.json")
+    for k in split:
+        split[k] = list(df[df["bug_id"].isin(split[k])].index)
+    for n_samples in num_samples:
+        for dataset_type in ["tr","val"]:
+            np.save(folder / f"X_full_{dataset_type}_{id}_{dataset_choice}_{n_samples}_samples.npy",X[split[dataset_type]])
+            np.save(folder / f"y_{dataset_type}_{id}_{dataset_choice}_{n_samples}_samples.npy",y[split[dataset_type]])
 
-def generate_data(data_path: Path, dataset: DatasetName):
-    save_data_to_disk(lambda :pipeline_naive_bayes(is_binomial=True),data_path,id="nb_bino",dataset_choice=dataset)
-    save_data_to_disk(lambda :pipeline_naive_bayes(is_binomial=False),data_path,id="nb_non_bino",dataset_choice=dataset)
-    save_data_to_disk(pipeline_1NN_SVM,data_path,id="svm_knn",dataset_choice=dataset)
+def read_data_from_disk(folder: Path, id: str = "", full: bool = True) -> Tuple[Tuple[np.ndarray,np.ndarray],Tuple[np.ndarray,np.ndarray]]:
+    """id must contain the _num_samples"""
+    if full:
+        X_tr = np.load(folder / f"X_full_tr_{id}.npy")
+        X_val = np.load(folder / f"X_full_val_{id}.npy")
+        y_tr = np.load(folder / f"y_tr_{id}.npy")
+        y_val = np.load(folder / f"y_val_{id}.npy")
+        return (X_tr,y_tr),(X_val,y_val)
+    else:
+        raise NotImplemented
+        # with open(folder / f"X_{id}.shape", "r") as shape_file:
+        #     shape = eval(shape_file.read().strip())
+        # X = np.memmap(folder / f"X_{id}.npy", dtype='float16', mode='r',shape=shape)
+        # y = np.load(folder / f"y_{id}.npy")
+        # return X,y
+
+def generate_data(data_path: Path, num_samples: Tuple[int], dataset: DatasetName, split: dict):
+    save_data_to_disk(split,num_samples,lambda :pipeline_naive_bayes(is_binomial=True),data_path,id="nb_bino",dataset_choice=dataset)
+    save_data_to_disk(split,num_samples,lambda :pipeline_naive_bayes(is_binomial=False),data_path,id="nb_non_bino",dataset_choice=dataset)
+    save_data_to_disk(split,num_samples,pipeline_1NN_SVM,data_path,id="svm_knn",dataset_choice=dataset)
 def get_classifier(classifier_name: str,**kwargs):
     if classifier_name == "BernoulliNB":
         return BernoulliNB(**kwargs)
@@ -483,67 +493,22 @@ def get_classifier(classifier_name: str,**kwargs):
     else:
         raise ValueError(f"Unknown classifier {classifier_name}")
 ClassifierName = Literal["BernoulliNB","MultinomialNB","GaussianNB","ComplementNB","SVC","KNeighborsClassifier"]
-def run_trainings(folder: Path):
-    df_results = None
-    for i,(classifier,pipeline_id,full) in enumerate(zip(
-        ["BernoulliNB","MultinomialNB","GaussianNB","ComplementNB","SVC","KNeighborsClassifier"],
-        ["nb_bino","nb_non_bino","nb_non_bino","nb_non_bino","svm_knn","svm_knn"],
-        [False,False,False,False,True,True]
-        )):
-        if not full:
-            continue
-        print(f"Training {classifier}")
-        X,y = read_data_from_disk(folder, id=pipeline_id, full=full)
-        print(f"Data ready for {classifier}")
-        classifier_args = {}
-        classifier_args['classifier_name'] = classifier
-        df = cross_validation_with_classifier(X,y,train_fun=partial_train if not full else train,**classifier_args)
-        del X
-        del y
-        if df_results is None:
-            df_results = df
-        else:
-            df_results = pd.concat([df_results,df],ignore_index=True)
-        df_results.to_csv(folder / "results_baselines.csv",index=False)
-class TrialAdapter:
-    def __init__(self, trial=None, args=None):
-        self.trial = trial
-        self.args = args
-    def suggest_int(self,*args,**kwargs):
-        if self.trial is not None:
-            return self.trial.suggest_int(*args,**kwargs)
-        else:
-            return self.args[args[0]] #type: ignore
-    def suggest_categorical(self,*args,**kwargs):
-        if self.trial is not None:
-            return self.trial.suggest_categorical(*args,**kwargs)
-        else:
-            return self.args[args[0]] #type: ignore
-    def suggest_float(self,*args,**kwargs):
-        if self.trial is not None:
-            return self.trial.suggest_float(*args,**kwargs)
-        else:
-            return self.args[args[0]] #type: ignore
 
 
-def run_optuna(trial: optuna.Trial, dataset: str, models: Optional[List[ClassifierName]] = None, trial_mode: bool = True, num_rep: int = 5):
-    if trial_mode:
-        trial = TrialAdapter(trial=trial) #type: ignore
-    else:
-        trial = TrialAdapter(args=trial)#type: ignore
+def run_optuna(trial: optuna.Trial, dataset: str, models: Optional[List[ClassifierName]] = None, num_rep: int = 5, num_samples: int = -1):
     folder = Path("./data/")
     if models is None:
         models = ['BernoulliNB','MultinomialNB','GaussianNB','ComplementNB']
     classifier_name = trial.suggest_categorical("classifier_name",models)
     kwargs = {}
     if classifier_name == "BernoulliNB":
-        id=f"nb_bino_{dataset}"
-        full = False
+        id=f"nb_bino_{dataset}_{num_samples}_samples"
+        full = True
     elif classifier_name in ["MultinomialNB","GaussianNB","ComplementNB"]:
-        id=f"nb_non_bino_{dataset}"
-        full = False
+        id=f"nb_non_bino_{dataset}_{num_samples}_samples"
+        full = True
     elif classifier_name in ["SVC","KNeighborsClassifier"]:
-        id=f"svm_knn_{dataset}"
+        id=f"svm_knn_{dataset}_{num_samples}_samples"
         full = True
     else:
         raise ValueError(f"classifier_name {classifier_name} is not a possible name")
@@ -592,15 +557,21 @@ def run_optuna(trial: optuna.Trial, dataset: str, models: Optional[List[Classifi
             "leaf_size": trial.suggest_categorical("leaf_size",[10, 20, 30, 40, 50]),  # Leaf size
             "p": trial.suggest_categorical("p",[1, 2, 3]),  # Power parameter for the Minkowski metric (1 for Manhattan, 2 for Euclidean, 3 Minkwski)
         }
-    X,y = read_data_from_disk(folder, id, full=full)
-    with open(f"data/split_idx_{dataset}.json", "w") as fp:
-        split = json.load(fp)
-    df = train_valid_test(X,y,split=split, train_fun=partial_train if not full else train,**kwargs,num_rep=num_rep)
-    del X
-    del y
-    value = df["test_accuracy"].mean()
-    with open("./data/out.txt","a") as f:
-        f.write("end "+str(kwargs)+f" with {value}\n")
+    logger = logging.getLogger(trial.study.study_name)
+    logger.setLevel(logging.INFO)  # Set the logging level
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')  # Define the log message format
+    file_handler = logging.FileHandler(f'{trial.study.study_name}_{trial._trial_id}.log')
+    file_handler.setFormatter(formatter)
+    # Add the file handler to the logger
+    logger.addHandler(file_handler)
+    logger.info(f"Start")
+    (X_tr,y_tr),(X_val,y_val) = read_data_from_disk(folder, id, full=full)
+    df = train_valid_test(X_tr=X_tr,y_tr=y_tr,X_val=X_val,y_val=y_val, train_fun=train,**kwargs,num_rep=num_rep,logger=logger)
+    del X_tr
+    del y_tr
+    del X_val
+    del y_val
+    value = df["roc_auc"].mean()
     return value
 
 @print_args
@@ -609,46 +580,41 @@ def hyperparameter_search(id: str, dataset: str, models: Optional[List[Classifie
     id += "_"+dataset
     # prepare the data
     folder_out = Path("data/")
-    path_idx = folder_out / f"split_idx_{dataset}.json"
     with open(folder_out / f"split_{dataset}.json") as fp:
         split = json.load(fp)
-    random.seed(0)
-    random.shuffle(split["tr"])
     if num_samples != -1:
-        split["tr"] = split["tr"][:num_samples]
+        split["tr"] = split["tr"][:min(num_samples,len(split["tr"]))]
+        split["val"] = split["val"][:min(num_samples,len(split["val"]))]
     id += f"_{num_samples}_samples"
-    if not path_idx.exists():
-        df = pd.read_json(folder_out / f"{dataset}.json")
-        for k in split:
-            split[k] = list(df[df["bug_id"].isin(split[k])].index)
-        with open(path_idx, "w") as fp:
-            json.dump(split, fp)
     study_name = f"study-{id}"  # Unique identifier of the study.
     storage_name = "sqlite:///{}.db".format(study_name)
     sampler = optuna.samplers.RandomSampler(seed=0)
     study = optuna.create_study(direction="maximize",study_name=study_name, storage=storage_name, load_if_exists=True, sampler=sampler)
-    study.optimize(lambda trial:run_optuna(trial,models=models,num_rep=num_rep,dataset=dataset),n_trials=50,n_jobs=n_jobs)
+    study.optimize(lambda trial:run_optuna(trial,models=models,num_rep=num_rep,dataset=dataset,num_samples=num_samples),n_trials=50,n_jobs=n_jobs)
     with open(f"data/study-{id}-best.json",'w') as f:
         json.dump({
             "best_params": study.best_params,
             "best_value": study.best_value
         },f)
 
-def generate_dataset(dataset: DatasetName):
+def generate_dataset(dataset: DatasetName, num_samples: str):#type: ignore
     assert isinstance(dataset, str) and dataset in get_args(DatasetName)
     data_path = Path("./data/")
-    generate_data(data_path,dataset=dataset)
+    with open(data_path / f"split_{dataset}.json") as fp:
+        split = json.load(fp)
+    num_samples: Tuple[int] = eval(num_samples)#type: ignore
+    generate_data(data_path,dataset=dataset, split=split, num_samples=num_samples)
     
 AlgorithmName = Literal["bayesian","SVC","KNN"]
-def launch_search(algorithm: AlgorithmName, dataset: DatasetName, n_jobs: int = 4):
+def launch_search(algorithm: AlgorithmName, dataset: DatasetName, n_jobs: int = 4, num_samples: int = -1):
     assert isinstance(algorithm, str) and algorithm in get_args(AlgorithmName)
     assert isinstance(dataset, str) and dataset in get_args(DatasetName)
     if algorithm == "bayesian":
-        hyperparameter_search("bayesian-networks",dataset,["BernoulliNB","ComplementNB","GaussianNB","MultinomialNB"],n_jobs=n_jobs)
+        hyperparameter_search("bayesian-networks",dataset,["BernoulliNB","ComplementNB","GaussianNB","MultinomialNB"],n_jobs=n_jobs, num_samples=num_samples)
     elif algorithm == "SVC":
-        hyperparameter_search("svc",dataset,["SVC"],n_jobs=n_jobs)
+        hyperparameter_search("svc",dataset,["SVC"],n_jobs=n_jobs, num_samples=num_samples)
     elif algorithm == "KNN":
-        hyperparameter_search("knn",dataset,["KNeighborsClassifier"],n_jobs=n_jobs)
+        hyperparameter_search("knn",dataset,["KNeighborsClassifier"],n_jobs=n_jobs, num_samples=num_samples)
     else:
         raise Exception
 if __name__ == "__main__":
