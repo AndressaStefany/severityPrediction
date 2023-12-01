@@ -1234,10 +1234,9 @@ def main_qlora_classification(
     field_input: str = "description",
     num_train_epochs: int = 1,
     tr_bs: int = 1,
-    gradient_accumulation_steps: int = 1,
     learning_rate: float = 2e-4,
     limit_tokens: int = 7364,
-    mapping_dict: Optional[dict] = None,
+    mapping_dict: Optional[Dict[int,str]] = None,
     lim_size: int = -1,
     id: str = "",
     use_cpu: bool = False,
@@ -1246,40 +1245,35 @@ def main_qlora_classification(
     early_stopping_threshold: float = 1e-3,
 ) -> Tuple["np.ndarray", List[float], "pd.DataFrame"]:# type: ignore
     """
-    Perform training and fine-tuning of a model for causal reasoning using LoRA.
-    Doc: https://miro.medium.com/v2/resize:fit:4800/format:webp/1*rOW5plKBuMlGgpD0SO8nZA.png
-
+    Perform training and PEFT QLORA fine-tuning of a classification model using LoRA.
+    Curently only llama models are supported.
+    
+    
     # Arguments
-        - new_model_name: str, name of the new model pretrained
-        - file_examples: Path, a file path to input data.
-        - folder_out: Path, a Path object representing the output folder for the results.
-        - model_name: str, the name or path of the pretrained model to use. Default: "meta-llama/Llama-2-13b-chat-hf"
-        - token: str, a token string. Default: ""
-        - lora_alpha: int, scaling factor for the weight matrices. alpha is a scaling factor that adjusts the magnitude of the combined result (base model output + low-rank adaptation). Default: 16
-        - lora_dropout: float, dropout probability of the LoRA layers. This parameter is used to avoid overfitting. Default: 0.1
-        - lora_r: int, this is the dimension of the low-rank matrix. Default: 64. It means for a layer initialy of size d_in x d_out we will have 2 lora layers of size d_in x r and r x d_out reducing the number of parameters
-        - num_train_epochs: int, the number of training epochs. Default: 1
-        - tr_bs: int, batch size for training. Default: 4
-        - val_bs: int, batch size for validation. Default: 4
-        - optim: str, optimization method. Possible values include "paged_adamw_32bit" and other optimization methods specific to the project. Default: "paged_adamw_32bit"
-        - save_steps: int, the frequency of saving model checkpoints during training. Default: 25
-        - logging_steps: int, the frequency of logging training progress. Default: 25
-        - learning_rate: float, the learning rate for training. Default: 2e-4
-        - weight_decay: float, the weight decay value for regularization. Default: 0.001
-        - fp16: bool, whether to use mixed-precision training with 16-bit floats. Default: False
-        - bf16: bool, whether to use 16-bit bfloat16 format. Default: False
-        - max_grad_norm: float, the maximum gradient norm for gradient clipping. Default: 0.3
-        - max_steps: int, the maximum number of training steps. Default: -1 (unlimited)
-        - warmup_ratio: float, the warmup ratio for learning rate scheduling. Default: 0.03
-        - group_by_length: bool, a flag to group data by sequence length. Default: True
-        - lr_scheduler_type: str, type of learning rate scheduler. Default: "constant"
-        - eval_steps: int, the frequency of evaluating the model during training. Default: 20
-        - train_size: float = 0.3, the size of the training dataset
-        - lim_size: int = -1, the size of the training and validation set. If -1 no limit
+        - dataset_choice: DatasetName, the dataset to use (eclipse or mozilla)
+        - folder_out: Path = default_folder_data, the folder to put the logs and output visualizations
+        - folder_data: Path = default_folder_data, the input data folder where the input dataset is expected to be
+        - lora_alpha: int = 16, lora alpha parameter (see lora doc)
+        - lora_dropout: float = 0.1, lora dropout parameter applied after the lora matrix (see lora doc)
+        - lora_r: int = 64, lora rank of the matrice used by lora (see lora doc)
+        - model_name: str = default_model, the name of the llama model to use following huggingface existing model name
+        - token: str = default_token, the token to access the huggingface model
+        - field_input: str = "description", the field where the input text is
+        - num_train_epochs: int = 1, the maximum number of training epochs to do (!! could be less because of early stopping) 
+        - tr_bs: int = 1, the batch size to use (modify this to avoid CUDA OOM error)
+        - learning_rate: float = 2e-4, the learning rate of the paged_adam_8bits optimizer
+        - limit_tokens: int = 7364, the number of tokens to limit the input of llama (includes the template)
+        - mapping_dict: Optional[Dict[int,str]] = None, the mapping dict to map a number to the description, default is { -2: f"Too big >={limit_tokens}", -1: "Mixed answer", 0: "NON SEVERE", 1: "SEVERE"}
+        - lim_size: int = -1, limits the number of samples in the dataset for quick testing purposes. Limits both training and validation datasets to the same number of samples. Default is -1, all dataset
+        - id: str = "", custom id to put on the folder where the output data are written. Advises to put $SLURM_JOBID to have a unique folder per run to avoid accidentally overwritting results
+        - use_cpu: bool = False, wether to use the CPU to make the training. At the time this function is not supported
+        - tr_weighted_sampling: bool = False, wether to balance the training dataset. For this at each epoch we keep the minority class and randomly sample the majority class so that there are exatly the same number of the minority class and majoritary class
+        - early_stopping_patience: int = 3, the patience of non increasing validation loss before stopping the training
+        - early_stopping_threshold: float = 1e-3, to qualify a reduction of validation loss as an improvement, this reduction must be bigger than early_stopping_threshold
     """
-    print("main_qlora_classification")
-    arguments = locals()
-    logger.info("main_qlora")
+    # Get parameters of the function (only local variables at the time)
+    arguments = locals() 
+    # Setup pathes / arguments and check exist/are valid
     folder_out = existing_path(folder_out, is_folder=True) / f"qlora_finetune{id}"
     folder_out.mkdir(parents=True, exist_ok=True)
     folder_data = existing_path(folder_data, is_folder=True)
@@ -1287,41 +1281,42 @@ def main_qlora_classification(
     model_name: ModelName = get_literal_value(model_name)
     if token != "":
         huggingface_hub.login(token=token)
+    # save input arguments using locals of above
     with open(folder_out / "parameters.json", "w") as f:
         json.dump(arguments, indent=4, fp=f, cls=CustomEncoder)
-
+    # Get the tokenizer and base model quantized
     logger.info("LlamaTokenizer")
     tokenizer: LlamaTokenizer = get_tokenizer(model_name=model_name, token=token)
     logger.info("initialize_model")
     model = initialize_model(
         model_name=model_name,
         token=token,
-        base_class=trf.AutoModelForSequenceClassification,
+        base_class=trf.AutoModelForSequenceClassification,# Notice the AutoModelForSequenceClassification for sequence classification
         quant=True,
-        load_in_8bit=False
+        load_in_8bit=False,
+        num_labels=1, # 1 label/class because binary class: 0 NON SEVERE ; 1 SEVERE
     )
+    # Prepare LORA arguments
     logger.info("peft.LoraConfig")
     peft_config = peft.LoraConfig(  # type: ignore
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
         r=lora_r,
-        bias="none", #<--- replace "lora_only"
+        bias="none",
         inference_mode=False,
-        task_type="SEQ_CLS",
+        task_type="SEQ_CLS", # Notice the SEQ_CLS for sequence classification
     )
+    # Note: LLAMA2 for sequence classification returns logits; providing num_labels just adds a randomly initialized linear(voc_size,num_labels) to have the correct output
+    # Padding tokens for batch of sentences of different sizes
     tokenizer.pad_token = "[PAD]"
     model.config.pad_token_id = 0
-    # https://github.com/huggingface/transformers/blob/ce2e7ef3d96afaf592faf3337b7dd997c7ad4928/src/transformers/models/llama/modeling_llama.py#L906
-    logger.info("get_peft_model")
-    # model = peft.prepare_model_for_int8_training(model)
-    # model = peft.get_peft_model(model, peft_config)
-    print(model)
-    # model.print_trainable_parameters()
-    # create datasets
+    # create datasets: we put in cache the dataset with the template already applied to increase the speed
     logger.info("generate_dataset")
+    ## WARNING: here as everything is the same data wise for meta-llama/Llama-2-7b-chat-hf and meta-llama/Llama-2-13b-chat-hf, we replace model_name_dataset in case of llama 13b to have the same cache files names
     model_name_dataset: ModelName = model_name
     if model_name == "meta-llama/Llama-2-13b-chat-hf":
         model_name_dataset = "meta-llama/Llama-2-7b-chat-hf"
+    # Then we generate (if not already) and get the datasets
     tr_data, val_data, train_path, valid_path = generate_dataset(
         folder_out=folder_data,
         folder_data=folder_data,
@@ -1333,15 +1328,17 @@ def main_qlora_classification(
         n_tokens_infered_max=limit_tokens,
     )
     logger.info(f"Using {train_path} {valid_path}")
-    logger.info("dataloaders")
+    # Then we generate the huggingface datasets
+    ## First if lim_size is provided we limit the number of samples in train and validation datasets
     real_lim_size_tr = lim_size
     if lim_size == -1:
         real_lim_size_tr = len(tr_data)
-    tr_data = tr_data[:real_lim_size_tr]
+    tr_data: List[dict] = tr_data[:real_lim_size_tr]
     real_lim_size_val = lim_size
     if lim_size == -1:
         real_lim_size_val = len(val_data)
-    val_data = val_data[:real_lim_size_val]
+    val_data: List[dict] = val_data[:real_lim_size_val]
+    ## Then we convert the data into Dataset (see doc above)
     tr_data = Dataset(tokenizer, tr_data)
     val_data = Dataset(tokenizer, val_data)
     logger.info(f"training QLORA {len(tr_data)} {len(val_data)}")
@@ -1351,15 +1348,14 @@ def main_qlora_classification(
         num_train_epochs=num_train_epochs,
         per_device_train_batch_size=tr_bs,
         per_device_eval_batch_size=tr_bs,
-        gradient_accumulation_steps=gradient_accumulation_steps,
+        gradient_accumulation_steps=1,
         logging_steps=1,
         learning_rate=learning_rate,
-        fp16=not use_cpu,
-        optim="paged_adamw_8bit",
+        fp16=not use_cpu, # to avoid bug
+        optim="paged_adamw_8bit", # !! IMPORTANT !! to have an optimizer working in 8 bits as the model
         remove_unused_columns=False,
         evaluation_strategy="epoch",
-        save_total_limit=2,
-        # eval_accumulation_steps=1,
+        save_total_limit=2, # to limit the total number of checkpoints (and disk memory used) kept at all time
         logging_first_step=True,
         use_cpu=use_cpu,
     )
@@ -1372,42 +1368,48 @@ def main_qlora_classification(
             1: "SEVERE",
         }
     logger.info("Set supervised fine-tuning parameters")
+    # Then we take into account tr_weighted_sampling: balancing or not the training dataset
     tr_size = len(tr_data)
     if tr_weighted_sampling:
+        # If yes we provide a custom sampler that will manage providing the indexes to get the data at from the Dataset for each epoch
         sampler = BalancedRandomSampler(
             tr_data
         )
+        # We correct the size of the training data if we balance it
         tr_size = len(sampler)
+    # Then we build the callbacks to get all of the metrics, inputs/outputs, one for each dataset
+    # Note: these are workaround to be able to get the metrics for each step both for the training and validation datasets. Otherwise the training dataset metrics are not available with huggingface
     predictions_aggregator_tr = PredictionAggregator(
         event="train", n_tokens_infered_max=limit_tokens, folder_out=folder_out,size=tr_size
     )
     predictions_aggregator_val = PredictionAggregator(
         event="val", n_tokens_infered_max=limit_tokens, folder_out=folder_out,size=len(val_data),
-        early_stopping=EarlyStoppingTrainer(
+        early_stopping=EarlyStoppingTrainer(# We attach the early stopper there as the validation loss is only accessible via PredictionAggregator and we can stop the training via the object control
             early_stopping_patience=early_stopping_patience,
             early_stopping_threshold=early_stopping_threshold,
         )
     )
+    # We build the trainer object that will do the training and validations loops, the epochs... As we followed the format specified by huggingface the callbacks will be called at the appropriate time (end of each batch during training, end of each epoch...)
     trainer = CustomTrainer(  # type: ignore
         model=model,
         train_dataset=tr_data,
         eval_dataset=val_data,
         tokenizer=tokenizer,
         args=training_arguments, 
-        peft_config=peft_config,  # type: ignore
+        peft_config=peft_config,  # type: ignore --> to provide LORA hyperparameters
         packing=False,
-        max_seq_length=limit_tokens + 5,
+        max_seq_length=limit_tokens + 5, # For safety: length of the template and we allow 5 tokens to answer even though in practise it only return one value
         formatting_func=lambda x: x,
-        data_collator=DataCollator(tokenizer, False, limit_tokens),
-        callbacks=[
+        data_collator=DataCollator(tokenizer, False, limit_tokens), # custom way of building batches from individual samples
+        callbacks=[ # callbacks to save the results and do the early stopping
             predictions_aggregator_tr,
             predictions_aggregator_val
         ],
-        weighted=tr_weighted_sampling,
+        weighted=tr_weighted_sampling, # wether to balance the training dataset
     )
     logger.info(f"{trainer.args._n_gpu=}")
     # with torch.autocast("cuda"):
-    trainer.train(resume_from_checkpoint=False)
+    trainer.train(resume_from_checkpoint=False) # launch the training
     with open(folder_out / "log_history.json", "w") as fp:
         json.dump(trainer.state.log_history, fp)
 
