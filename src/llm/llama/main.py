@@ -1101,6 +1101,16 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                     data_full.to_json(self.folder_out / f"data{id}.json", orient="records", indent=4)
             
 class CustomTrainer(trl.SFTTrainer):
+    """Manages the training loop with callbacks for each step of the training.
+    Here the objective of this class is to convert the Llama model for sequence classification into a real binary classifier by applying a sigmoid and then applying the binary crossentropy loss. Moreover it notifies the callbacks of new incoming data at the training or validation step
+    
+    # Arguments
+    - tokenizer, the tokenizer to use
+    - callbacks: List, the callbacks to notify when new data are available
+    - weighted: bool = False, wether we need to use the BalancedRandomSampler
+    - *args, other positional arguments to transmit to the trl.SFTTrainer
+    - **kwargs, other keywords arguments to transmit to the trl.SFTTrainer
+    """
     def __init__(self, tokenizer, callbacks: List, weighted: bool = False, *args, **kwargs):
         self.tokenizer = tokenizer
         self.callbacks = callbacks
@@ -1111,12 +1121,22 @@ class CustomTrainer(trl.SFTTrainer):
     def prediction_step(
         self, model, inputs, prediction_loss_only: bool, ignore_keys=None
     ) -> Tuple:
+        """Validation step in our case as wwe do not do other predictions (train does not count)"""
         if "val" not in self.events:
             return super().prediction_step(model, inputs, prediction_loss_only, ignore_keys)
         self.compute(model, inputs, "val")
         return None, None, None  # to save GPU RAM
-    def compute(self, model, inputs, event, *args, **kwargs):
-        # logger.info(f"compute_loss with batch size of {len(inputs['bug_id'])}")
+    def compute(self, model, inputs: Dict, event: Literal["val","train"], *args, **kwargs):
+        """The main function to make the prediction, compute the loss and then notify the correct callbacks depending of the event (val or train)
+        
+        # Arguments
+        - model, the model that can predict tokenized text (from input_ids) the prediction (1 logit)
+        - inputs: Dict returned by the collator object/function. Expected {"input": torch.Tensor, "bug_id": List[int], "label": torch.Tensor}
+        - event: Literal["val","train"] the event that asked for the prediction
+        
+        # Returns
+        - loss: float, the loss for this batch
+        """
         try:
             gc.collect()
             torch.cuda.empty_cache()  # type: ignore
@@ -1149,8 +1169,10 @@ class CustomTrainer(trl.SFTTrainer):
         return loss
         
     def compute_loss(self, model, inputs, *args, **kwargs):
+        """Compute the loss of the model for the inputs provided"""
         return self.compute(model, inputs, "train")
-    def _get_train_sampler(self):
+    def _get_train_sampler(self) -> Optional[torch.utils.data.Sampler]:
+        """Function that allows to provide a random balanced sampling per epoch"""
         if self.weighted:
             dataset: "Dataset" = self.train_dataset# type: ignore
             return BalancedRandomSampler(
