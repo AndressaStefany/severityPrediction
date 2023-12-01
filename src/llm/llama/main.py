@@ -1204,19 +1204,37 @@ class BalancedRandomSampler(torch.utils.data.Sampler[int]):
         return self.length_group*2
         
 class DataCollator(trf.data.DataCollatorForTokenClassification):
+    """Custom way of collating (gathering together) individual samples into batches: apply padding to input, add the label and bug id for debugging purpose.
+    
+    # Argument:
+    - tokenizer, the tokenizer used for the model
+    - padding: bool, wether to do padding, leave to True
+    - max_length: int, the maximum length of all samples (limti_size)
+    
+    """
     def __init__(self, tokenizer, padding: bool, max_length: int):
         self.token_pad = tokenizer.eos_token_id
         self.tokenizer = tokenizer
         tokenizer.pad_token = "[PAD]"
         super().__init__(tokenizer=tokenizer, padding=padding, max_length=max_length)
 
-    def torch_call(self, features) -> Dict:
-        # logger.info(f"bs={len(features)}")
+    def torch_call(self, features: List[dict]) -> Dict:
+        """Method called to make the batch 
+        
+        # Arguments
+        - features: List[dict], the list of individual samples coming from Dataset.__getitem__
+        
+        # Return
+        - Dict {"input": inputs, "label": labels, "bug_id": bug_id} where inputs, labels are torch.Tensor but bug_id is List[int]
+        """
+        # Extract input field, tokenize and batch with padding returning directly a torch Tensor 
         inputs = [e["input"] for e in features]
         inputs = self.tokenizer(inputs, padding=True, return_tensors="pt")["input_ids"]
+        # Convert labels to torch Tensor
         labels = torch.cat(
             [e["label"].reshape((1, 1)).to(torch.float) for e in features], dim=0
         )
+        # Just extract bug_ids, no need to convert into tensors as not provided to the model/loss
         bug_id = [e["bug_id"] for e in features]
         return {"input": inputs, "label": labels, "bug_id": bug_id}
 
