@@ -526,6 +526,33 @@ def main_inference(
     id_name: str = "",
     field_input: str = "description",
 ):
+    """Function used to do the inference via text-generation: we ask the model to classify the bug into severe and non severe, 
+    the model generates a text of what it thinks it is, we parse it with the function `classify` to see if it is severe or not and then we save the results (text answer and extracted severity) in a json file
+    The data are expected to be in a json under folder_data/dataset_choice.json under the form of list of dictonnaries where at `field_input` you have the text to run the prediction model on
+    Output the resulst in a subfolder of where the data are located called `inference_{id_name}`:
+        [
+            {
+                ...original fields of the json source...,
+                "answer": str, text answer of the model,
+                "severity_pred": int, 0 for non severe, 1 for severe, -2 if exception during prediction (cuda out of memory, ie too big n_tokens_infered_max), extraction with `classify`,
+                "input": str, the text provided to the model containing the template and the truncated description to fit with `n_tokens_infered_max` requirements
+            }, 
+            ....
+        ]
+    
+    # Arguments 
+    - folder_data: Path = default_folder_data, the path to the folder that contains the dataset (eclipse_72k.json or mozilla_200k.json)
+    - dataset_choice: DatasetName = default_datasetname,  the dataset choice, either eclipse_72k or mozilla_200k
+    - model_name: str = default_model, the model to use, same syntax as on huggingface, i.e. meta-llama/Llama-2-13b-chat-hf e.g.
+    - token: str = default_token, the token to access the models with huggingface
+    - n_tokens_infered_max: int = 7364, the truncation to apply on the description of the bug AFTER applying the template to ask the task
+    - seed_start: Optional[int] = None, the starting sample to do inference (to split the inference in multiple scripts easily) either choose seed_start and seed_end or n_chunks and interval_idx
+    - seed_end: Optional[int] = None, the end sample to do inference (to split the inference in multiple scripts easily) either choose seed_start and seed_end or n_chunks and interval_idx
+    - n_chunks: Optional[int] = None, the number of chunks to do parallel inference (either choose seed_start and seed_end or n_chunks and interval_idx)
+    - interval_idx: Optional[int] = None, the chunk_id on which you want the current script to do inferece
+    - id_name: str = "", the id to put at the end of the folder of inference
+    - field_input: str = "description", the field in the 
+    """
     folder_data = existing_path(folder_data,is_folder=True)
     folder_out = existing_path(folder_data, is_folder=True) / f"inference_{id_name}"
     folder_out.mkdir(parents=True, exist_ok=True)
