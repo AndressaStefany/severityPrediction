@@ -1,0 +1,5 @@
+#/bin/bash
+server=cedar
+root_path=/project/def-aloise/rmoine/data
+addr=rmoine@$server.computecanada.ca:
+scp -r $addr$root_path/qlora_finetune_* .
