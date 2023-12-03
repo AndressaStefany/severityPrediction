@@ -14,6 +14,7 @@ def generate_inference(clear: bool = False):
         / "templates"
         / "template_inference.txt"
     )
+    use_missing = True
     folder_out = path_file.parent / "launches" / "inference"
     folder_out.mkdir(parents=True, exist_ok=True)
     with open(path_template) as f:
@@ -28,12 +29,16 @@ def generate_inference(clear: bool = False):
         for interval_idx in range(n_chunks):
             name = f"inference_{i}"
             i += 1
+            missing_file = '""'
+            if use_missing:
+                missing_file = f"inference_{dataset_choice}_missing.json"
             with open(folder_out / name, "w") as f:
                 f.write(
                     template.substitute(
                         dataset_choice=dataset_choice,
                         n_chunks=n_chunks,
                         interval_idx=interval_idx,
+                        missing_file=missing_file,
                     )
                 )
             Llaunches.append(name)
