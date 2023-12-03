@@ -525,6 +525,7 @@ def main_inference(
     interval_idx: Optional[int] = None,
     id_name: str = "",
     field_input: str = "description",
+    missing_file: str = "",
 ):
     """Function used to do the inference via text-generation: we ask the model to classify the bug into severe and non severe, 
     the model generates a text of what it thinks it is, we parse it with the function `classify` to see if it is severe or not and then we save the results (text answer and extracted severity) in a json file
@@ -551,7 +552,8 @@ def main_inference(
     - n_chunks: Optional[int] = None, the number of chunks to do parallel inference (either choose seed_start and seed_end or n_chunks and interval_idx)
     - interval_idx: Optional[int] = None, the chunk_id on which you want the current script to do inferece
     - id_name: str = "", the id to put at the end of the folder of inference
-    - field_input: str = "description", the field in the 
+    - field_input: str = "description", the field in twhich the text to classify is (without template)
+    - missing_file: str = "", if provided we will process only missing seeds (list of str) provided at this path
     """
     folder_data = existing_path(folder_data,is_folder=True)
     folder_out = existing_path(folder_data, is_folder=True) / f"inference_{id_name}"
@@ -567,20 +569,24 @@ def main_inference(
     assert len(token) > 3 and token[:3] == "hf_"
     with open(path_data_json) as f:
         data_preprocessed = json.load(f)
+    if missing_file == "":
+        to_process = list(range(len(data_preprocessed)))
+    else:
+        with open(folder_data / missing_file, "r") as fp:
+            to_process = json.load(fp)
     seed_start, seed_end = generate_seeds(
-        len(data_preprocessed), seed_start, seed_end, n_chunks, interval_idx
+        len(to_process), seed_start, seed_end, n_chunks, interval_idx
     )
+    to_process = set(to_process[seed_start:seed_end])
 
     tokenizer, model = initialize_model_inference(model_name, token)  # type: ignore
     pipeline = trf.pipeline(
         "text-generation", model=model, tokenizer=tokenizer, device_map="auto"
     )
-    with open(path_data_json) as f:
-        data_preprocessed = json.load(f)
     data: List[PreprocessedData] = data_preprocessed
     with open(path_data_json.parent / "template.json") as fp:
         template = json.load(fp)
-    data = data[seed_start:seed_end]
+    data = [d for d in data if d["bug_id"] in to_process]
     responses = []
     model.eval()
     path_out = folder_out / f"predictions_{seed_start}_{seed_end}.json"

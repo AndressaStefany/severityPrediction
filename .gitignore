@@ -1,4 +1,5 @@
-/data/*
+/data/eclipse_clear.json
+/data/eclipse_filtered.csv
 __pycache__
 .ipynb_checkpoints
 .obsidian

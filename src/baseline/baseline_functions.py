@@ -375,7 +375,7 @@ def cross_validation_with_classifier(X: np.ndarray, y: np.ndarray, n_splits: int
         # Define the k-fold cross-validation strategy
         skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
         # Iterate through each fold
-        print(f"Seed {seed}: ",end="")
+        # print(f"Seed {seed}: ",end="")
         for fold, (train_indices, test_indices) in enumerate(skf.split(np.zeros((len(y),)), y)):
             y_train, y_train_pred = train_fun(X,y,classifier,train_indices)
             train_accuracy = accuracy_score(y_train, y_train_pred.round(decimals=0).astype(int))
@@ -390,8 +390,8 @@ def cross_validation_with_classifier(X: np.ndarray, y: np.ndarray, n_splits: int
 
             test_accuracy = accuracy_score(y_test, y_pred.round(decimals=0).astype(int))
             df_results.append({ "seed": seed, "classifier": classifier.__class__.__name__, "train_fun": train_fun.__name__, "train_accuracy": train_accuracy, "test_accuracy": test_accuracy , "fold_id": fold, "roc_auc": roc_auc, **classifier_args})
-            print(f"f{fold}",end=" ")
-        print()
+            # print(f"f{fold}",end=" ")
+        # print()
 
     return pd.DataFrame(df_results)
 
@@ -400,7 +400,7 @@ def train_valid_test(logger: logging.Logger, X_tr: np.ndarray, y_tr: np.ndarray,
         train_fun = partial_train
     classifier = get_classifier(**classifier_args)
     df_results = []
-    logger.info(f"Train data loaded {X_tr.shape=} {y_tr.shape=}")
+    # logger.info(f"Train data loaded {X_tr.shape=} {y_tr.shape=}")
     y_train, y_train_pred = train_fun(X_tr,y_tr,classifier)
     train_accuracy = accuracy_score(y_train, y_train_pred.round(decimals=0).astype(int))
     
@@ -436,16 +436,13 @@ def save_data_to_disk(split: dict, num_samples: Tuple[int], pipeline_fn: Callabl
     # memmapped_array.flush()
     # with open(folder / f"X_{id}_{dataset_choice}.shape", "w") as shape_file:
     #     shape_file.write(f"({X.shape[0]},{X.shape[1]})")
-    random.seed(0)
-    random.shuffle(split["tr"])
-    random.shuffle(split["val"])
     df = pd.read_json(folder / f"{dataset_choice}.json")
     for k in split:
         split[k] = list(df[df["bug_id"].isin(split[k])].index)
     for n_samples in num_samples:
         for dataset_type in ["tr","val"]:
-            np.save(folder / f"X_full_{dataset_type}_{id}_{dataset_choice}_{n_samples}_samples.npy",X[split[dataset_type]])
-            np.save(folder / f"y_{dataset_type}_{id}_{dataset_choice}_{n_samples}_samples.npy",y[split[dataset_type]])
+            np.save(folder / f"X_full_{dataset_type}_{id}_{dataset_choice}_{n_samples}_samples.npy",X[split[dataset_type][:n_samples]])
+            np.save(folder / f"y_{dataset_type}_{id}_{dataset_choice}_{n_samples}_samples.npy",y[split[dataset_type][:n_samples]])
 
 def read_data_from_disk(folder: Path, id: str = "", full: bool = True) -> Tuple[Tuple[np.ndarray,np.ndarray],Tuple[np.ndarray,np.ndarray]]:
     """id must contain the _num_samples"""
@@ -464,6 +461,9 @@ def read_data_from_disk(folder: Path, id: str = "", full: bool = True) -> Tuple[
         # return X,y
 
 def generate_data(data_path: Path, num_samples: Tuple[int], dataset: DatasetName, split: dict):
+    random.seed(0)
+    random.shuffle(split["tr"])
+    random.shuffle(split["val"])
     save_data_to_disk(split,num_samples,lambda :pipeline_naive_bayes(is_binomial=True),data_path,id="nb_bino",dataset_choice=dataset)
     save_data_to_disk(split,num_samples,lambda :pipeline_naive_bayes(is_binomial=False),data_path,id="nb_non_bino",dataset_choice=dataset)
     save_data_to_disk(split,num_samples,pipeline_1NN_SVM,data_path,id="svm_knn",dataset_choice=dataset)
@@ -560,12 +560,13 @@ def run_optuna(trial: optuna.Trial, dataset: str, models: Optional[List[Classifi
     logger = logging.getLogger(trial.study.study_name)
     logger.setLevel(logging.INFO)  # Set the logging level
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')  # Define the log message format
-    file_handler = logging.FileHandler(f'{trial.study.study_name}_{trial._trial_id}.log')
-    file_handler.setFormatter(formatter)
+    # file_handler = logging.FileHandler(f'{trial.study.study_name}_{trial._trial_id}.log')
+    # file_handler.setFormatter(formatter)
     # Add the file handler to the logger
-    logger.addHandler(file_handler)
-    logger.info(f"Start")
+    # logger.addHandler(file_handler)
+    # logger.info(f"Start")
     (X_tr,y_tr),(X_val,y_val) = read_data_from_disk(folder, id, full=full)
+    # logger.info(f"sizes: {X_tr.shape=} {y_tr.shape=} {X_val.shape=} {y_val.shape=}")
     df = train_valid_test(X_tr=X_tr,y_tr=y_tr,X_val=X_val,y_val=y_val, train_fun=train,**kwargs,num_rep=num_rep,logger=logger)
     del X_tr
     del y_tr
@@ -575,7 +576,7 @@ def run_optuna(trial: optuna.Trial, dataset: str, models: Optional[List[Classifi
     return value
 
 @print_args
-def hyperparameter_search(id: str, dataset: str, models: Optional[List[ClassifierName]] = None, n_jobs: int = 4, num_rep: int = 5, num_samples: int = -1):
+def hyperparameter_search(id: str, dataset: str, models: Optional[List[ClassifierName]] = None, n_jobs: int = 4, num_rep: int = 5, num_samples: int = -1, id_job: str = ""):
     optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
     id += "_"+dataset
     # prepare the data
@@ -586,35 +587,36 @@ def hyperparameter_search(id: str, dataset: str, models: Optional[List[Classifie
         split["tr"] = split["tr"][:min(num_samples,len(split["tr"]))]
         split["val"] = split["val"][:min(num_samples,len(split["val"]))]
     id += f"_{num_samples}_samples"
-    study_name = f"study-{id}"  # Unique identifier of the study.
+    print(f"Using id {id}")
+    study_name = f"study-{id}-{id_job}"  # Unique identifier of the study.
     storage_name = "sqlite:///{}.db".format(study_name)
     sampler = optuna.samplers.RandomSampler(seed=0)
     study = optuna.create_study(direction="maximize",study_name=study_name, storage=storage_name, load_if_exists=True, sampler=sampler)
     study.optimize(lambda trial:run_optuna(trial,models=models,num_rep=num_rep,dataset=dataset,num_samples=num_samples),n_trials=50,n_jobs=n_jobs)
-    with open(f"data/study-{id}-best.json",'w') as f:
+    with open(f"data/study-{id}-{id_job}-best.json",'w') as f:
         json.dump({
             "best_params": study.best_params,
             "best_value": study.best_value
         },f)
-
-def generate_dataset(dataset: DatasetName, num_samples: str):#type: ignore
+        
+@print_args
+def generate_dataset(dataset: DatasetName, num_samples: Tuple[int]):#type: ignore
     assert isinstance(dataset, str) and dataset in get_args(DatasetName)
     data_path = Path("./data/")
     with open(data_path / f"split_{dataset}.json") as fp:
         split = json.load(fp)
-    num_samples: Tuple[int] = eval(num_samples)#type: ignore
     generate_data(data_path,dataset=dataset, split=split, num_samples=num_samples)
     
 AlgorithmName = Literal["bayesian","SVC","KNN"]
-def launch_search(algorithm: AlgorithmName, dataset: DatasetName, n_jobs: int = 4, num_samples: int = -1):
+def launch_search(algorithm: AlgorithmName, dataset: DatasetName, num_jobs: int = 4, num_samples: int = -1, id_job: str = ""):
     assert isinstance(algorithm, str) and algorithm in get_args(AlgorithmName)
     assert isinstance(dataset, str) and dataset in get_args(DatasetName)
     if algorithm == "bayesian":
-        hyperparameter_search("bayesian-networks",dataset,["BernoulliNB","ComplementNB","GaussianNB","MultinomialNB"],n_jobs=n_jobs, num_samples=num_samples)
+        hyperparameter_search("bayesian-networks",dataset,["BernoulliNB","ComplementNB","GaussianNB","MultinomialNB"],n_jobs=num_jobs, num_samples=num_samples, id_job=id_job)
     elif algorithm == "SVC":
-        hyperparameter_search("svc",dataset,["SVC"],n_jobs=n_jobs, num_samples=num_samples)
+        hyperparameter_search("svc",dataset,["SVC"],n_jobs=num_jobs, num_samples=num_samples, id_job=id_job)
     elif algorithm == "KNN":
-        hyperparameter_search("knn",dataset,["KNeighborsClassifier"],n_jobs=n_jobs, num_samples=num_samples)
+        hyperparameter_search("knn",dataset,["KNeighborsClassifier"],n_jobs=num_jobs, num_samples=num_samples, id_job=id_job)
     else:
         raise Exception
 if __name__ == "__main__":

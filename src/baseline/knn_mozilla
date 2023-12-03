@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=6
-#SBATCH --time=02-23:59:59 
+#SBATCH --cpus-per-task=9
+#SBATCH --time=02:59:00
 #SBATCH --output=log-%x-%j.out
 #SBATCH --error=log-%x-%j.err
 #SBATCH --mail-user=robin.moine456@gmail.com
 #SBATCH --mail-type=ALL
-#SBATCH --mem=128G
+#SBATCH --mem=64G
 
 start_time=$(date +"%Y-%m-%d %H:%M:%S")
 
@@ -25,7 +25,8 @@ pip install optuna --no-index
 script="/project/def-aloise/$USER/baseline_functions.py"
 algorithm=KNN
 dataset=mozilla_200k
-python $script launch_search --algorithm=$algorithm --dataset=$dataset --num_jobs=5 --num_samples=1000
+id_job="_$SLURM_JOB_ID"
+python $script launch_search --algorithm=$algorithm --dataset=$dataset --num_jobs=8 --num_samples=1000 --id_job=$id_job
 
 end_time=$(date +"%Y-%m-%d %H:%M:%S")
 start_seconds=$(date -d "$start_time" '+%s')
