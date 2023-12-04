@@ -1,0 +1,7 @@
+#/bin/bash
+server="narval"
+user=rmoine
+addr=$user@$server.computecanada.ca:/project/def-aloise/$user/*.db
+echo "$addr$root_path/*.db ."
+
+scp $addr .
