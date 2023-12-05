@@ -5,8 +5,8 @@ import random
 
 
 def generate_inference(clear: bool = False):
-    dataset_choices = ["eclipse_72k", "mozilla_200k"]
-    n_chunks = 10
+    dataset_choices = ["mozilla_200k"]
+    n_chunks = 100
     path_file = Path(__file__)
     path_template = (
         path_file.parent.parent.parent.parent
