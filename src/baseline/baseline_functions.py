@@ -359,10 +359,7 @@ def partial_train(X: np.ndarray,y: np.ndarray,classifier,train_indices: np.ndarr
 
 def train(X_tr: np.ndarray,y_tr: np.ndarray,classifier):
         classifier.fit(X_tr, y_tr)
-        if isinstance(classifier,SVC) or isinstance(classifier, KNeighborsClassifier):
-            y_train_pred = classifier.predict_proba(X_tr)[:,1]
-        else:
-            y_train_pred = classifier.predict_probas(X_tr)
+        y_train_pred = classifier.predict_proba(X_tr)[:,1]
         return y_tr, y_train_pred
         
 def cross_validation_with_classifier(X: np.ndarray, y: np.ndarray, n_splits: int = 5, train_fun: Optional[Callable] = None, num_rep: int = 5, **classifier_args):
