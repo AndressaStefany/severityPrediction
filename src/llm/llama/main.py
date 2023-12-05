@@ -594,8 +594,11 @@ def main_inference(
         f.write("")
     with torch.no_grad():
         for i, d in tqdm.tqdm(enumerate(data), total=len(data)):
-            # gc.collect()
-            # torch.cuda.empty_cache()  # type: ignore
+            try:
+                gc.collect()
+                torch.cuda.empty_cache()  # type: ignore
+            except Exception:
+                pass
             answer = float("nan")
             severity = float("nan")
             tokens_ids: List[int] = tokenizer(d[field_input])["input_ids"]  # type: ignore
@@ -737,6 +740,7 @@ def compute_metrics_from_files(
     n_tokens_show_max: int = 7364,
     n_tokens_show_min: int = 0,
     backend: Optional[str] = "agg",
+    possibilities_pred: Optional[List[int]] = None,
     id: str = "",
     title: str = "",
 ):
@@ -771,7 +775,7 @@ def compute_metrics_from_files(
                 )
             )
         )
-    else:
+    elif possibilities_pred is None:
         possibilities_pred = list(range(len(conf_matrix)))
     if mapping_dict is None:
         mapping_dict = {
