@@ -11,6 +11,8 @@ from typing import * #type: ignore
 import optuna
 import json
 import logging
+import os
+import re
 
 from scipy.sparse import csr_matrix
 from sklearn.pipeline import Pipeline
@@ -31,7 +33,7 @@ from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
 from string import Template
 import fire
-
+import tqdm
 
 def print_args(func):
     def inner(*args, **kwargs):
@@ -392,7 +394,7 @@ def cross_validation_with_classifier(X: np.ndarray, y: np.ndarray, n_splits: int
 
     return pd.DataFrame(df_results)
 
-def train_valid_test(logger: logging.Logger, X_tr: np.ndarray, y_tr: np.ndarray, X_val: np.ndarray, y_val: np.ndarray, train_fun: Optional[Callable] = None, num_rep: int = 5, **classifier_args):
+def train_valid_test(logger: logging.Logger, X_tr: np.ndarray, y_tr: np.ndarray, X_val: np.ndarray, y_val: np.ndarray, train_fun: Optional[Callable] = None, num_rep: int = 5, test: Optional[Tuple[np.ndarray,np.ndarray]] = None, **classifier_args):
     if train_fun is None:
         train_fun = partial_train
     classifier = get_classifier(**classifier_args)
@@ -403,12 +405,20 @@ def train_valid_test(logger: logging.Logger, X_tr: np.ndarray, y_tr: np.ndarray,
     
     del y_train_pred
     del y_train
-    y_pred = classifier.predict(X_val)
-    fpr, tpr, thresholds = roc_curve(y_val, y_pred)
-    roc_auc = auc(fpr, tpr)
-
-    test_accuracy = accuracy_score(y_val, y_pred.round(decimals=0).astype(int))
-    df_results.append({ "seed": 0, "classifier": classifier.__class__.__name__, "train_fun": train_fun.__name__, "train_accuracy": train_accuracy, "test_accuracy": test_accuracy , "fold_id": 0, "roc_auc": roc_auc, **classifier_args})
+    y_val_pred = classifier.predict_proba(X_val)[:,1]
+    fpr, tpr, thresholds_val = roc_curve(y_val, y_val_pred)
+    auc_val = auc(fpr, tpr)
+    
+    auc_test = -1
+    y_test_pred = []
+    y_test = []
+    thresholds_test = np.ndarray([])
+    if test is not None:
+        X_test, y_test = test
+        y_test_pred = classifier.predict_proba(X_test)[:,1]
+        fpr, tpr, thresholds_test = roc_curve(y_val, y_val_pred)
+        auc_test = auc(fpr, tpr)
+    df_results.append({ "seed": 0, "thresholds_val": thresholds_val.tolist(), "classifier": classifier.__class__.__name__, "train_fun": train_fun.__name__, "train_accuracy": train_accuracy, "fold_id": 0, "auc_val": auc_val, **classifier_args, "binary_severity_val": y_val, "y_val_pred": y_val_pred, "binary_severity_test": y_test, "y_test_pred": y_test_pred, "auc_test": auc_test, "thresholds_test": thresholds_test.tolist()})
         
     return pd.DataFrame(df_results)
         
@@ -438,17 +448,45 @@ def save_data_to_disk(split: dict, num_samples: Tuple[int], pipeline_fn: Callabl
         split[k] = list(df[df["bug_id"].isin(split[k])].index)
     for n_samples in num_samples:
         for dataset_type in ["tr","val"]:
+            if n_samples == -1:
+                n_samples = len(split[dataset_type])
             np.save(folder / f"X_full_{dataset_type}_{id}_{dataset_choice}_{n_samples}_samples.npy",X[split[dataset_type][:n_samples]])
             np.save(folder / f"y_{dataset_type}_{id}_{dataset_choice}_{n_samples}_samples.npy",y[split[dataset_type][:n_samples]])
+    n_samples = len(split["test"])
+    np.save(folder / f"X_full_test_{id}_{dataset_choice}_{n_samples}_samples.npy",X[split["test"][:n_samples]])
+    np.save(folder / f"y_test_{id}_{dataset_choice}_{n_samples}_samples.npy",y[split["test"][:n_samples]])
 
-def read_data_from_disk(folder: Path, id: str = "", full: bool = True) -> Tuple[Tuple[np.ndarray,np.ndarray],Tuple[np.ndarray,np.ndarray]]:
+get_num_samples = lambda x: int(re.findall("([0-9]+)_samples",x.stem)[0])
+def read_data_from_disk(folder: Path, id: str = "", full: bool = True, full_valid: bool = False) -> Tuple[Tuple[np.ndarray,np.ndarray],Tuple[np.ndarray,np.ndarray],Optional[Tuple[np.ndarray,np.ndarray]]]:
     """id must contain the _num_samples"""
     if full:
         X_tr = np.load(folder / f"X_full_tr_{id}.npy")
-        X_val = np.load(folder / f"X_full_val_{id}.npy")
         y_tr = np.load(folder / f"y_tr_{id}.npy")
-        y_val = np.load(folder / f"y_val_{id}.npy")
-        return (X_tr,y_tr),(X_val,y_val)
+        test = None
+        if full_valid:
+            pattern = re.sub("[0-9]+_samples", "*", f"X_full*val*{id}*.npy").replace("**","*")
+            pathes_pattern_Xval = [p.resolve() for p in folder.rglob(pattern)]
+            biggest_number_of_samples_path = sorted(pathes_pattern_Xval,key=get_num_samples)[-1]
+            get_id = lambda x: re.search("X_full_val_(.*)",x)
+            biggest_number_of_samples_id = get_id(biggest_number_of_samples_path.stem)
+            assert biggest_number_of_samples_id is not None, f"{biggest_number_of_samples_path.stem} cannot match regex in {pathes_pattern_Xval}"
+            biggest_number_of_samples_id = biggest_number_of_samples_id.group(1)
+            X_val = np.load(folder / f"X_full_val_{biggest_number_of_samples_id}.npy")
+            y_val = np.load(folder / f"y_val_{biggest_number_of_samples_id}.npy")
+            pattern = re.sub("[0-9]+_samples", "*", f"X_full*test*{id}*.npy").replace("**","*")
+            pathes_pattern_Xtest = [p.resolve() for p in folder.rglob(pattern)]
+            biggest_number_of_samples_path = sorted(pathes_pattern_Xtest,key=get_num_samples)[-1]
+            get_id = lambda x: re.search("X_full_test_(.*)",x)
+            biggest_number_of_samples_id = get_id(biggest_number_of_samples_path.stem).group(1)
+            test = (
+                np.load(folder / f"X_full_test_{biggest_number_of_samples_id}.npy"),
+                np.load(folder / f"y_test_{biggest_number_of_samples_id}.npy")
+            )
+            print(f"Doing validation for the full validation dataset with id {biggest_number_of_samples_id}")
+        else:
+            X_val = np.load(folder / f"X_full_val_{id}.npy")
+            y_val = np.load(folder / f"y_val_{id}.npy")
+        return (X_tr,y_tr),(X_val,y_val), test
     else:
         raise NotImplemented
         # with open(folder / f"X_{id}.shape", "r") as shape_file:
@@ -460,7 +498,6 @@ def read_data_from_disk(folder: Path, id: str = "", full: bool = True) -> Tuple[
 def generate_data(data_path: Path, num_samples: Tuple[int], dataset: DatasetName, split: dict):
     random.seed(0)
     random.shuffle(split["tr"])
-    random.shuffle(split["val"])
     save_data_to_disk(split,num_samples,lambda :pipeline_naive_bayes(is_binomial=True),data_path,id="nb_bino",dataset_choice=dataset)
     save_data_to_disk(split,num_samples,lambda :pipeline_naive_bayes(is_binomial=False),data_path,id="nb_non_bino",dataset_choice=dataset)
     save_data_to_disk(split,num_samples,pipeline_1NN_SVM,data_path,id="svm_knn",dataset_choice=dataset)
@@ -492,7 +529,7 @@ def get_classifier(classifier_name: str,**kwargs):
 ClassifierName = Literal["BernoulliNB","MultinomialNB","GaussianNB","ComplementNB","SVC","KNeighborsClassifier"]
 
 
-def run_optuna(trial: optuna.Trial, dataset: str, models: Optional[List[ClassifierName]] = None, num_rep: int = 5, num_samples: int = -1):
+def run_optuna(trial: optuna.Trial, dataset: str, models: Optional[List[ClassifierName]] = None, num_rep: int = 5, num_samples: int = -1, save_study_name: str = ""):
     folder = Path("./data/")
     if models is None:
         models = ['BernoulliNB','MultinomialNB','GaussianNB','ComplementNB']
@@ -554,22 +591,20 @@ def run_optuna(trial: optuna.Trial, dataset: str, models: Optional[List[Classifi
             "leaf_size": trial.suggest_categorical("leaf_size",[10, 20, 30, 40, 50]),  # Leaf size
             "p": trial.suggest_categorical("p",[1, 2, 3]),  # Power parameter for the Minkowski metric (1 for Manhattan, 2 for Euclidean, 3 Minkwski)
         }
-    logger = logging.getLogger(trial.study.study_name)
+    logger = logging.getLogger()
     logger.setLevel(logging.INFO)  # Set the logging level
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')  # Define the log message format
-    # file_handler = logging.FileHandler(f'{trial.study.study_name}_{trial._trial_id}.log')
-    # file_handler.setFormatter(formatter)
-    # Add the file handler to the logger
-    # logger.addHandler(file_handler)
-    # logger.info(f"Start")
-    (X_tr,y_tr),(X_val,y_val) = read_data_from_disk(folder, id, full=full)
-    # logger.info(f"sizes: {X_tr.shape=} {y_tr.shape=} {X_val.shape=} {y_val.shape=}")
-    df = train_valid_test(X_tr=X_tr,y_tr=y_tr,X_val=X_val,y_val=y_val, train_fun=train,**kwargs,num_rep=num_rep,logger=logger)
+    (X_tr,y_tr),(X_val,y_val), test = read_data_from_disk(folder, id, full=full, full_valid=save_study_name != "")
+    df = train_valid_test(X_tr=X_tr,y_tr=y_tr,X_val=X_val,y_val=y_val, test=test, train_fun=train,**kwargs,num_rep=num_rep,logger=logger)
+    if save_study_name != "":
+        path = f"./{kwargs['classifier_name']}_{id}_{0}.json"
+        df.to_json(path, orient="records")
     del X_tr
     del y_tr
     del X_val
     del y_val
-    value = df["roc_auc"].mean()
+    del test
+    value = df["auc_val"].mean()
     return value
 
 @print_args
@@ -616,10 +651,44 @@ def launch_search(algorithm: AlgorithmName, dataset: DatasetName, num_jobs: int 
         hyperparameter_search("knn",dataset,["KNeighborsClassifier"],n_jobs=num_jobs, num_samples=num_samples, id_job=id_job)
     else:
         raise Exception
+    
+    
+def reproduce_best_studies(folder_in: Optional[Path] = None, pattern: str = "*.db", folder_out: Optional[Path] = None):
+    if folder_in is None:
+        folder_in = Path(".")
+    folder_in = Path(folder_in)
+    if folder_out is None:
+        folder_out = Path(".")
+    folder_out = Path(folder_out).resolve()
+    folder_in = Path(folder_in).resolve()
+    folder_out.mkdir(exist_ok=True, parents=True)
+    print(locals())
+    files = sorted(list(folder_in.rglob(pattern)),key=get_num_samples)
+    for f in tqdm.tqdm(files,desc="Processing"):
+        stem = f.stem
+        print(stem)
+        dataset_choice = "eclipse_72k" if "eclipse_72k" in stem else "mozilla_200k"
+        models: List[ClassifierName] = []
+        if "svc" in stem:
+            models = ["SVC"]
+        elif "bayesian-networks" in stem:
+            models = ["BernoulliNB","ComplementNB","GaussianNB","MultinomialNB"]
+        elif "knn" in stem:
+            models = ["KNeighborsClassifier"]
+        else:
+            raise Exception
+        
+        study = optuna.load_study(study_name=stem, storage=f"sqlite:///{stem}.db")
+        best_trial = study.best_trial
+        params = best_trial.params
+        num_samples = get_num_samples(f)
+        run_optuna(optuna.trial.FixedTrial(params=params), num_samples=num_samples, dataset=dataset_choice, models=models, save_study_name=stem)#type: ignore
+        
 if __name__ == "__main__":
     fire.Fire(
         {
             "generate_dataset": generate_dataset,
             "launch_search": launch_search,
+            "reproduce_best_studies": reproduce_best_studies
         }
     )
