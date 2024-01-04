@@ -2,7 +2,7 @@
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=v100l:1 
 #SBATCH --cpus-per-task=1 
-#SBATCH --time=03-00:00:00
+#SBATCH --time=00-23:59:00
 #SBATCH --output=log-%x-%j.out
 #SBATCH --error=log-%x-%j.err
 #SBATCH --mail-user=robin.moine456@gmail.com
@@ -52,7 +52,8 @@ python /project/def-aloise/$$USER/main.py qlora_classification \
         --limit_tokens=$$limit_tokens \
         --num_train_epochs=$$num_train_epochs \
         --learning_rate=$$learning_rate \
-        --tr_bs=$$tr_bs
+        --tr_bs=$$tr_bs \
+        --tr_weighted_sampling=$$tr_weighted_sampling
 
 
 # Capture the end time

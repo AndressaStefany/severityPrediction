@@ -30,12 +30,12 @@ pip install fire --no-index
 pip install optuna --no-index
 
 dataset_choice=eclipse_72k
-lora_r=5
+lora_r=10
 id_name="_$SLURM_JOB_ID"
 lora_alpha=10
 lora_dropout=0.2
 model_name="meta-llama/Llama-2-7b-chat-hf"
-learning_rate=0.0001
+learning_rate=1e-05
 limit_tokens=500
 tr_bs=4
 num_train_epochs=10

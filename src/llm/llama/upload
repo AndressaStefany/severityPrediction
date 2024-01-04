@@ -11,6 +11,7 @@ server=narval
 scp -r ../../baseline/*.py $user@$server.computecanada.ca:/project/def-aloise/$user/
 dos2unix ../../baseline/*;
 scp -r ../../baseline/* $user@$server.computecanada.ca:/project/def-aloise/$user/
+# scp ../../../data/baseline_studies/* $user@$server.computecanada.ca:/project/def-aloise/$user/
 # scp -r ./*.ipynb $user@$server.computecanada.ca:/project/def-aloise/$user/
 # scp -r ./*.yaml $user@$server.computecanada.ca:/project/def-aloise/$user/
 # scp -r ../../../data/inference/inference_*_missing.json $user@$server.computecanada.ca:/project/def-aloise/$user/data/

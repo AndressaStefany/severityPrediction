@@ -2,7 +2,7 @@
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=v100l:1 
 #SBATCH --cpus-per-task=1 
-#SBATCH --time=03-00:00:00
+#SBATCH --time=00-23:59:00
 #SBATCH --output=log-%x-%j.out
 #SBATCH --error=log-%x-%j.err
 #SBATCH --mail-user=robin.moine456@gmail.com
@@ -32,14 +32,14 @@ pip install optuna --no-index
 dataset_choice=eclipse_72k
 lora_r=64
 id_name="_$SLURM_JOB_ID"
-lora_alpha=10
-lora_dropout=0.2
+lora_alpha=4
+lora_dropout=0.1
 model_name="meta-llama/Llama-2-7b-chat-hf"
-learning_rate=0.0001
+learning_rate=1e-05
 limit_tokens=500
 tr_bs=4
 num_train_epochs=10
-tr_weighted_sampling=False
+tr_weighted_sampling=True
 cd /project/def-aloise/$USER/
 
 python /project/def-aloise/$USER/main.py qlora_classification \
@@ -52,7 +52,8 @@ python /project/def-aloise/$USER/main.py qlora_classification \
         --limit_tokens=$limit_tokens \
         --num_train_epochs=$num_train_epochs \
         --learning_rate=$learning_rate \
-        --tr_bs=$tr_bs
+        --tr_bs=$tr_bs \
+        --tr_weighted_sampling=$tr_weighted_sampling
 
 
 # Capture the end time

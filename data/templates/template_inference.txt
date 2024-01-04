@@ -2,7 +2,7 @@
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=v100l:1 
 #SBATCH --cpus-per-task=1 
-#SBATCH --time=03-00:00:00
+#SBATCH --time=23:59:00
 #SBATCH --output=log-%x-%j.out
 #SBATCH --error=log-%x-%j.err
 #SBATCH --mail-user=robin.moine456@gmail.com
@@ -32,7 +32,7 @@ pip install optuna --no-index
 dataset_choice=$dataset_choice
 id_name="_$$SLURM_JOB_ID"
 model_name="meta-llama/Llama-2-13b-chat-hf"
-n_tokens_infered_max=7364
+n_tokens_infered_max=$n_tokens_infered_max
 n_chunks=$n_chunks
 interval_idx=$interval_idx
 missing_file=$missing_file
