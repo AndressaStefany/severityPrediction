@@ -2,7 +2,7 @@
     {
         "id": "alpaca",
         "text": "Always answer with one token. Do not give any explanation. Use only 0 or 1 and one token. Skip any politeness answer. You have only one word available.\nBelow is an instruction that describes a task. Write a response that appropriately completes the request.\n\n### Instruction:\nCategorize the bug report into one of 2 categories:\n\n0 = NOT SEVERE\n1 = SEVERE\n\n### Input:\n$bug_description\n\n### Remembering the instruction:\nCategorize the bug report into one of 2 categories:\n\n0 = NOT SEVERE\n1 = SEVERE\n\n### Response:",
-        "template_index_insert": 101,
+        "template_index_insert": 102,
         "llama_tokenized_template": [
             "<s>",
             "\u2581Always",
@@ -155,7 +155,7 @@
     {
         "id": "official",
         "text": "[INST] <<SYS>>\nAlways answer with one token. Do not give any explanation. Use only 0 or 1 and one token. Skip any politeness answer. You have only one word available.\n<</SYS>>\nCategorize the bug report into one of 2 categories:\n\n0 = NOT SEVERE\n1 = SEVERE\n\nBug report:\n$bug_description\n\nRemembering the instruction:\nCategorize the bug report into one of 2 categories:\n\n0 = NOT SEVERE\n1 = SEVERE[/INST]\n",
-        "template_index_insert": 87,
+        "template_index_insert": 88,
         "llama_tokenized_template": [
             "<s>",
             "\u2581[",
