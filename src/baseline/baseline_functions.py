@@ -3,7 +3,9 @@ import logging
 import sys
 import string
 import random
+from typing import Iterable
 import numpy as np
+from numpy import ndarray
 import pandas as pd
 from typing import *  # type: ignore
 
@@ -15,9 +17,9 @@ import logging
 import os
 import re
 
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, spmatrix
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import FunctionTransformer
+from sklearn.preprocessing import FunctionTransformer, MinMaxScaler
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.naive_bayes import BernoulliNB, GaussianNB, ComplementNB, MultinomialNB
 from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
@@ -411,6 +413,39 @@ def paper_common_transformations() -> List[Tuple[str, FunctionTransformer]]:
     return [("extract_x_y", FunctionTransformer(extract_x_y))]
 
 
+class CustomTfidfVectorizer(TfidfVectorizer):
+    def fit_transform(self, data: Tuple, *args, **kwargs) -> tuple:
+        return super().fit_transform(data[0], *args, **kwargs).toarray(), data[1]  # type: ignore
+
+    def fit(self, data: Tuple, *args, **kwargs):
+        return super().fit(data[0], *args, **kwargs)
+
+    def transform(self, data: Tuple, *args, **kwargs) -> tuple:
+        return super().transform(data[0], *args, **kwargs).toarray(), data[1]
+
+
+class CustomCountVectorizer(CountVectorizer):
+    def fit_transform(self, data: Tuple, *args, **kwargs) -> tuple:
+        return super().fit_transform(data[0], *args, **kwargs).toarray(), data[1]  # type: ignore
+
+    def fit(self, data: Tuple, *args, **kwargs):
+        return super().fit(data[0], *args, **kwargs)
+
+    def transform(self, data: Tuple, *args, **kwargs) -> tuple:
+        return super().transform(data[0], *args, **kwargs).toarray(), data[1]
+
+
+class CustomMinMaxScaler(MinMaxScaler):
+    def fit_transform(self, data: Tuple, *args, **kwargs) -> tuple:
+        return super().fit_transform(data[0], *args, **kwargs), data[1]
+
+    def fit(self, data: Tuple, *args, **kwargs):
+        return super().fit(data[0], *args, **kwargs)
+
+    def transform(self, data: Tuple, *args, **kwargs) -> tuple:
+        return super().transform(data[0], *args, **kwargs), data[1]
+
+
 def pipeline_naive_bayes(is_binomial: bool = False) -> Tuple[Pipeline, CountVectorizer]:
     """Get the pipeline of the project using the naive bayes methods
 
@@ -420,21 +455,21 @@ def pipeline_naive_bayes(is_binomial: bool = False) -> Tuple[Pipeline, CountVect
     # Output
         - List, the list of the transformations applied for the naive bayes methods
     """
-    vectorizer = CountVectorizer(binary=is_binomial)
-    return (
-        Pipeline(
-            [
-                *paper_common_transformations(),
-                (
-                    "embedding",
-                    FunctionTransformer(
-                        lambda x: (vectorizer.fit_transform(x[0]).toarray(), x[1])
-                    ),
-                ),
-            ]
-        ),
-        vectorizer,
+    vectorizer = CustomCountVectorizer(binary=is_binomial)
+    transforms = paper_common_transformations()
+    transforms.extend(
+        [
+            (
+                "embedding",
+                vectorizer,  # type: ignore
+            ),
+            (
+                "normalization",
+                CustomMinMaxScaler(),  # type: ignore
+            ),
+        ]
     )
+    return Pipeline(transforms), vectorizer
 
 
 def pipeline_1NN_SVM() -> Tuple[Pipeline, CountVectorizer]:
@@ -444,15 +479,19 @@ def pipeline_1NN_SVM() -> Tuple[Pipeline, CountVectorizer]:
     # Output
         - List, the list of the transformations applied for the 1NN and SVM methods
     """
-    vectorizer = TfidfVectorizer()
+    vectorizer = CustomCountVectorizer()
     transforms = paper_common_transformations()
-    transforms.append(
-        (
-            "embedding",
-            FunctionTransformer(
-                lambda x: (vectorizer.fit_transform(x[0]).toarray(), x[1])
+    transforms.extend(
+        [
+            (
+                "embedding",
+                vectorizer,  # type: ignore
             ),
-        )
+            (
+                "normalization",
+                CustomMinMaxScaler(),  # type: ignore
+            ),
+        ]
     )
     return Pipeline(transforms), vectorizer
 
@@ -657,69 +696,66 @@ def save_data_to_disk(
 
     if do_print:
         print(bug_reports.info())
-    pipeline, vectorizer = pipeline_fn()
-    X, y = pipeline.fit_transform(bug_reports)
-    nan_X = np.isnan(X)
-    nan_y = np.isnan(y)
-    if True in nan_X:
-        print("There are nan in X")
-        idx_nan = np.any(nan_X, axis=1).nonzero()[0]
-        print(bug_reports.reset_index().iloc[idx_nan])
-        raise Exception
-    if True in nan_y:
-        print("There are nan in y")
-        idx_nan = np.any(nan_y, axis=1).nonzero()[0]
-        print(bug_reports.reset_index().iloc[idx_nan])
-        raise Exception
-
-    X = X.astype(np.float16)
-    y = y.astype(np.float16)
-    nan_X = np.isnan(X)
-    nan_y = np.isnan(y)
-    if True in nan_X:
-        print("There are nan after float16 in X")
-        idx_nan = np.any(nan_X, axis=1).nonzero()[0]
-        print(bug_reports.reset_index().iloc[idx_nan])
-        raise Exception
-    if True in nan_y:
-        print("There are nan after float16 in y")
-        idx_nan = np.any(nan_y, axis=1).nonzero()[0]
-        print(bug_reports.reset_index().iloc[idx_nan])
-        raise Exception
-    if do_print:
-        print_pipeline(pipeline, bug_reports)
-    # memmapped_array = np.memmap(folder / f"X_{id}_{dataset_choice}.npy",dtype=np.float16,mode="w+",shape=X.shape)
-    # memmapped_array[:] = X[:]
-    # memmapped_array.flush()
-    # with open(folder / f"X_{id}_{dataset_choice}.shape", "w") as shape_file:
-    #     shape_file.write(f"({X.shape[0]},{X.shape[1]})")
     df = pd.read_json(folder / f"{dataset_choice}.json")
-    for k in split:
-        split[k] = list(df[df["bug_id"].isin(split[k])].index)
     for n_samples in num_samples:
-        for dataset_type in ["tr", "val"]:
-            if n_samples == -1:
-                n_samples = len(split[dataset_type])
-            np.save(
-                folder
-                / f"X_full_{dataset_type}_{id}_{dataset_choice}_{n_samples}_samples.npy",
-                X[split[dataset_type][:n_samples]],
-            )
-            np.save(
-                folder
-                / f"y_{dataset_type}_{id}_{dataset_choice}_{n_samples}_samples.npy",
-                y[split[dataset_type][:n_samples]],
-            )
-    n_samples = len(split["test"])
-    np.save(
-        folder / f"X_full_test_{id}_{dataset_choice}_{n_samples}_samples.npy",
-        X[split["test"][:n_samples]],
-    )
-    np.save(
-        folder / f"y_test_{id}_{dataset_choice}_{n_samples}_samples.npy",
-        y[split["test"][:n_samples]],
-    )
+        pipeline, vectorizer = pipeline_fn()
+        dataset_type = "tr"
+        if n_samples == -1:
+            n_samples = len(split[dataset_type])
+        if n_samples == -1:
+            bug_id_tr = split["tr"]
+            bug_id_val = split["val"]
+        else:
+            bug_id_tr = split["tr"][:n_samples]
+            bug_id_val = split["val"][:n_samples]
+        tr_samples = df[df["bug_id"].isin(bug_id_tr)].copy()
+        val_samples = df[df["bug_id"].isin(bug_id_val)].copy()
+        pipeline.fit(tr_samples)
+        X_tr, y_tr = pipeline.transform(tr_samples)
+        X_val, y_val = pipeline.transform(val_samples)
+        X_all_val, y_all_val = pipeline.transform(df[df["bug_id"].isin(split["val"])].copy())
+        X_all_test, y_all_test = pipeline.transform(df[df["bug_id"].isin(split["test"])].copy())
+        assert (
+            X_val.shape[1] == X_tr.shape[1]
+        ), f"Mismatch in dimension {X_val.shape=} {X_tr.shape=}"
 
+        size = n_samples
+        if n_samples == -1:
+            size = len(split["tr"])
+        # np.save(
+        #     folder / f"X_full_tr_{id}_{dataset_choice}_{size}_samples.npy",
+        #     X_tr,
+        # )
+        # np.save(
+        #     folder / f"y_tr_{id}_{dataset_choice}_{size}_samples.npy",
+        #     y_tr,
+        # )
+        # if n_samples == -1:
+        #     size = len(split["val"])
+        # np.save(
+        #     folder / f"X_full_val_{id}_{dataset_choice}_{size}_samples.npy",
+        #     X_val,
+        # )
+        # np.save(
+        #     folder / f"y_val_{id}_{dataset_choice}_{size}_samples.npy",
+        #     y_val,
+        # )
+        # np.save(
+        #     folder / f"X_full_all_val_{id}_{dataset_choice}_{size}_samples.npy",
+        #     X_all_val,
+        # )
+        # np.save(
+        #     folder / f"y_all_val_{id}_{dataset_choice}_{size}_samples.npy",
+        #     y_all_val,
+        # )
+        np.save(
+            folder / f"X_full_all_test_{id}_{dataset_choice}_{size}_samples.npy",
+            X_all_test,
+        )
+        np.save(
+            folder / f"y_all_test_{id}_{dataset_choice}_{size}_samples.npy",
+            y_all_test,
+        )
 
 get_num_samples = lambda x: int(re.findall("([0-9]+)_samples", x.stem)[0])
 
@@ -737,50 +773,18 @@ def read_data_from_disk(
         y_tr = np.load(folder / f"y_tr_{id}.npy")
         test = None
         if full_valid:
-            pattern = re.sub("[0-9]+_samples", "*", f"X_full*val*{id}*.npy").replace(
-                "**", "*"
-            )
-            pathes_pattern_Xval = [p.resolve() for p in folder.rglob(pattern)]
-            biggest_number_of_samples_path = sorted(
-                pathes_pattern_Xval, key=get_num_samples
-            )[-1]
-            get_id = lambda x: re.search("X_full_val_(.*)", x)
-            biggest_number_of_samples_id = get_id(biggest_number_of_samples_path.stem)
-            assert (
-                biggest_number_of_samples_id is not None
-            ), f"{biggest_number_of_samples_path.stem} cannot match regex in {pathes_pattern_Xval}"
-            biggest_number_of_samples_id = biggest_number_of_samples_id.group(1)
-            X_val = np.load(folder / f"X_full_val_{biggest_number_of_samples_id}.npy")
-            y_val = np.load(folder / f"y_val_{biggest_number_of_samples_id}.npy")
-            pattern = re.sub("[0-9]+_samples", "*", f"X_full*test*{id}*.npy").replace(
-                "**", "*"
-            )
-            pathes_pattern_Xtest = [p.resolve() for p in folder.rglob(pattern)]
-            biggest_number_of_samples_path = sorted(
-                pathes_pattern_Xtest, key=get_num_samples
-            )[-1]
-            get_id = lambda x: re.search("X_full_test_(.*)", x)
-            biggest_number_of_samples_id = get_id(
-                biggest_number_of_samples_path.stem
-            ).group(1)
-            test = (
-                np.load(folder / f"X_full_test_{biggest_number_of_samples_id}.npy"),
-                np.load(folder / f"y_test_{biggest_number_of_samples_id}.npy"),
-            )
-            print(
-                f"Doing validation for the full validation dataset with id {biggest_number_of_samples_id}"
-            )
+            X_val = np.load(folder / f"X_full_all_val_{id}.npy")
+            y_val = np.load(folder / f"y_all_val_{id}.npy")
+            X_test = np.load(folder / f"X_full_all_test_{id}.npy")
+            y_test = np.load(folder / f"y_all_test_{id}.npy")
+            test = X_test, y_test
         else:
             X_val = np.load(folder / f"X_full_val_{id}.npy")
             y_val = np.load(folder / f"y_val_{id}.npy")
+        assert X_tr.shape[1] == X_val.shape[1], f"Expecting to have the same number of features for tr {X_tr.shape[1]} and val {X_val.shape[1]} for {full_valid=}"
         return (X_tr, y_tr), (X_val, y_val), test
     else:
         raise NotImplemented
-        # with open(folder / f"X_{id}.shape", "r") as shape_file:
-        #     shape = eval(shape_file.read().strip())
-        # X = np.memmap(folder / f"X_{id}.npy", dtype='float16', mode='r',shape=shape)
-        # y = np.load(folder / f"y_{id}.npy")
-        # return X,y
 
 
 def generate_data(
@@ -882,11 +886,8 @@ def run_optuna(
     if classifier_name in ["BernoulliNB"]:
         kwargs["binarize"] = trial.suggest_float("binarize", 0.0, 1.0)
     if classifier_name == "ComplementNB":
-        prior = trial.suggest_float("prior", 0, 1)
         kwargs["norm"] = trial.suggest_categorical("norm", [False, True])
     if classifier_name == "GaussianNB":
-        prior = trial.suggest_float("prior", 0, 1)
-        kwargs["priors"] = np.array([prior, 1 - prior])
         kwargs["var_smoothing"] = trial.suggest_float(
             "var_smoothing", 1e-14, 1, log=True
         )
@@ -1025,6 +1026,7 @@ def hyperparameter_search(
     )
     with open(f"data/study-{id}-{id_job}-best.json", "w") as f:
         json.dump({"best_params": study.best_params, "best_value": study.best_value}, f)
+    run_optuna(optuna.trial.FixedTrial(params=study.best_params), num_samples=num_samples, dataset=dataset, models=models, save_study_name=study_name)  # type: ignore
 
 
 @print_args
@@ -1045,6 +1047,7 @@ def launch_search(
     num_jobs: int = 4,
     num_samples: int = -1,
     id_job: str = "",
+    num_rep: int = 5,
 ):
     assert isinstance(algorithm, str) and algorithm in get_args(AlgorithmName)
     assert isinstance(dataset, str) and dataset in get_args(DatasetName)
@@ -1056,6 +1059,7 @@ def launch_search(
             n_jobs=num_jobs,
             num_samples=num_samples,
             id_job=id_job,
+            num_rep=num_rep,
         )
     elif algorithm == "SVC":
         hyperparameter_search(
@@ -1065,6 +1069,7 @@ def launch_search(
             n_jobs=num_jobs,
             num_samples=num_samples,
             id_job=id_job,
+            num_rep=num_rep,
         )
     elif algorithm == "KNN":
         hyperparameter_search(
@@ -1074,11 +1079,12 @@ def launch_search(
             n_jobs=num_jobs,
             num_samples=num_samples,
             id_job=id_job,
+            num_rep=num_rep,
         )
     else:
         raise Exception
 
-
+@print_args
 def reproduce_best_studies(
     folder_in: Optional[Path] = None,
     pattern: str = "*.db",
@@ -1107,10 +1113,13 @@ def reproduce_best_studies(
             models = ["KNeighborsClassifier"]
         else:
             raise Exception
+        old_folder = Path(".").resolve()
+        os.chdir(folder_in.as_posix())
         storage = optuna.storages.RDBStorage(
             f"sqlite:///{stem}.db", engine_kwargs={"connect_args": {"timeout": 20.0}}
         )
         study = optuna.load_study(study_name=stem, storage=storage)
+        os.chdir(old_folder.as_posix())
         best_trial = study.best_trial
         params = best_trial.params
         num_samples = get_num_samples(f)
@@ -1125,3 +1134,4 @@ if __name__ == "__main__":
             "reproduce_best_studies": reproduce_best_studies,
         }
     )
+# TODO: reproduce best at the end of search
