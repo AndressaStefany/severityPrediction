@@ -31,7 +31,21 @@ default_token: str = "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"
 default_model: ModelName = "meta-llama/Llama-2-13b-chat-hf"
 default_n_tokens_infered_max: int = 7364
 default_input_field: str = "description"
-default_folder_data: Path = Path(f"/project/def-aloise/{os.environ['USER']}/data")
+if "USER" in os.environ:
+    if os.environ["USER"] == "rmoine":
+        default_folder_data: Path = Path(
+            f"/project/def-aloise/{os.environ['USER']}/data"
+        )
+    elif os.environ["USER"] == "local_rmoine":
+        default_folder_data: Path = Path(
+            f"C:/Users/robin/Documents/projets/severityPrediction/data"
+        )
+    else:
+        raise Exception
+else:
+    default_folder_data: Path = Path(
+        f"C:/Users/robin/Documents/projets/severityPrediction/data"
+    )
 default_datasetname = "eclipse_72k"
 
 # typehint imports
@@ -50,12 +64,12 @@ if TYPE_CHECKING:
     import sklearn.metrics as skMetr
     import sklearn.model_selection as skMsel
     import tqdm
-    import datasets #type: ignore
+    import datasets  # type: ignore
     import h5py
-    import bitsandbytes as bnb #type: ignore
-    import evaluate #type: ignore
+    import bitsandbytes as bnb  # type: ignore
+    import evaluate  # type: ignore
     import optuna
-    import accelerate #type: ignore
+    import accelerate  # type: ignore
     import fire
 
 
@@ -81,7 +95,7 @@ imports = [
     "import evaluate",
     "import optuna",
     "import accelerate",
-    "from pytorchtools import EarlyStopping"
+    "from pytorchtools import EarlyStopping",
 ]
 for i in imports:
     try:
@@ -94,7 +108,7 @@ try:
 except Exception:
     pass
 try:
-    from pytorchtools import EarlyStopping #type: ignore
+    from pytorchtools import EarlyStopping  # type: ignore
 except Exception:
     pass
 
@@ -119,7 +133,7 @@ def get_literal_value(model_name: str, literal: Any = ModelName) -> Any:
     return model_name  # type: ignore
 
 
-def get_dataset_choice(dataset_choice: str) -> DatasetName: #type: ignore
+def get_dataset_choice(dataset_choice: str) -> DatasetName:  # type: ignore
     assert isinstance(dataset_choice, str) and dataset_choice in get_args(DatasetName)
     return dataset_choice  # type: ignore
 
@@ -259,11 +273,13 @@ def print_args(func):
 
     return inner
 
+
 def remove_args(func):
     def inner(*args, **kwargs):
         return func(**kwargs)
 
     return inner
+
 
 def classify(answer: str) -> int:
     """Return 0 if not severe, 1 if severe and -1 if unknown"""
@@ -432,7 +448,8 @@ def initialize_model(
     num_labels: int = 1,
     quant: bool = True,
     load_in_8bit: bool = True,
-    *args, **kwargs
+    *args,
+    **kwargs,
 ) -> "trf.LlamaForCausalLM":
     if hidden_states:
         last_state = True
@@ -481,35 +498,40 @@ def initialize_model_inference(
             return_dict=return_dict,
             base_class=trf.AutoModelForCausalLM,
             num_labels=num_labels,
-            quant=quant
+            quant=quant,
         )
         return tokenizer, model
     else:
         return tokenizer
 
 
-def build_prompt(
-    llama_tokenized_template: List[str],
-    llama_tokenized_description: List[str],
-    template_index_insert: int,
-    tokenizer,
-    limit_tokens: int,
-) -> Tuple[str, List[str]]:
-    """We put the template and the description together using the insertion point specified in description_index_insert"""
-    ## First make a copy
-    tokenized_full_text = llama_tokenized_template[:]
-    ## Then remove the <s> token from the description
-    description = llama_tokenized_description[1:]
-    # limit the number of tokens of the description
-    n_tokens_descr_max = limit_tokens - len(tokenized_full_text)
-    description = description[:n_tokens_descr_max]
-    ## Then insert the description inside the template at the position indicated (after input)
-    tokenized_full_text[template_index_insert:template_index_insert] = description
-    ## And remove the start token (as it will be put again by the tokenizer)
-    tokenized_full_text.pop(0)
-    ## Convert back into a sentence
-    text = tokenizer.decode(tokenizer.convert_tokens_to_ids(tokenized_full_text))
-    return text, tokenized_full_text
+class PromptBuilder:
+    def __init__(self, prompt_id: str = "official"):
+        self.template: Dict[str, Any]
+        with open(default_folder_data / "templates.json") as f:
+            template = [t for t in json.load(f) if t["id"] == prompt_id]
+        assert len(template) == 1, f"Expecting to have one template with the {prompt_id=} found {len(template)=}"
+        [self.template] = template
+
+    def build_prompt(
+        self, llama_tokenized_description: List[str], tokenizer, limit_tokens: int
+    ) -> Tuple[str, List[str]]:
+        template_index_insert = self.template["template_index_insert"]
+        llama_tokenized_template = self.template["llama_tokenized_template"]
+        ## First make a copy
+        tokenized_full_text = llama_tokenized_template[:]
+        ## Then remove the <s> token from the description
+        description = llama_tokenized_description[1:]
+        # limit the number of tokens of the description
+        n_tokens_descr_max = limit_tokens - len(tokenized_full_text)
+        description = description[:n_tokens_descr_max]
+        ## Then insert the description inside the template at the position indicated (after input)
+        tokenized_full_text[template_index_insert:template_index_insert] = description
+        ## And remove the start token (as it will be put again by the tokenizer)
+        tokenized_full_text.pop(0)
+        ## Convert back into a sentence
+        text = tokenizer.decode(tokenizer.convert_tokens_to_ids(tokenized_full_text))
+        return text, tokenized_full_text
 
 
 @print_args
@@ -526,8 +548,9 @@ def main_inference(
     id_name: str = "",
     field_input: str = "description",
     missing_file: str = "",
+    prompt_id: str = "official",
 ):
-    """Function used to do the inference via text-generation: we ask the model to classify the bug into severe and non severe, 
+    """Function used to do the inference via text-generation: we ask the model to classify the bug into severe and non severe,
     the model generates a text of what it thinks it is, we parse it with the function `classify` to see if it is severe or not and then we save the results (text answer and extracted severity) in a json file
     The data are expected to be in a json under folder_data/dataset_choice.json under the form of list of dictonnaries where at `field_input` you have the text to run the prediction model on
     Output the resulst in a subfolder of where the data are located called `inference_{id_name}`:
@@ -537,11 +560,11 @@ def main_inference(
                 "answer": str, text answer of the model,
                 "severity_pred": int, 0 for non severe, 1 for severe, -2 if exception during prediction (cuda out of memory, ie too big n_tokens_infered_max), extraction with `classify`,
                 "input": str, the text provided to the model containing the template and the truncated description to fit with `n_tokens_infered_max` requirements
-            }, 
+            },
             ....
         ]
-    
-    # Arguments 
+
+    # Arguments
     - folder_data: Path = default_folder_data, the path to the folder that contains the dataset (eclipse_72k.json or mozilla_200k.json)
     - dataset_choice: DatasetName = default_datasetname,  the dataset choice, either eclipse_72k or mozilla_200k
     - model_name: str = default_model, the model to use, same syntax as on huggingface, i.e. meta-llama/Llama-2-13b-chat-hf e.g.
@@ -555,7 +578,7 @@ def main_inference(
     - field_input: str = "description", the field in twhich the text to classify is (without template)
     - missing_file: str = "", if provided we will process only missing seeds (list of str) provided at this path
     """
-    folder_data = existing_path(folder_data,is_folder=True)
+    folder_data = existing_path(folder_data, is_folder=True)
     folder_out = existing_path(folder_data, is_folder=True) / f"inference_{id_name}"
     folder_out.mkdir(parents=True, exist_ok=True)
     path_data_json = folder_data / f"{dataset_choice}.json"
@@ -570,7 +593,7 @@ def main_inference(
     with open(path_data_json) as f:
         data_preprocessed = json.load(f)
     if missing_file == "":
-        to_process = list(range(len(data_preprocessed)))
+        to_process = [e["bug_id"] for e in data_preprocessed]
     else:
         with open(folder_data / missing_file, "r") as fp:
             to_process = json.load(fp)
@@ -579,21 +602,45 @@ def main_inference(
     )
     to_process = set(to_process[seed_start:seed_end])
 
-    tokenizer, model = initialize_model_inference(model_name, token)  # type: ignore
-    pipeline = trf.pipeline(
-        "text-generation", model=model, tokenizer=tokenizer, device_map="auto"
-    )
+    tokenizer, model = initialize_model_inference(model_name, token, hidden_states=False, return_dict=True)  # type: ignore
+
     data: List[PreprocessedData] = data_preprocessed
-    with open(path_data_json.parent / "template.json") as fp:
-        template = json.load(fp)
     data = [d for d in data if d["bug_id"] in to_process]
     responses = []
     model.eval()
     path_out = folder_out / f"predictions_{seed_start}_{seed_end}.json"
     with open(path_out, "w") as f:
         f.write("")
+    Lelems = []
+    prompt_builder = PromptBuilder(prompt_id=prompt_id)
+    for i, d in tqdm.tqdm(enumerate(data), total=len(data)):
+        try:
+            tokens_ids: List[int] = tokenizer(d[field_input])["input_ids"]  # type: ignore
+        except Exception as e:
+            logger.warning(d[field_input])
+            raise e
+        tokenized: List[str] = tokenizer.convert_ids_to_tokens(tokens_ids)  # type: ignore
+        text, tokenized_full_text = prompt_builder.build_prompt(
+            tokenized,
+            tokenizer,
+            limit_tokens=n_tokens_infered_max,
+        )
+        n_tokens = len(tokenized_full_text)
+        Lelems.append(
+            {
+                "input": text,
+                "n_tokens": n_tokens,
+                "tokenized": tokenizer.convert_tokens_to_ids(tokenized_full_text),
+                **d,
+            }
+        )
+    generation_config = trf.GenerationConfig(
+        max_new_tokens=10,
+        top_k=1,
+        
+    )
     with torch.no_grad():
-        for i, d in tqdm.tqdm(enumerate(data), total=len(data)):
+        for i, d in tqdm.tqdm(enumerate(Lelems), total=len(Lelems)):
             try:
                 gc.collect()
                 torch.cuda.empty_cache()  # type: ignore
@@ -601,48 +648,35 @@ def main_inference(
                 pass
             answer = float("nan")
             severity = float("nan")
-            tokens_ids: List[int] = tokenizer(d[field_input])["input_ids"]  # type: ignore
-            tokenized: List[str] = tokenizer.convert_ids_to_tokens(tokens_ids)  # type: ignore
-            text, tokenized_full_text = build_prompt(
-                template["llama_tokenized_template"],
-                tokenized,
-                template["template_index_insert"],
-                tokenizer,
-                limit_tokens=n_tokens_infered_max,
-            )
-            n_tokens = len(tokenized_full_text)
-            assert n_tokens < n_tokens_infered_max
+            input_tensor = torch.tensor([d["tokenized"]], dtype=torch.int32)
             try:
-                [answer] = pipeline(  # type: ignore
-                    text,
-                    do_sample=True,
-                    top_k=1,
-                    num_return_sequences=1,
-                    eos_token_id=tokenizer.eos_token_id,
-                    return_full_text=False,
-                )
-                answer = answer["generated_text"]  # type: ignore
-                if not isinstance(answer, str):
-                    raise Exception("Unknown result answer: " + str(answer))
-                severity = classify(answer)
+                input_tensor = input_tensor.to("cuda")
             except Exception:
+                pass
+            try:
+                with torch.no_grad():
+                    prediction = model.generate(
+                        input_tensor, generation_config=generation_config
+                    )[0].tolist()[len(d["tokenized"]):]
+                    answer = tokenizer.decode(prediction)
+                severity = classify(answer)
+                del prediction
+            except torch.cuda.OutOfMemoryError:
                 severity = -2
+            except Exception as e:
+                print(e)
 
             responses.append(
-                json.dumps({
-                    **d,
-                    "answer": answer,
-                    f"severity_pred": severity,
-                    f"input": text,
-                })
+                json.dumps(
+                    {
+                        **d,
+                        "answer": answer,
+                        f"severity_pred": severity,
+                    }
+                )
             )
-            if i % 5 == 0:
-                with open(path_out, "a") as f:
-                    f.write("\n".join(responses)+"\n")
-                responses = []
-        if len(responses) > 0:
-            with open(path_out, "a") as f:
-                f.write("\n".join(responses)+"\n")
+        with open(path_out, "a") as f:
+            f.write("\n".join(responses) + "\n")
 
 
 def extract_fields_from_json(folder_path: Path) -> List[Dict]:
@@ -720,8 +754,13 @@ def compute_metrics_from_list(
     data["true_text"] = data["true"].apply(lambda x: mapping_dict[x])
     true = np.array(data["true"])
     pred = np.array(data["pred"])
+    pred_unique = np.unique(pred)
     # Compute the confusion matrix
     conf_matrix = skMetr.confusion_matrix(true, pred)
+    if -2 in pred_unique:
+        conf_matrix = conf_matrix[1:,:]
+    if -1 in pred_unique:
+        conf_matrix = conf_matrix[1:,:]
 
     # Compute F1-score
     f1: List[float] = skMetr.f1_score(true, pred, average=None).tolist()  # type: ignore
@@ -843,7 +882,12 @@ def plot_confusion(
         unique_values = [-2, -1, 0, 1]
     # pretty print the confusion matrix
     values = [mapping_dict[e] + f"\n({e})" for e in unique_values]
-    df_conf_matrix = pd.DataFrame(conf_matrix, index=values, columns=values)
+    try:
+        index=[0,1]
+        df_conf_matrix = pd.DataFrame(conf_matrix, index=index, columns=values)
+    except Exception as e:
+        print(f"{index=} {values=} {conf_matrix.shape=}")
+        raise e
     if backend is not None:
         matplotlib.use("agg")
     try:
@@ -896,7 +940,9 @@ def find_representant(
         - poss: the labels possibilities (-2 for nan)
     """
     samples = {}
-    poss = df[field_pred].unique().tolist()
+    poss = set(df[field_pred].unique().tolist()).union(
+        set(df[field_true].unique().tolist())
+    )
     for i, j in product(poss, poss):
         df_sel = (
             df.query(f"{field_pred} == {i} & {field_true} == {j}")
@@ -933,21 +979,6 @@ class TemplateDict(TypedDict):
     template_index_insert: int
 
 
-class Evaluator:
-    def __init__(self) -> None:
-        self.reset()
-
-    def reset(self):
-        self.buffer = []
-
-    def add_samples(self, d: Dict, pred: List[float], logits: List[float]):
-        for d_e, pred_e, logits_e in zip(d, pred, logits):
-            d_saved = {**d_e, "pred": pred_e, "logits": logits_e}
-            self.buffer.append(d_saved)
-
-    def get_data(self):
-        return self.buffer
-
 
 @print_args
 def generate_dataset(
@@ -959,6 +990,7 @@ def generate_dataset(
     model_name: ModelName = default_model,
     n_tokens_infered_max: int = -1,
     id: str = "",
+    prompt_id: str = "official",
 ):
     """Generates the dataset for the finetuning and put them in cache json files"""
     folder_out: Path = existing_path(folder_out, is_folder=True)
@@ -976,25 +1008,23 @@ def generate_dataset(
     id = id.replace("/", "_")
     train_path = folder_out / f"finetune_train{id}.json"
     valid_path = folder_out / f"finetune_valid{id}.json"
+    test_path = folder_out / f"finetune_test{id}.json"
     full_path = folder_out / f"finetune_full{id}.json"
-    if not train_path.exists() or not valid_path.exists():
+    if not train_path.exists() or not valid_path.exists() or not test_path.exists():
         tokenizer = get_tokenizer(token, model_name)
         logger.info("-> Creating cache")
         with open(file_examples) as f:
             data_preprocessed = json.load(f)
         data: List[PreprocessedData] = data_preprocessed
-        with open(file_examples.parent / "template.json") as fp:
-            template = json.load(fp)
         with open(file_split) as f:
             splits: SplitDict = {k: set(v) for k, v in json.load(f).items()}  # type: ignore
         L = {"tr": [], "val": [], "test": []}
+        prompt_builder = PromptBuilder(prompt_id=prompt_id)
         for d in tqdm.tqdm(data):
             tokens_ids: List[int] = tokenizer(d[field_input])["input_ids"]  # type: ignore
             tokenized: List[str] = tokenizer.convert_ids_to_tokens(tokens_ids)  # type: ignore
-            text, tokenized_full_text = build_prompt(
-                template["llama_tokenized_template"],
+            text, tokenized_full_text = prompt_builder.build_prompt(
                 tokenized,
-                template["template_index_insert"],
                 tokenizer,
                 limit_tokens=n_tokens_infered_max,
             )
@@ -1006,29 +1036,33 @@ def generate_dataset(
         logger.info("-> End creation cache in memory")
         with open(full_path, "w") as f:
             json.dump(L, f)
-        with open(train_path, "w") as f:
+        with open(train_path, "w",encoding="utf-8") as f:
             json.dump(L["tr"], f)
-        with open(valid_path, "w") as f:
+        with open(valid_path, "w",encoding="utf-8") as f:
             json.dump(L["val"], f)
-        return L["tr"], L["val"], train_path, valid_path
+        with open(test_path, "w",encoding="utf-8") as f:
+            json.dump(L["test"], f)
+        return L["tr"], L["val"], L["test"], train_path, valid_path, test_path
     else:
         logger.info("-> Reading cache")
-        with open(train_path, "r") as f:
+        with open(train_path, "r", encoding="utf-8") as f:
             train_data = json.load(f)
-        with open(valid_path, "r") as f:
+        with open(valid_path, "r", encoding="utf-8") as f:
             valid_data = json.load(f)
-        return train_data, valid_data, train_path, valid_path
+        with open(test_path, "r", encoding="utf-8") as f:
+            test_data = json.load(f)
+        return train_data, valid_data, test_data, train_path, valid_path, test_path
+
 
 class EarlyStoppingTrainer:
     """Class that manages the early stopping by comparing the metric_value to the best metric_value seen with a patience and a min_delta of improvement provided"""
-    def __init__(self, 
-                early_stopping_patience: int, 
-                early_stopping_threshold: float
-                ):
+
+    def __init__(self, early_stopping_patience: int, early_stopping_threshold: float):
         self.early_stopping_patience = early_stopping_patience
         self.early_stopping_threshold = early_stopping_threshold
         # early_stopping_patience_counter denotes the number of times validation metrics failed to improve.
         self.early_stopping_patience_counter = 0
+
     def check_metric_value(self, state, control, metric_value):
         # best_metric is set by code for load_best_model
         operator = np.less
@@ -1040,20 +1074,23 @@ class EarlyStoppingTrainer:
             state.best_metric = metric_value
         else:
             self.early_stopping_patience_counter += 1
-    
+
     def on_evaluate(self, state, control, metric_value, **kwargs):
         self.check_metric_value(state, control, metric_value)
         if self.early_stopping_patience_counter >= self.early_stopping_patience:
             control.should_training_stop = True
+
+
 class PredictionAggregator(trf.trainer_callback.TrainerCallback):
     """Class that manages saving data (in/out) for each step and allows to stop the training if early stopping is provided"""
+
     def __init__(
         self,
         event: Literal["train", "val"],
         n_tokens_infered_max: int,
         folder_out: Path,
         size: int,
-        early_stopping: Optional[EarlyStoppingTrainer] = None
+        early_stopping: Optional[EarlyStoppingTrainer] = None,
     ) -> None:
         self.history = []
         self.buffer = {}
@@ -1076,13 +1113,15 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         loss: float,
         num_samples: int,
         n_tokens: List[int],
-        event: Literal["val", "train"],
+        event: Literal["val", "train", "test"],
         epoch: float,
     ):
         """Function to save data of the prediction or training depending of the self.event watch Stops the training if early stopping asks to with the current validation loss for the epoch"""
         if event == self.event:
             self.batch_id += 1
-            for bug_id, prediction, true, n in zip(bug_ids, predictions, trues, n_tokens):
+            for bug_id, prediction, true, n in zip(
+                bug_ids, predictions, trues, n_tokens
+            ):
                 epoch_int = int(epoch)
                 if epoch_int not in self.buffer:
                     self.buffer[epoch_int] = []
@@ -1093,14 +1132,16 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                         "probability": prediction,
                         "binary_severity": true,
                         "n_tokens": n,
-                        "loss":loss,
+                        "loss": loss,
                         "event": event,
                         "epoch": epoch,
-                        "batch_id": self.batch_id
+                        "batch_id": self.batch_id,
                     }
                 )
-                if len(self.buffer[epoch_int]) >= self.size: 
-                    logger.info(f"Last batch had size {num_samples} with {bug_ids=}\nExpecting to see in one epoch only one time the dataset with {self.size=}, not {len(self.buffer[epoch_int])=}")
+                if len(self.buffer[epoch_int]) >= self.size:
+                    logger.info(
+                        f"Last batch had size {num_samples} with {bug_ids=}\nExpecting to see in one epoch only one time the dataset with {self.size=}, not {len(self.buffer[epoch_int])=}"
+                    )
                     _, _, data_full = compute_metrics_from_list(
                         fields_data=self.buffer[epoch_int],
                         pred_field="prediction",
@@ -1111,12 +1152,140 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                     loss_avg = batches["loss"].sum() / len(self.buffer[epoch_int])
                     if self.early_stopping is not None:
                         self.early_stopping.on_evaluate(state, control, loss_avg)
-                    data_full.to_json(self.folder_out / f"data{id}.json", orient="records", indent=4)
-            
+                    data_full.to_json(
+                        self.folder_out / f"data{id}.json", orient="records", indent=4
+                    )
+def create_groups(data, group_size):
+    groups = []
+    current_group = []
+
+    for item in data:
+        current_group.append(item)
+
+        if len(current_group) == group_size:
+            yield current_group
+            current_group = []
+
+    if current_group:
+        yield current_group
+
+class Evaluator:
+    def __init__(self, datasets_events: List[Tuple['Dataset', Literal['train','val','test']]], batch_size: int, collator: 'DataCollator', ):
+        self.datasets_events = datasets_events
+        self.batch_size = batch_size
+        self.collator = collator
+        self.data = {}
+        self.first_epoch = True
+        
+    def on_epoch_begin(self, state, control, tokenizer, model, criterion, *args, **kwargs):
+        if self.first_epoch:
+            self.evaluate(state, control, tokenizer, model, criterion, *args, **kwargs)
+            self.first_epoch = False
+    def on_epoch_end(self, state, control, tokenizer, model, criterion, *args, **kwargs):
+        self.evaluate(state, control, tokenizer, model, criterion, *args, **kwargs)
+        
+    def evaluate(self, state, control, tokenizer, model, criterion, *args, **kwargs):
+        model.eval()
+        self.data[state.epoch] = {}
+        with torch.no_grad():
+            for (dataset, event) in self.datasets_events:
+                self.data[state.epoch][event] = []
+                for group in create_groups(dataset, self.batch_size):
+                    inputs = self.collator.torch_call(group)
+                    bug_ids, predictions, trues, loss, loss_item, n_tokens = compute(criterion, tokenizer, model, inputs, event)
+                    for bug_id, prediction, true, n in zip(
+                        bug_ids, predictions, trues, n_tokens
+                    ):
+                        self.data[state.epoch][event].append({
+                            "bug_id": bug_id,
+                            "prediction": int(np.round(prediction)),
+                            "probability": prediction,
+                            "binary_severity": true,
+                            "n_tokens": n,
+                            "loss": loss_item,
+                            "event": event,
+                            "epoch": state.epoch,
+                        })
+    def save(self, folder: Path):
+        with open(folder / "evaluation.json", "w") as fp:
+            json.dump(self.data, fp)
+                
+def compute(
+        criterion, tokenizer, model, inputs: Dict, event: Literal["train", "val", "test"], *args, **kwargs
+    ):
+    """The main function to make the prediction, compute the loss and then notify the correct callbacks depending of the event (val or train)
+
+    # Arguments
+    - model, the model that can predict tokenized text (from input_ids) the prediction (1 logit)
+    - inputs: Dict returned by the collator object/function. Expected {"input": torch.Tensor, "bug_id": List[int], "label": torch.Tensor}
+    - event: Literal["val","train"] the event that asked for the prediction
+
+    # Returns
+    - loss: float, the loss for this batch
+    """
+    try:
+        gc.collect()
+        torch.cuda.empty_cache()  # type: ignore
+    except Exception as e:
+        print("Exception clear")
+        print(e)
+        print("End exception clear")
+    input = inputs["input"]
+    pad_token = tokenizer(tokenizer.pad_token)["input_ids"][1]
+    n_tokens = [len([e for e in elem if e != pad_token]) for elem in input.tolist()]
+    label = inputs["label"]
+    bug_id = inputs["bug_id"]
+    prediction = model(input)[0]
+    predictions = torch.nn.functional.sigmoid(
+        prediction.reshape((-1,)).detach().cpu()
+    ).tolist()
+    loss = criterion(torch.nn.functional.sigmoid(prediction), label)
+    trues = label.reshape((-1,)).tolist()
+    return bug_id, predictions, trues, loss, loss.sum().item(), n_tokens
+
+class CustomCallbacksHandler(trf.trainer_callback.CallbackHandler):
+    def __init__(self, callbacks, model, tokenizer, optimizer, criterion, lr_scheduler):
+        self.callbacks = []
+        for cb in callbacks:
+            self.add_callback(cb)
+        self.model = model
+        self.tokenizer = tokenizer
+        self.optimizer = optimizer
+        self.lr_scheduler = lr_scheduler
+        self.criterion = criterion
+        self.train_dataloader = None
+        self.eval_dataloader = None
+        
+    def on_epoch_begin(self, args, state, control):
+        control.should_epoch_stop = False
+        return self.call_event("on_epoch_begin", args, state, control)
+
+    def on_epoch_end(self, args, state, control):
+        return self.call_event("on_epoch_end", args, state, control)
+    def call_event(self, event, args, state, control, **kwargs):
+        for callback in self.callbacks:
+            result = getattr(callback, event)(
+                args,
+                state,
+                control,
+                model=self.model,
+                tokenizer=self.tokenizer,
+                optimizer=self.optimizer,
+                criterion=self.criterion,
+                lr_scheduler=self.lr_scheduler,
+                train_dataloader=self.train_dataloader,
+                eval_dataloader=self.eval_dataloader,
+                **kwargs,
+            )
+            # A Callback can skip the return of `control` if it doesn't change it.
+            if result is not None:
+                control = result
+        return control
+
 class CustomTrainer(trl.SFTTrainer):
     """Manages the training loop with callbacks for each step of the training.
     Here the objective of this class is to convert the Llama model for sequence classification into a real binary classifier by applying a sigmoid and then applying the binary crossentropy loss. Moreover it notifies the callbacks of new incoming data at the training or validation step
-    
+
     # Arguments
     - tokenizer, the tokenizer to use
     - callbacks: List, the callbacks to notify when new data are available
@@ -1124,48 +1293,40 @@ class CustomTrainer(trl.SFTTrainer):
     - *args, other positional arguments to transmit to the trl.SFTTrainer
     - **kwargs, other keywords arguments to transmit to the trl.SFTTrainer
     """
-    def __init__(self, tokenizer, callbacks: List, weighted: bool = False, *args, **kwargs):
+
+    def __init__(
+        self, tokenizer, callbacks: List, weighted: bool = False, evaluator: Optional[Evaluator] = None, *args, **kwargs
+    ):
         self.tokenizer = tokenizer
         self.callbacks = callbacks
         self.events = {c.event for c in callbacks}
         self.weighted = weighted
         self.criterion = nn.BCELoss()
+        self.evaluator = evaluator
         super().__init__(callbacks=callbacks, *args, **kwargs)
+        if evaluator is not None:
+            self.callback_handler = CustomCallbacksHandler(
+                callbacks=callbacks,
+                model=self.model,
+                tokenizer=self.tokenizer,
+                criterion=self.criterion,
+                lr_scheduler=self.lr_scheduler,
+                optimizer=self.optimizer,
+            )
+    
     def prediction_step(
         self, model, inputs, prediction_loss_only: bool, ignore_keys=None
     ) -> Tuple:
         """Validation step in our case as wwe do not do other predictions (train does not count)"""
         if "val" not in self.events:
-            return super().prediction_step(model, inputs, prediction_loss_only, ignore_keys)
-        self.compute(model, inputs, "val")
+            return super().prediction_step(
+                model, inputs, prediction_loss_only, ignore_keys
+            )
+        self._compute(model, inputs, "val")
         return None, None, None  # to save GPU RAM
-    def compute(self, model, inputs: Dict, event: Literal["val","train"], *args, **kwargs):
-        """The main function to make the prediction, compute the loss and then notify the correct callbacks depending of the event (val or train)
-        
-        # Arguments
-        - model, the model that can predict tokenized text (from input_ids) the prediction (1 logit)
-        - inputs: Dict returned by the collator object/function. Expected {"input": torch.Tensor, "bug_id": List[int], "label": torch.Tensor}
-        - event: Literal["val","train"] the event that asked for the prediction
-        
-        # Returns
-        - loss: float, the loss for this batch
-        """
-        try:
-            gc.collect()
-            torch.cuda.empty_cache()  # type: ignore
-        except Exception as e:
-            print("Exception clear")
-            print(e)
-            print("End exception clear")
-        input = inputs["input"]
-        pad_token = self.tokenizer(self.tokenizer.pad_token)["input_ids"][1]
-        n_tokens = [len([e for e in elem if e != pad_token]) for elem in input.tolist()]
-        label = inputs["label"]
-        bug_id = inputs["bug_id"]
-        prediction = model(input)[0]
-        predictions = torch.nn.functional.sigmoid(prediction.reshape((-1,)).detach().cpu()).tolist()
-        loss = self.criterion(torch.nn.functional.sigmoid(prediction),label)
-        trues = label.reshape((-1,)).tolist()
+
+    def _compute(self, model, inputs, event):
+        bug_id, predictions, trues, loss, loss_item, n_tokens = compute(criterion=self.criterion, tokenizer=self.tokenizer, model=model, inputs=inputs, event=event)
         for c in self.callbacks:
             c.add_new_data(
                 self.state,
@@ -1173,35 +1334,34 @@ class CustomTrainer(trl.SFTTrainer):
                 bug_id,
                 predictions=predictions,
                 trues=trues,
-                loss=loss.sum().item(),
+                loss=loss_item,
                 n_tokens=n_tokens,
                 event=event,
                 num_samples=len(bug_id),
                 epoch=self.state.epoch,
             )
         return loss
-        
     def compute_loss(self, model, inputs, *args, **kwargs):
         """Compute the loss of the model for the inputs provided"""
-        return self.compute(model, inputs, "train")
+        return self._compute(model, inputs, "train")
     def _get_train_sampler(self) -> Optional[torch.utils.data.Sampler]:
         """Function that allows to provide a random balanced sampling per epoch"""
         if self.weighted:
-            dataset: "Dataset" = self.train_dataset# type: ignore
-            return BalancedRandomSampler(
-                dataset
-            )
+            dataset: "Dataset" = self.train_dataset  # type: ignore
+            return BalancedRandomSampler(dataset)
         return super()._get_train_sampler()
-    
+
+
 class Dataset(torch.utils.data.Dataset):
     """Custom dataset for binary classification problem where the data are provided as json
-    
+
     # Arguments
     - tokenizer, the tokenizer (deprecated, will be removed as unused)
     - l_dict: List[dict], the data containing input_field and label_field and bug_id (int) fields in each dict
     - input_field: str = "input", where to get the input text (str)
     - label_field: str = "binary_severity", where to get the label (int) in each dict
     """
+
     def __init__(
         self,
         tokenizer,
@@ -1216,21 +1376,21 @@ class Dataset(torch.utils.data.Dataset):
     def __len__(self):
         """Number of samples of the dataset. Will be the value return if we do len(my_dataset_object)"""
         return len(self.l_dict)
-    
-    def get_groups(self) -> Dict[int,List[int]]:
+
+    def get_groups(self) -> Dict[int, List[int]]:
         """Get the groups of each class:
-        
+
         # Return
-        - Dict[int, List[int]], group each dataset index by the severity: 
+        - Dict[int, List[int]], group each dataset index by the severity:
         {
             0: [1,5,6], --> If the samples of index 1, 5 and 6 in l_dict are non severe
             1: [0,2,3,4,7,8,9] --> If the samples of index 0,2,3,4,7,8,9 in l_dict are severe
         }
         """
-        group_0 = [i for i,d in enumerate(self.l_dict) if d[self.label_field] == 0]
-        group_1 = [i for i,d in enumerate(self.l_dict) if d[self.label_field] == 1]
-        return {0:group_0, 1:group_1}
-    
+        group_0 = [i for i, d in enumerate(self.l_dict) if d[self.label_field] == 0]
+        group_1 = [i for i, d in enumerate(self.l_dict) if d[self.label_field] == 1]
+        return {0: group_0, 1: group_1}
+
     def __getitem__(self, i: int) -> Dict[str, "torch.Tensor"]:
         elem = {**self.l_dict[i]}
         input = elem[self.input_field]
@@ -1242,41 +1402,49 @@ class Dataset(torch.utils.data.Dataset):
 class BalancedRandomSampler(torch.utils.data.Sampler[int]):
     """Defines which indexes of the dataset to use for the training dataset
     In this case, it will put as much SEVERE as NON SEVERE samples
-    
+
     # Arguments
     - dataset: Dataset, the dataset that we will balance (must have get_groups method)
     """
+
     def __init__(self, dataset: Dataset):
         self.groups = dataset.get_groups()
-        n_0,n_1 = len(self.groups[0]),len(self.groups[1])
+        n_0, n_1 = len(self.groups[0]), len(self.groups[1])
         # We extract the minority class
         self.min_class = 0 if n_0 <= n_1 else 1
         # We get also the minority class number of samples
-        self.length_group = min(n_0,n_1)
+        self.length_group = min(n_0, n_1)
+
     def __iter__(self) -> Iterator[int]:
         """Method that will be called to get the trianing samples in a for loop. Will be called each epoch"""
-        # First we shuffle the samples to take from different majority class elements at each epoch 
-        random.shuffle(self.groups[1-self.min_class])
+        # First we shuffle the samples to take from different majority class elements at each epoch
+        random.shuffle(self.groups[1 - self.min_class])
         # We build the indexes: [ ..., ..., ... all indexes from minority class ..., ..., same number of indexes as the minority class from the majority class , ...]
-        samples_ids = [*self.groups[self.min_class],*self.groups[1-self.min_class][:self.length_group]]
+        samples_ids = [
+            *self.groups[self.min_class],
+            *self.groups[1 - self.min_class][: self.length_group],
+        ]
         # We shuffle the indexes to mix together the minority and majority class
         random.shuffle(samples_ids)
         # And then generate the iterator by using the generator syntax
         for i in samples_ids:
             yield i
+
     def __len__(self) -> int:
         """For easier use and because we know it we provide the length of the data with the BalancedRandomSampler active"""
-        return self.length_group*2
-        
+        return self.length_group * 2
+
+
 class DataCollator(trf.data.DataCollatorForTokenClassification):
     """Custom way of collating (gathering together) individual samples into batches: apply padding to input, add the label and bug id for debugging purpose.
-    
+
     # Argument:
     - tokenizer, the tokenizer used for the model
     - padding: bool, wether to do padding, leave to True
     - max_length: int, the maximum length of all samples (limti_size)
-    
+
     """
+
     def __init__(self, tokenizer, padding: bool, max_length: int):
         self.token_pad = tokenizer.eos_token_id
         self.tokenizer = tokenizer
@@ -1284,15 +1452,15 @@ class DataCollator(trf.data.DataCollatorForTokenClassification):
         super().__init__(tokenizer=tokenizer, padding=padding, max_length=max_length)
 
     def torch_call(self, features: List[dict]) -> Dict:
-        """Method called to make the batch 
-        
+        """Method called to make the batch
+
         # Arguments
         - features: List[dict], the list of individual samples coming from Dataset.__getitem__
-        
+
         # Return
         - Dict {"input": inputs, "label": labels, "bug_id": bug_id} where inputs, labels are torch.Tensor but bug_id is List[int]
         """
-        # Extract input field, tokenize and batch with padding returning directly a torch Tensor 
+        # Extract input field, tokenize and batch with padding returning directly a torch Tensor
         inputs = [e["input"] for e in features]
         inputs = self.tokenizer(inputs, padding=True, return_tensors="pt")["input_ids"]
         # Convert labels to torch Tensor
@@ -1303,35 +1471,39 @@ class DataCollator(trf.data.DataCollatorForTokenClassification):
         bug_id = [e["bug_id"] for e in features]
         return {"input": inputs, "label": labels, "bug_id": bug_id}
 
+
 @remove_args
 @print_args
 def main_qlora_classification(
-    dataset_choice: DatasetName,# type: ignore
+    dataset_choice: DatasetName,  # type: ignore
     folder_out: Path = default_folder_data,
     folder_data: Path = default_folder_data,
     lora_alpha: int = 16,
     lora_dropout: float = 0.1,
     lora_r: int = 64,
-    model_name: str = default_model,# type: ignore
+    model_name: str = default_model,  # type: ignore
     token: str = default_token,
     field_input: str = "description",
     num_train_epochs: int = 1,
     tr_bs: int = 1,
     learning_rate: float = 2e-4,
     limit_tokens: int = 7364,
-    mapping_dict: Optional[Dict[int,str]] = None,
+    mapping_dict: Optional[Dict[int, str]] = None,
     lim_size: int = -1,
     id: str = "",
     use_cpu: bool = False,
     tr_weighted_sampling: bool = False,
-    early_stopping_patience: int = 3, 
+    early_stopping_patience: int = 3,
     early_stopping_threshold: float = 1e-3,
-) -> Tuple["np.ndarray", List[float], "pd.DataFrame"]:# type: ignore
+    prompt_id: str = "official",
+    resume_from_checkpoint: bool = False,
+    do_evaluator: bool = True
+) -> Tuple["np.ndarray", List[float], "pd.DataFrame"]:  # type: ignore
     """
     Perform training and PEFT QLORA fine-tuning of a classification model using LoRA.
     Curently only llama models are supported.
-    
-    
+
+
     # Arguments
         - dataset_choice: DatasetName, the dataset to use (eclipse or mozilla)
         - folder_out: Path = default_folder_data, the folder to put the logs and output visualizations
@@ -1342,7 +1514,7 @@ def main_qlora_classification(
         - model_name: str = default_model, the name of the llama model to use following huggingface existing model name
         - token: str = default_token, the token to access the huggingface model
         - field_input: str = "description", the field where the input text is
-        - num_train_epochs: int = 1, the maximum number of training epochs to do (!! could be less because of early stopping) 
+        - num_train_epochs: int = 1, the maximum number of training epochs to do (!! could be less because of early stopping)
         - tr_bs: int = 1, the batch size to use (modify this to avoid CUDA OOM error)
         - learning_rate: float = 2e-4, the learning rate of the paged_adam_8bits optimizer
         - limit_tokens: int = 7364, the number of tokens to limit the input of llama (includes the template)
@@ -1355,7 +1527,7 @@ def main_qlora_classification(
         - early_stopping_threshold: float = 1e-3, to qualify a reduction of validation loss as an improvement, this reduction must be bigger than early_stopping_threshold
     """
     # Get parameters of the function (only local variables at the time)
-    arguments = locals() 
+    arguments = locals()
     # Setup pathes / arguments and check exist/are valid
     folder_out = existing_path(folder_out, is_folder=True) / f"qlora_finetune{id}"
     folder_out.mkdir(parents=True, exist_ok=True)
@@ -1374,10 +1546,10 @@ def main_qlora_classification(
     model = initialize_model(
         model_name=model_name,
         token=token,
-        base_class=trf.AutoModelForSequenceClassification,# Notice the AutoModelForSequenceClassification for sequence classification
+        base_class=trf.AutoModelForSequenceClassification,  # Notice the AutoModelForSequenceClassification for sequence classification
         quant=True,
         load_in_8bit=False,
-        num_labels=1, # 1 label/class because binary class: 0 NON SEVERE ; 1 SEVERE
+        num_labels=1,  # 1 label/class because binary class: 0 NON SEVERE ; 1 SEVERE
     )
     # Prepare LORA arguments
     logger.info("peft.LoraConfig")
@@ -1387,7 +1559,7 @@ def main_qlora_classification(
         r=lora_r,
         bias="none",
         inference_mode=False,
-        task_type="SEQ_CLS", # Notice the SEQ_CLS for sequence classification
+        task_type="SEQ_CLS",  # Notice the SEQ_CLS for sequence classification
     )
     # Note: LLAMA2 for sequence classification returns logits; providing num_labels just adds a randomly initialized linear(voc_size,num_labels) to have the correct output
     # Padding tokens for batch of sentences of different sizes
@@ -1400,15 +1572,16 @@ def main_qlora_classification(
     if model_name == "meta-llama/Llama-2-13b-chat-hf":
         model_name_dataset = "meta-llama/Llama-2-7b-chat-hf"
     # Then we generate (if not already) and get the datasets
-    tr_data, val_data, train_path, valid_path = generate_dataset(
+    tr_data, val_data, test_data, train_path, valid_path, test_path = generate_dataset(
         folder_out=folder_data,
         folder_data=folder_data,
         field_input=field_input,
         dataset_choice=dataset_choice,
         token=token,
         model_name=model_name_dataset,  # type: ignore
-        id=f"_{model_name_dataset}_{dataset_choice}_{limit_tokens}",
+        id=f"_{model_name_dataset}_{dataset_choice}_{limit_tokens}_{prompt_id}",
         n_tokens_infered_max=limit_tokens,
+        prompt_id=prompt_id,
     )
     logger.info(f"Using {train_path} {valid_path}")
     # Then we generate the huggingface datasets
@@ -1421,9 +1594,14 @@ def main_qlora_classification(
     if lim_size == -1:
         real_lim_size_val = len(val_data)
     val_data: List[dict] = val_data[:real_lim_size_val]
+    real_lim_size_val = lim_size
+    if lim_size == -1:
+        real_lim_size_val = len(test_data)
+    test_data: List[dict] = test_data[:real_lim_size_val]
     ## Then we convert the data into Dataset (see doc above)
     tr_data = Dataset(tokenizer, tr_data)
     val_data = Dataset(tokenizer, val_data)
+    test_data = Dataset(tokenizer, test_data)
     logger.info(f"training QLORA {len(tr_data)} {len(val_data)}")
     # Set training parameters
     training_arguments = trf.TrainingArguments(
@@ -1434,11 +1612,11 @@ def main_qlora_classification(
         gradient_accumulation_steps=1,
         logging_steps=1,
         learning_rate=learning_rate,
-        fp16=not use_cpu, # to avoid bug
-        optim="paged_adamw_8bit", # !! IMPORTANT !! to have an optimizer working in 8 bits as the model
+        fp16=not use_cpu,  # to avoid bug
+        optim="paged_adamw_8bit",  # !! IMPORTANT !! to have an optimizer working in 8 bits as the model
         remove_unused_columns=False,
         evaluation_strategy="epoch",
-        save_total_limit=2, # to limit the total number of checkpoints (and disk memory used) kept at all time
+        save_total_limit=2,  # to limit the total number of checkpoints (and disk memory used) kept at all time
         logging_first_step=True,
         use_cpu=use_cpu,
     )
@@ -1455,47 +1633,71 @@ def main_qlora_classification(
     tr_size = len(tr_data)
     if tr_weighted_sampling:
         # If yes we provide a custom sampler that will manage providing the indexes to get the data at from the Dataset for each epoch
-        sampler = BalancedRandomSampler(
-            tr_data
-        )
+        sampler = BalancedRandomSampler(tr_data)
         # We correct the size of the training data if we balance it
         tr_size = len(sampler)
     # Then we build the callbacks to get all of the metrics, inputs/outputs, one for each dataset
     # Note: these are workaround to be able to get the metrics for each step both for the training and validation datasets. Otherwise the training dataset metrics are not available with huggingface
     predictions_aggregator_tr = PredictionAggregator(
-        event="train", n_tokens_infered_max=limit_tokens, folder_out=folder_out,size=tr_size
+        event="train",
+        n_tokens_infered_max=limit_tokens,
+        folder_out=folder_out,
+        size=tr_size,
     )
     predictions_aggregator_val = PredictionAggregator(
-        event="val", n_tokens_infered_max=limit_tokens, folder_out=folder_out,size=len(val_data),
-        early_stopping=EarlyStoppingTrainer(# We attach the early stopper there as the validation loss is only accessible via PredictionAggregator and we can stop the training via the object control
+        event="val",
+        n_tokens_infered_max=limit_tokens,
+        folder_out=folder_out,
+        size=len(val_data),
+        early_stopping=EarlyStoppingTrainer(  # We attach the early stopper there as the validation loss is only accessible via PredictionAggregator and we can stop the training via the object control
             early_stopping_patience=early_stopping_patience,
             early_stopping_threshold=early_stopping_threshold,
-        )
+        ),
     )
+    evaluator = None
+    if do_evaluator or resume_from_checkpoint:
+        evaluator = Evaluator(
+            datasets_events=[
+                (tr_data, "train"),
+                (val_data, "val"),
+                (test_data, "test")
+            ],
+            batch_size=tr_bs,
+            collator=DataCollator(
+                tokenizer, padding=True,
+                max_length=limit_tokens
+            )
+        )
     # We build the trainer object that will do the training and validations loops, the epochs... As we followed the format specified by huggingface the callbacks will be called at the appropriate time (end of each batch during training, end of each epoch...)
     trainer = CustomTrainer(  # type: ignore
+        evaluator=evaluator,
         model=model,
         train_dataset=tr_data,
         eval_dataset=val_data,
         tokenizer=tokenizer,
-        args=training_arguments, 
+        args=training_arguments,
         peft_config=peft_config,  # type: ignore --> to provide LORA hyperparameters
         packing=False,
-        max_seq_length=limit_tokens + 5, # For safety: length of the template and we allow 5 tokens to answer even though in practise it only return one value
+        max_seq_length=limit_tokens
+        + 5,  # For safety: length of the template and we allow 5 tokens to answer even though in practise it only return one value
         formatting_func=lambda x: x,
-        data_collator=DataCollator(tokenizer, False, limit_tokens), # custom way of building batches from individual samples
-        callbacks=[ # callbacks to save the results and do the early stopping
+        data_collator=DataCollator(
+            tokenizer, False, limit_tokens
+        ),  # custom way of building batches from individual samples
+        callbacks=[  # callbacks to save the results and do the early stopping
             predictions_aggregator_tr,
-            predictions_aggregator_val
+            predictions_aggregator_val,
         ],
-        weighted=tr_weighted_sampling, # wether to balance the training dataset
+        weighted=tr_weighted_sampling,  # wether to balance the training dataset
     )
     logger.info(f"{trainer.args._n_gpu=}")
     # with torch.autocast("cuda"):
-    trainer.train(resume_from_checkpoint=False) # launch the training
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)  # launch the training
+    if evaluator is not None:
+        evaluator.save(folder_out)
+    
     with open(folder_out / "log_history.json", "w") as fp:
         json.dump(trainer.state.log_history, fp)
-
 
 
 def get_max_tokens(
@@ -1547,7 +1749,7 @@ def get_pooling_operation(pooling_code: "PoolingOperationCode") -> "PoolingFn":
 def get_llama2_embeddings(
     folder_out: str,  # type: ignore
     folder_data: str,  # type: ignore
-    dataset_choice: DatasetName,#type: ignore
+    dataset_choice: DatasetName,  # type: ignore
     pooling_op: PoolingOperationCode,
     layer_id: int = -1,
     seed_start: Optional[int] = None,
@@ -1707,17 +1909,19 @@ def merge_data_embeddings(
         json.dump(L, fp)
 
 
-def get_nn_classifier(trial: "optuna.Trial", 
-                      input_size, 
-                      output_size: int = 1,
-                      dropout_layer: Optional[bool]=True,
-                      batch_norm: Optional[bool]=True):
+def get_nn_classifier(
+    trial: "optuna.Trial",
+    input_size,
+    output_size: int = 1,
+    dropout_layer: Optional[bool] = True,
+    batch_norm: Optional[bool] = True,
+):
     activation_functions = {
-        'relu': nn.ReLU,
-        'leaky_relu': nn.LeakyReLU,
-        'tanh': nn.Tanh,
-        'elu': nn.ELU,
-        'prelu': nn.PReLU,
+        "relu": nn.ReLU,
+        "leaky_relu": nn.LeakyReLU,
+        "tanh": nn.Tanh,
+        "elu": nn.ELU,
+        "prelu": nn.PReLU,
     }
     n_layers = trial.suggest_int("n_layers", 1, 4)
     layers = []
@@ -1725,16 +1929,20 @@ def get_nn_classifier(trial: "optuna.Trial",
 
     for i in range(0, n_layers):
         out_features = trial.suggest_int(f"n_units_l{i}", 4, 128)
-        function = trial.suggest_categorical(f"layer_function_{i}", list(activation_functions.keys()))
+        function = trial.suggest_categorical(
+            f"layer_function_{i}", list(activation_functions.keys())
+        )
         layers.append(nn.Linear(in_features, out_features))
-        
+
         if batch_norm:
             layers.append(nn.BatchNorm1d(out_features))
-        
+
         layers.append(activation_functions[function]())
-        
+
         if dropout_layer:
-            dropout_rate = trial.suggest_categorical(f"dropout_rate_l{i}", [0.2, 0.3, 0.4, 0.5])
+            dropout_rate = trial.suggest_categorical(
+                f"dropout_rate_l{i}", [0.2, 0.3, 0.4, 0.5]
+            )
             layers.append(nn.Dropout(p=dropout_rate))
 
         in_features = out_features
@@ -1746,23 +1954,25 @@ def get_nn_classifier(trial: "optuna.Trial",
     return model
 
 
-def train_test_classifier(trial: 'optuna.Trial',
-                          label_name: str='binary_severity',
-                          folder_path: Optional[str]=None,
-                          split_dataset_name: Optional[str]="split_eclipse_72k.json",
-                          dataset_name: Optional[str]="eclipse_72k",
-                          loss_weighting: Optional[bool]=True,
-                          undersampling: Optional[bool]=False):
-    '''
+def train_test_classifier(
+    trial: "optuna.Trial",
+    label_name: str = "binary_severity",
+    folder_path: Optional[str] = None,
+    split_dataset_name: Optional[str] = "split_eclipse_72k.json",
+    dataset_name: Optional[str] = "eclipse_72k",
+    loss_weighting: Optional[bool] = True,
+    undersampling: Optional[bool] = False,
+):
+    """
     Explicar a função
-    '''
+    """
     if folder_path is None:
         folder_path = f"/project/def-aloise/{os.environ['USER']}/data/"
-    
+
     hdf5_file_path = Path(folder_path) / f"embeddings_chunk_v4_eclipse_layer_-1_0.hdf5"
     df = pd.read_json(Path(folder_path) / f"{dataset_name}.json")
     train_dict, val_dict, test_dict = [], [], []
-    
+
     ##### Training, validation, and test variables
     num_epochs = 200
     # to track the training loss and validation loss
@@ -1771,35 +1981,59 @@ def train_test_classifier(trial: 'optuna.Trial',
     conf_matrix_train_list, conf_matrix_val_list = [], []
     n_epochs_stop = 100
     test_labels_list, test_result_list = [], []
-    
+
     with open(Path(folder_path) / split_dataset_name, "r") as file:
         idxs = json.load(file)
     labels = []
-    with h5py.File(hdf5_file_path, 'r') as file:
+    with h5py.File(hdf5_file_path, "r") as file:
         for key, value in file.items():
-            severity = df[df['bug_id']==int(key)][label_name]
-            if int(key) in idxs['tr']:
-                train_dict.append({"bug_id": int(key), "embedding": np.array(value).tolist(), label_name: int(severity.iloc[0])})
+            severity = df[df["bug_id"] == int(key)][label_name]
+            if int(key) in idxs["tr"]:
+                train_dict.append(
+                    {
+                        "bug_id": int(key),
+                        "embedding": np.array(value).tolist(),
+                        label_name: int(severity.iloc[0]),
+                    }
+                )
                 labels.append(int(severity.iloc[0]))
-            elif int(key) in idxs['val']:
-                val_dict.append({"bug_id": int(key), "embedding": np.array(value).tolist(), label_name: int(severity.iloc[0])})
-            elif int(key) in idxs['test']:
-                test_dict.append({"bug_id": int(key), "embedding": np.array(value).tolist(), label_name: int(severity.iloc[0])})
+            elif int(key) in idxs["val"]:
+                val_dict.append(
+                    {
+                        "bug_id": int(key),
+                        "embedding": np.array(value).tolist(),
+                        label_name: int(severity.iloc[0]),
+                    }
+                )
+            elif int(key) in idxs["test"]:
+                test_dict.append(
+                    {
+                        "bug_id": int(key),
+                        "embedding": np.array(value).tolist(),
+                        label_name: int(severity.iloc[0]),
+                    }
+                )
             else:
                 continue
                 # raise ValueError(f"The bug_id {key} does not exist")
     # normalization of embeddings
-    all_embeddings = [entry['embedding'] for entry in train_dict]
+    all_embeddings = [entry["embedding"] for entry in train_dict]
     all_embeddings = np.array(all_embeddings)
     min_values = np.min(all_embeddings, axis=0)
     max_values = np.max(all_embeddings, axis=0)
-    
+
     for entry in tqdm.tqdm(train_dict):
-        entry['embedding'] = (np.array(entry['embedding']) - min_values) / (max_values - min_values)
+        entry["embedding"] = (np.array(entry["embedding"]) - min_values) / (
+            max_values - min_values
+        )
     for entry in val_dict:
-        entry['embedding'] = (np.array(entry['embedding']) - min_values) / (max_values - min_values)
+        entry["embedding"] = (np.array(entry["embedding"]) - min_values) / (
+            max_values - min_values
+        )
     for entry in test_dict:
-        entry['embedding'] = (np.array(entry['embedding']) - min_values) / (max_values - min_values)
+        entry["embedding"] = (np.array(entry["embedding"]) - min_values) / (
+            max_values - min_values
+        )
 
     def collate_fn(data: List[dict]):
         bug_ids = [d["bug_id"] for d in data]
@@ -1812,17 +2046,33 @@ def train_test_classifier(trial: 'optuna.Trial',
         )
 
     # Define batch size and create a DataLoader
-    batch_size = trial.suggest_categorical("batch_size",[2, 16, 32, 64])
+    batch_size = trial.suggest_categorical("batch_size", [2, 16, 32, 64])
     if not undersampling:
-        train_dataloader = dt.DataLoader(train_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, drop_last=True)
-    test_dataloader = dt.DataLoader(test_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
-    val_dataloader = dt.DataLoader(val_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, drop_last=True)
+        train_dataloader = dt.DataLoader(
+            train_dict,
+            batch_size=batch_size,
+            shuffle=True,
+            collate_fn=collate_fn,
+            drop_last=True,
+        )
+    test_dataloader = dt.DataLoader(
+        test_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
+    )
+    val_dataloader = dt.DataLoader(
+        val_dict,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=collate_fn,
+        drop_last=True,
+    )
 
-    input_size = len(train_dict[0]['embedding'])
+    input_size = len(train_dict[0]["embedding"])
     output_size = 1
 
     try:
-        model = get_nn_classifier(trial=trial, input_size=input_size, output_size=output_size)
+        model = get_nn_classifier(
+            trial=trial, input_size=input_size, output_size=output_size
+        )
     except torch.cuda.OutOfMemoryError:
         print("OUT OF MEMORY ERROR when tried to take the Neural Network by Optuna.")
     # Binary Cross Entropy Loss
@@ -1849,7 +2099,7 @@ def train_test_classifier(trial: 'optuna.Trial',
         random.shuffle(balanced_dataset)
 
         return balanced_dataset
-    
+
     #### train step ###
     try:
         early_stopping = EarlyStopping(patience=n_epochs_stop, verbose=True)
@@ -1857,33 +2107,37 @@ def train_test_classifier(trial: 'optuna.Trial',
             train_result_list, val_result_list = [], []
             if undersampling:
                 balanced_train_dict = dynamic_undersampling(train_dict)
-                train_dataloader = dt.DataLoader(balanced_train_dict,
-                                                 batch_size=batch_size,
-                                                 shuffle=True,
-                                                 collate_fn=collate_fn,
-                                                 drop_last=True)
-            model.train() # prep model for training
+                train_dataloader = dt.DataLoader(
+                    balanced_train_dict,
+                    batch_size=batch_size,
+                    shuffle=True,
+                    collate_fn=collate_fn,
+                    drop_last=True,
+                )
+            model.train()  # prep model for training
             for i, (bug_ids, inputs, labels) in enumerate(train_dataloader):
                 optimizer.zero_grad()
                 outputs = model(inputs)
                 predicted = (outputs > 0.5).float()
                 result = [
-                        {
-                            "bug_id": bug_id,
-                            "binary_severity": label,
-                            "prediction": prediction[0],
-                        }
-                        for bug_id, label, prediction in zip(
-                            bug_ids.tolist(), labels.tolist(), predicted.tolist()
-                        )
-                    ]
+                    {
+                        "bug_id": bug_id,
+                        "binary_severity": label,
+                        "prediction": prediction[0],
+                    }
+                    for bug_id, label, prediction in zip(
+                        bug_ids.tolist(), labels.tolist(), predicted.tolist()
+                    )
+                ]
                 train_result_list.extend(result)
-                loss = criterion(outputs, labels.reshape([-1,1]))
+                loss = criterion(outputs, labels.reshape([-1, 1]))
                 loss.backward()
                 optimizer.step()
                 train_losses.append(loss.item())
 
-            conf_matrix, _, _ = compute_metrics_from_list(train_result_list, pred_field="prediction")
+            conf_matrix, _, _ = compute_metrics_from_list(
+                train_result_list, pred_field="prediction"
+            )
             conf_matrix_train_list.append({f"epoch_{epoch}": conf_matrix.tolist()})
 
             #### validation step ###
@@ -1903,9 +2157,11 @@ def train_test_classifier(trial: 'optuna.Trial',
                         )
                     ]
                     val_result_list.extend(result)
-                    loss = criterion(outputs, labels.reshape([-1,1]))
+                    loss = criterion(outputs, labels.reshape([-1, 1]))
                     valid_losses.append(loss.item())
-            conf_matrix, _, _ = compute_metrics_from_list(val_result_list, pred_field="prediction")
+            conf_matrix, _, _ = compute_metrics_from_list(
+                val_result_list, pred_field="prediction"
+            )
             conf_matrix_val_list.append({f"epoch_{epoch}": conf_matrix.tolist()})
 
             # calculate average loss over an epoch
@@ -1924,10 +2180,12 @@ def train_test_classifier(trial: 'optuna.Trial',
                 print("Early stopping")
                 break
         # load the last checkpoint with the best model
-        model.load_state_dict(torch.load('checkpoint.pt'))
+        model.load_state_dict(torch.load("checkpoint.pt"))
 
     except torch.cuda.OutOfMemoryError:
-        print(f"OUT OF MEMORY ERROR \n Num epochs: {num_epochs}, batch_size: {batch_size}")
+        print(
+            f"OUT OF MEMORY ERROR \n Num epochs: {num_epochs}, batch_size: {batch_size}"
+        )
 
     #### test step ###
     model.eval()
@@ -1947,17 +2205,27 @@ def train_test_classifier(trial: 'optuna.Trial',
                 )
             ]
             test_result_list.extend(result)
-            loss = criterion(outputs, labels.reshape([-1,1]))
+            loss = criterion(outputs, labels.reshape([-1, 1]))
             test_losses.append(loss.item())
-    conf_matrix_test, f1, _ = compute_metrics_from_list(test_result_list, pred_field="prediction")
+    conf_matrix_test, f1, _ = compute_metrics_from_list(
+        test_result_list, pred_field="prediction"
+    )
 
-    with open(Path(folder_path) / f"{trial.study.study_name}_trial_{trial.number}_loss.json", "w") as f:
-        json.dump({"loss_train": avg_train_losses,
-                   "loss_val": avg_valid_losses,
-                   "loss_test": test_losses,
-                   "conf_matrix_train_list": conf_matrix_train_list,
-                   "conf_matrix_val_list": conf_matrix_val_list,
-                   "conf_matrix_test": conf_matrix_test.tolist()}, f)
+    with open(
+        Path(folder_path) / f"{trial.study.study_name}_trial_{trial.number}_loss.json",
+        "w",
+    ) as f:
+        json.dump(
+            {
+                "loss_train": avg_train_losses,
+                "loss_val": avg_valid_losses,
+                "loss_test": test_losses,
+                "conf_matrix_train_list": conf_matrix_train_list,
+                "conf_matrix_val_list": conf_matrix_val_list,
+                "conf_matrix_test": conf_matrix_test.tolist(),
+            },
+            f,
+        )
 
     _, class_count = np.unique(test_labels_list, return_counts=True)
     test_class_proportion = class_count / len(test_labels_list)
@@ -1979,18 +2247,23 @@ def get_nn(path_data_folder: Optional[str] = None):
     )
     # n_jobs = 1
     # study.optimize(train_test_classifier, n_trials=10, n_jobs=n_jobs)
-    train_test_classifier(optuna.trial.FixedTrial({
-        "batch_size": 16,
-        "n_layers": 4,
-        "n_units_l0": 60,
-        "layer_function_0": "prelu",
-        "n_units_l1": 51,
-        "layer_function_1": "elu",
-        "n_units_l2": 87,
-        "layer_function_2": "elu",
-        "n_units_l3": 97,
-        "layer_function_3": "leaky_relu",
-        "lr": 0.0021440526947264296}))
+    train_test_classifier(
+        optuna.trial.FixedTrial(
+            {
+                "batch_size": 16,
+                "n_layers": 4,
+                "n_units_l0": 60,
+                "layer_function_0": "prelu",
+                "n_units_l1": 51,
+                "layer_function_1": "elu",
+                "n_units_l2": 87,
+                "layer_function_2": "elu",
+                "n_units_l3": 97,
+                "layer_function_3": "leaky_relu",
+                "lr": 0.0021440526947264296,
+            }
+        )
+    )
     with open(Path(path_data_folder) / f"{study_name}_results.json", "w") as f:
         json.dump({"best_params": study.best_params, "best_value": study.best_value}, f)
 
@@ -2068,8 +2341,7 @@ def generate_train_test_split(path_data: str, folder_out: str, train_percent: fl
     num_positive_train = int(train_percent * len(positive_examples))
     num_negative_train = int(train_percent * len(negative_examples))
     balanced_train_set = (
-        positive_examples[:num_positive_train]
-        + negative_examples[:num_negative_train]
+        positive_examples[:num_positive_train] + negative_examples[:num_negative_train]
     )
     remaining_examples = {
         1: positive_examples[num_positive_train:],
