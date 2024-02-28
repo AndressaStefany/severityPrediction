@@ -1539,6 +1539,7 @@ def main_qlora_classification(
         - early_stopping_patience: int = 3, the patience of non increasing validation loss before stopping the training
         - early_stopping_threshold: float = 1e-3, to qualify a reduction of validation loss as an improvement, this reduction must be bigger than early_stopping_threshold
     """
+    trf.set_seed(0)
     # Get parameters of the function (only local variables at the time)
     arguments = locals()
     # Setup pathes / arguments and check exist/are valid
