@@ -1209,7 +1209,8 @@ class Evaluator:
     def save(self, folder: Path):
         with open(folder / "evaluation.json", "w") as fp:
             json.dump(self.data, fp)
-                
+
+i_test = 0
 def compute(
         criterion, tokenizer, model, inputs: Dict, event: Literal["train", "val", "test"], *args, **kwargs
     ):
@@ -1223,6 +1224,7 @@ def compute(
     # Returns
     - loss: float, the loss for this batch
     """
+    global i_test
     try:
         gc.collect()
         torch.cuda.empty_cache()  # type: ignore
@@ -1230,6 +1232,7 @@ def compute(
         print("Exception clear")
         print(e)
         print("End exception clear")
+    # logger.info("start compute")
     input = inputs["input"]
     pad_token = tokenizer(tokenizer.pad_token)["input_ids"][1]
     n_tokens = [len([e for e in elem if e != pad_token]) for elem in input.tolist()]
@@ -1239,8 +1242,17 @@ def compute(
     predictions = torch.nn.functional.sigmoid(
         prediction.reshape((-1,)).detach().cpu()
     ).tolist()
+    assert not torch.isnan(prediction).any()
     loss = criterion(torch.nn.functional.sigmoid(prediction), label)
-    trues = label.reshape((-1,)).tolist()
+    # logger.info(f"{i_test=}")
+    i_test += 1
+    try:
+        trues = label.reshape((-1,)).tolist()
+    except Exception as e:
+        print("inputs ", inputs)
+        print("label ",inputs["label"])
+        print("label size ",label.size())
+        raise e
     return bug_id, predictions, trues, loss, loss.sum().item(), n_tokens
 
 class CustomCallbacksHandler(trf.trainer_callback.CallbackHandler):
@@ -1394,6 +1406,7 @@ class Dataset(torch.utils.data.Dataset):
     def __getitem__(self, i: int) -> Dict[str, "torch.Tensor"]:
         elem = {**self.l_dict[i]}
         input = elem[self.input_field]
+        assert elem[self.label_field] <=1 and elem[self.label_field] >= 0
         label = torch.tensor(elem[self.label_field])
         bug_id = elem["bug_id"]
         return {"input": input, "label": label, "bug_id": bug_id}
@@ -1619,6 +1632,7 @@ def main_qlora_classification(
         save_total_limit=2,  # to limit the total number of checkpoints (and disk memory used) kept at all time
         logging_first_step=True,
         use_cpu=use_cpu,
+        max_grad_norm=1,
     )
 
     if mapping_dict is None:
@@ -1692,7 +1706,12 @@ def main_qlora_classification(
     )
     logger.info(f"{trainer.args._n_gpu=}")
     # with torch.autocast("cuda"):
-    trainer.train(resume_from_checkpoint=resume_from_checkpoint)  # launch the training
+    try:
+        trainer.train(resume_from_checkpoint=resume_from_checkpoint)  # launch the training
+    except Exception as e:
+        with open("error.txt") as fp:
+            fp.write("error")
+        raise e
     if evaluator is not None:
         evaluator.save(folder_out)
     
