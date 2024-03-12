@@ -129,12 +129,12 @@ def assert_valid_token(token: str):
 
 
 def get_literal_value(model_name: str, literal: Any = ModelName) -> Any:
-    assert isinstance(model_name, str) and model_name in get_args(literal)
+    # assert isinstance(model_name, str) and model_name in get_args(literal)
     return model_name  # type: ignore
 
 
 def get_dataset_choice(dataset_choice: str) -> DatasetName:  # type: ignore
-    assert isinstance(dataset_choice, str) and dataset_choice in get_args(DatasetName)
+    # assert isinstance(dataset_choice, str) and dataset_choice in get_args(DatasetName)
     return dataset_choice  # type: ignore
 
 
@@ -428,7 +428,7 @@ def get_max_mix(token_lengths, tokenizer: "LlamaTokenizer", pipeline: "trf.Pipel
 
 
 def get_tokenizer(token: str, model_name: str) -> "LlamaTokenizer":
-    huggingface_hub.login(token=token)
+    # huggingface_hub.login(token=token)
     tokenizer: "LlamaTokenizer" = trf.AutoTokenizer.from_pretrained(
         model_name,
         use_fast=True,
@@ -453,7 +453,7 @@ def initialize_model(
 ) -> "trf.LlamaForCausalLM":
     if hidden_states:
         last_state = True
-    huggingface_hub.login(token=token)
+    # huggingface_hub.login(token=token)
     double_quant_config = None
     if quant:
         double_quant_config = trf.BitsAndBytesConfig(
@@ -488,7 +488,7 @@ def initialize_model_inference(
     num_labels: int = 1,
     quant: bool = True,
 ) -> Union[Tuple[LlamaTokenizer, "trf.LlamaForCausalLM"], LlamaTokenizer]:
-    huggingface_hub.login(token=token)
+    # huggingface_hub.login(token=token)
     tokenizer = get_tokenizer(token=token, model_name=model_name)
     if return_model:
         model = initialize_model(
@@ -1117,6 +1117,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         epoch: float,
     ):
         """Function to save data of the prediction or training depending of the self.event watch Stops the training if early stopping asks to with the current validation loss for the epoch"""
+        logger.info(f"PredictionAggregator {event=} {self.event=}")
         if event == self.event:
             self.batch_id += 1
             for bug_id, prediction, true, n in zip(
@@ -1148,6 +1149,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                         n_tokens_infered_max=self.n_tokens_infered_max,
                     )
                     id = f"_epoch_{str(epoch_int).replace('.','-')}_{self.event}"
+                    logger.info(f"Writting to data{id}.json")
                     batches = data_full.drop_duplicates("batch_id")
                     loss_avg = batches["loss"].sum() / len(self.buffer[epoch_int])
                     if self.early_stopping is not None:
@@ -1170,12 +1172,14 @@ def create_groups(data, group_size):
         yield current_group
 
 class Evaluator:
-    def __init__(self, datasets_events: List[Tuple['Dataset', Literal['train','val','test']]], batch_size: int, collator: 'DataCollator', ):
+    def __init__(self, folder: Path, criterion, datasets_events: List[Tuple['Dataset', Literal['train','val','test']]], batch_size: int, collator: 'DataCollator', ):
         self.datasets_events = datasets_events
         self.batch_size = batch_size
         self.collator = collator
         self.data = {}
         self.first_epoch = True
+        self.folder = folder
+        self.criterion = criterion
         
     def on_epoch_begin(self, state, control, tokenizer, model, criterion, *args, **kwargs):
         if self.first_epoch:
@@ -1184,7 +1188,7 @@ class Evaluator:
     def on_epoch_end(self, state, control, tokenizer, model, criterion, *args, **kwargs):
         self.evaluate(state, control, tokenizer, model, criterion, *args, **kwargs)
         
-    def evaluate(self, state, control, tokenizer, model, criterion, *args, **kwargs):
+    def evaluate(self, state, control, tokenizer, model, *args, **kwargs):
         model.eval()
         self.data[state.epoch] = {}
         with torch.no_grad():
@@ -1206,8 +1210,7 @@ class Evaluator:
                             "event": event,
                             "epoch": state.epoch,
                         })
-    def save(self, folder: Path):
-        with open(folder / "evaluation.json", "w") as fp:
+        with open(self.folder / "evaluation.json", "w") as fp:
             json.dump(self.data, fp)
 
 i_test = 0
@@ -1238,12 +1241,24 @@ def compute(
     n_tokens = [len([e for e in elem if e != pad_token]) for elem in input.tolist()]
     label = inputs["label"]
     bug_id = inputs["bug_id"]
-    prediction = model(input)[0]
-    predictions = torch.nn.functional.sigmoid(
-        prediction.reshape((-1,)).detach().cpu()
-    ).tolist()
-    assert not torch.isnan(prediction).any()
-    loss = criterion(torch.nn.functional.sigmoid(prediction), label)
+    if event != "train":
+        model.eval()
+        with torch.no_grad():
+            prediction = model(input)[0]
+            predictions = torch.nn.functional.sigmoid(
+                prediction.reshape((-1,)).detach().cpu()
+            ).tolist()
+            assert not torch.isnan(prediction).any()
+            loss = criterion(torch.nn.functional.sigmoid(prediction), label)
+        model.eval()
+    else:
+        prediction = model(input)[0]
+        predictions = torch.nn.functional.sigmoid(
+            prediction.reshape((-1,)).detach().cpu()
+        ).tolist()
+        assert not torch.isnan(prediction).any()
+        loss = criterion(torch.nn.functional.sigmoid(prediction), label)
+        
     # logger.info(f"{i_test=}")
     i_test += 1
     try:
@@ -1257,24 +1272,11 @@ def compute(
 
 class CustomCallbacksHandler(trf.trainer_callback.CallbackHandler):
     def __init__(self, callbacks, model, tokenizer, optimizer, criterion, lr_scheduler):
-        self.callbacks = []
-        for cb in callbacks:
-            self.add_callback(cb)
-        self.model = model
-        self.tokenizer = tokenizer
-        self.optimizer = optimizer
-        self.lr_scheduler = lr_scheduler
+        super().__init__(callbacks, model, tokenizer, optimizer, lr_scheduler)
         self.criterion = criterion
-        self.train_dataloader = None
-        self.eval_dataloader = None
         
-    def on_epoch_begin(self, args, state, control):
-        control.should_epoch_stop = False
-        return self.call_event("on_epoch_begin", args, state, control)
-
-    def on_epoch_end(self, args, state, control):
-        return self.call_event("on_epoch_end", args, state, control)
     def call_event(self, event, args, state, control, **kwargs):
+        
         for callback in self.callbacks:
             result = getattr(callback, event)(
                 args,
@@ -1293,7 +1295,6 @@ class CustomCallbacksHandler(trf.trainer_callback.CallbackHandler):
             if result is not None:
                 control = result
         return control
-
 class CustomTrainer(trl.SFTTrainer):
     """Manages the training loop with callbacks for each step of the training.
     Here the objective of this class is to convert the Llama model for sequence classification into a real binary classifier by applying a sigmoid and then applying the binary crossentropy loss. Moreover it notifies the callbacks of new incoming data at the training or validation step
@@ -1307,25 +1308,19 @@ class CustomTrainer(trl.SFTTrainer):
     """
 
     def __init__(
-        self, tokenizer, callbacks: List, weighted: bool = False, evaluator: Optional[Evaluator] = None, *args, **kwargs
+        self, tokenizer, criterion, callbacks: List, weighted: bool = False, evaluator: Optional[Evaluator] = None, *args, **kwargs
     ):
         self.tokenizer = tokenizer
         self.callbacks = callbacks
         self.events = {c.event for c in callbacks}
         self.weighted = weighted
-        self.criterion = nn.BCELoss()
+        self.criterion = criterion
         self.evaluator = evaluator
         super().__init__(callbacks=callbacks, *args, **kwargs)
-        if evaluator is not None:
-            self.callback_handler = CustomCallbacksHandler(
-                callbacks=callbacks,
-                model=self.model,
-                tokenizer=self.tokenizer,
-                criterion=self.criterion,
-                lr_scheduler=self.lr_scheduler,
-                optimizer=self.optimizer,
-            )
-    
+        logger.info(f"End trainer with {len(callbacks)=} with {self.events=}")
+    def _save_checkpoint(self, model, trial, metrics=None):
+        print(f"Saving model")
+        return super()._save_checkpoint(model, trial, metrics=None)
     def prediction_step(
         self, model, inputs, prediction_loss_only: bool, ignore_keys=None
     ) -> Tuple:
@@ -1362,7 +1357,6 @@ class CustomTrainer(trl.SFTTrainer):
             dataset: "Dataset" = self.train_dataset  # type: ignore
             return BalancedRandomSampler(dataset)
         return super()._get_train_sampler()
-
 
 class Dataset(torch.utils.data.Dataset):
     """Custom dataset for binary classification problem where the data are provided as json
@@ -1502,7 +1496,7 @@ def main_qlora_classification(
     learning_rate: float = 2e-4,
     limit_tokens: int = 7364,
     mapping_dict: Optional[Dict[int, str]] = None,
-    lim_size: int = -1,
+    lim_size: int = 50,
     id: str = "",
     use_cpu: bool = False,
     tr_weighted_sampling: bool = False,
@@ -1548,8 +1542,8 @@ def main_qlora_classification(
     folder_data = existing_path(folder_data, is_folder=True)
     assert_valid_token(token)
     model_name: ModelName = get_literal_value(model_name)
-    if token != "":
-        huggingface_hub.login(token=token)
+    # if token != "":
+    #     huggingface_hub.login(token=token)
     # save input arguments using locals of above
     with open(folder_out / "parameters.json", "w") as f:
         json.dump(arguments, indent=4, fp=f, cls=CustomEncoder)
@@ -1630,10 +1624,11 @@ def main_qlora_classification(
         optim="paged_adamw_8bit",  # !! IMPORTANT !! to have an optimizer working in 8 bits as the model
         remove_unused_columns=False,
         evaluation_strategy="epoch",
-        save_total_limit=2,  # to limit the total number of checkpoints (and disk memory used) kept at all time
         logging_first_step=True,
         use_cpu=use_cpu,
         max_grad_norm=1,
+        # load_best_model_at_end=True,
+        save_strategy="epoch",
     )
 
     if mapping_dict is None:
@@ -1669,9 +1664,12 @@ def main_qlora_classification(
             early_stopping_threshold=early_stopping_threshold,
         ),
     )
+    criterion = nn.BCELoss()
     evaluator = None
     if do_evaluator or resume_from_checkpoint:
         evaluator = Evaluator(
+            criterion=criterion,
+            folder=folder_out,
             datasets_events=[
                 (tr_data, "train"),
                 (val_data, "val"),
@@ -1685,6 +1683,7 @@ def main_qlora_classification(
         )
     # We build the trainer object that will do the training and validations loops, the epochs... As we followed the format specified by huggingface the callbacks will be called at the appropriate time (end of each batch during training, end of each epoch...)
     trainer = CustomTrainer(  # type: ignore
+        criterion=criterion,
         evaluator=evaluator,
         model=model,
         train_dataset=tr_data,
@@ -1710,11 +1709,9 @@ def main_qlora_classification(
     try:
         trainer.train(resume_from_checkpoint=resume_from_checkpoint)  # launch the training
     except Exception as e:
-        with open("error.txt") as fp:
+        with open("error.txt", "w") as fp:
             fp.write("error")
         raise e
-    if evaluator is not None:
-        evaluator.save(folder_out)
     
     with open(folder_out / "log_history.json", "w") as fp:
         json.dump(trainer.state.log_history, fp)
