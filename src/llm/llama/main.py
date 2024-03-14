@@ -1189,6 +1189,7 @@ class Evaluator:
         self.evaluate(state, control, tokenizer, model, criterion, *args, **kwargs)
         
     def evaluate(self, state, control, tokenizer, model, *args, **kwargs):
+        logger.info(f"Evaluation")
         model.eval()
         self.data[state.epoch] = {}
         with torch.no_grad():
@@ -1196,7 +1197,7 @@ class Evaluator:
                 self.data[state.epoch][event] = []
                 for group in create_groups(dataset, self.batch_size):
                     inputs = self.collator.torch_call(group)
-                    bug_ids, predictions, trues, loss, loss_item, n_tokens = compute(criterion, tokenizer, model, inputs, event)
+                    bug_ids, predictions, trues, loss, loss_item, n_tokens = compute(self.criterion, tokenizer, model, inputs, event)
                     for bug_id, prediction, true, n in zip(
                         bug_ids, predictions, trues, n_tokens
                     ):
