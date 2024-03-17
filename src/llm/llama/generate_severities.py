@@ -183,7 +183,7 @@ def generate_finetune(clear: bool = False):
         tr_weighted_sampling=tr_weighted_sampling,
     )
     print(f"{len(parameters)=}")
-    N_tests = 100
+    N_tests = 30
     random.shuffle(parameters)
     parameters = parameters[:N_tests]
     print(f"Selecting {len(parameters)}")
