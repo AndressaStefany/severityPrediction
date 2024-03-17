@@ -1112,7 +1112,6 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         epoch: float,
     ):
         """Function to save data of the prediction or training depending of the self.event watch Stops the training if early stopping asks to with the current validation loss for the epoch"""
-        logger.info(f"PredictionAggregator {event=} {self.event=}")
         if event == self.event:
             self.batch_id += 1
             for bug_id, prediction, true, n in zip(
@@ -1144,7 +1143,6 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                         n_tokens_infered_max=self.n_tokens_infered_max,
                     )
                     id = f"_epoch_{str(epoch_int).replace('.','-')}_{self.event}"
-                    logger.info(f"Writting to data{id}.json")
                     batches = data_full.drop_duplicates("batch_id")
                     loss_avg = batches["loss"].sum() / len(self.buffer[epoch_int])
                     if self.early_stopping is not None:
