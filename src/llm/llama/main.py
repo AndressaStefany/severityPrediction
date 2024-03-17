@@ -1480,8 +1480,7 @@ def main_qlora_classification(
     logger.info("generate_dataset")
     ## WARNING: here as everything is the same data wise for meta-llama/Llama-2-7b-chat-hf and meta-llama/Llama-2-13b-chat-hf, we replace model_name_dataset in case of llama 13b to have the same cache files names
     model_name_dataset: ModelName = model_name
-    if model_name == "meta-llama/Llama-2-13b-chat-hf":
-        model_name_dataset = "meta-llama/Llama-2-7b-chat-hf"
+    model_name_dataset = "meta-llama/Llama-2-7b-chat-hf"
     # Then we generate (if not already) and get the datasets
     tr_data, val_data, test_data, train_path, valid_path, test_path = generate_dataset(
         folder_out=folder_data,
