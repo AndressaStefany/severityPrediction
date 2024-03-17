@@ -2,7 +2,7 @@ from string import Template
 from pathlib import Path
 import itertools as it
 import random
-from typing import *
+from typing import *# type: ignore
 try:
     import main as m
 except ImportError:
