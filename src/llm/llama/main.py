@@ -1106,7 +1106,6 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         predictions: List[float],
         trues: List[int],
         loss: float,
-        num_samples: int,
         n_tokens: List[int],
         event: Literal["val", "train", "test"],
         epoch: float,
@@ -1134,9 +1133,6 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                     }
                 )
                 if len(self.buffer[epoch_int]) >= self.size:
-                    logger.info(
-                        f"Last batch had size {num_samples} with {bug_ids=}\nExpecting to see in one epoch only one time the dataset with {self.size=}, not {len(self.buffer[epoch_int])=}"
-                    )
                     _, _, data_full = compute_metrics_from_list(
                         fields_data=self.buffer[epoch_int],
                         pred_field="prediction",
@@ -1151,7 +1147,6 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                         self.folder_out / f"data{id}.json", orient="records", indent=4
                     )
 def create_groups(data, group_size):
-    groups = []
     current_group = []
 
     for item in data:
@@ -1166,7 +1161,7 @@ def create_groups(data, group_size):
 
 
 def compute(
-        criterion, tokenizer, model, inputs: Dict, event: Literal["train", "val", "test"], *args, **kwargs
+        criterion, tokenizer, model, inputs: Dict
     ):
     """The main function to make the prediction, compute the loss and then notify the correct callbacks depending of the event (val or train)
 
@@ -1182,10 +1177,9 @@ def compute(
         gc.collect()
         torch.cuda.empty_cache()  # type: ignore
     except Exception as e:
-        print("Exception clear")
-        print(e)
-        print("End exception clear")
-    # logger.info("start compute")
+        logger.error("Exception clear")
+        logger.error(e)
+        logger.error("End exception clear")
     input = inputs["input"]
     pad_token = tokenizer(tokenizer.pad_token)["input_ids"][1]
     n_tokens = [len([e for e in elem if e != pad_token]) for elem in input.tolist()]
@@ -1196,10 +1190,10 @@ def compute(
         prediction.reshape((-1,)).detach().cpu()
     ).tolist()
     if torch.isnan(prediction).any():
-        print("inputs ", inputs)
-        print("label ",inputs["label"])
-        print("label size ",label.size())
-        print(f"{predictions=}")
+        logger.error("inputs ", inputs)
+        logger.error("label ",inputs["label"])
+        logger.error("label size ",label.size())
+        logger.error(f"{predictions=}")
     loss = criterion(torch.nn.functional.sigmoid(prediction), label)
     trues = label.reshape((-1,)).tolist()
     return bug_id, predictions, trues, loss, loss.sum().item(), n_tokens
@@ -1237,7 +1231,7 @@ class CustomTrainer(trl.SFTTrainer):
         return None, None, None  # to save GPU RAM
 
     def _compute(self, model, inputs, event):
-        bug_id, predictions, trues, loss, loss_item, n_tokens = compute(criterion=self.criterion, tokenizer=self.tokenizer, model=model, inputs=inputs, event=event)
+        bug_id, predictions, trues, loss, loss_item, n_tokens = compute(criterion=self.criterion, tokenizer=self.tokenizer, model=model, inputs=inputs)
         for c in self.callbacks:
             c.add_new_data(
                 self.state,
@@ -1248,7 +1242,6 @@ class CustomTrainer(trl.SFTTrainer):
                 loss=loss_item,
                 n_tokens=n_tokens,
                 event=event,
-                num_samples=len(bug_id),
                 epoch=self.state.epoch,
             )
         return loss
@@ -1450,10 +1443,8 @@ def main_qlora_classification(
     # save input arguments using locals of above
     with open(folder_out / "parameters.json", "w") as f:
         json.dump(arguments, indent=4, fp=f, cls=CustomEncoder)
-    # Get the tokenizer and base model quantized
-    logger.info("LlamaTokenizer")
+    # Get the tokenizer and base model quantize
     tokenizer: LlamaTokenizer = get_tokenizer(model_name=model_name, token=token)
-    logger.info("initialize_model")
     model = initialize_model(
         model_name=model_name,
         token=token,
@@ -1463,7 +1454,6 @@ def main_qlora_classification(
         num_labels=1,  # 1 label/class because binary class: 0 NON SEVERE ; 1 SEVERE
     )
     # Prepare LORA arguments
-    logger.info("peft.LoraConfig")
     peft_config = peft.LoraConfig(  # type: ignore
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
@@ -1482,7 +1472,7 @@ def main_qlora_classification(
     model_name_dataset: ModelName = model_name
     model_name_dataset = "meta-llama/Llama-2-7b-chat-hf"
     # Then we generate (if not already) and get the datasets
-    tr_data, val_data, test_data, train_path, valid_path, test_path = generate_dataset(
+    tr_data, val_data, test_data, _, _, _ = generate_dataset(
         folder_out=folder_data,
         folder_data=folder_data,
         field_input=field_input,
@@ -1493,7 +1483,6 @@ def main_qlora_classification(
         n_tokens_infered_max=limit_tokens,
         prompt_id=prompt_id,
     )
-    logger.info(f"Using {train_path} {valid_path}")
     # Then we generate the huggingface datasets
     ## First if lim_size is provided we limit the number of samples in train and validation datasets
     real_lim_size_tr = lim_size
@@ -1527,7 +1516,6 @@ def main_qlora_classification(
         remove_unused_columns=False,
         evaluation_strategy="epoch",
         logging_first_step=True,
-        use_cpu=use_cpu,
         max_grad_norm=1,
         # load_best_model_at_end=True,
         save_strategy="epoch",
@@ -1540,7 +1528,6 @@ def main_qlora_classification(
             0: "NON SEVERE",
             1: "SEVERE",
         }
-    logger.info("Set supervised fine-tuning parameters")
     # Then we take into account tr_weighted_sampling: balancing or not the training dataset
     tr_size = len(tr_data)
     if tr_weighted_sampling:
@@ -1883,7 +1870,8 @@ def train_test_classifier(
     conf_matrix_train_list, conf_matrix_val_list = [], []
     n_epochs_stop = 100
     test_labels_list, test_result_list = [], []
-
+    if split_dataset_name is None:
+        raise Exception
     with open(Path(folder_path) / split_dataset_name, "r") as file:
         idxs = json.load(file)
     labels = []
@@ -1951,17 +1939,20 @@ def train_test_classifier(
     batch_size = trial.suggest_categorical("batch_size", [2, 16, 32, 64])
     if not undersampling:
         train_dataloader = dt.DataLoader(
-            train_dict,
+            train_dict,# type: ignore
             batch_size=batch_size,
             shuffle=True,
             collate_fn=collate_fn,
             drop_last=True,
         )
     test_dataloader = dt.DataLoader(
-        test_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
+        test_dict, # type: ignore
+        batch_size=batch_size, 
+        shuffle=True, 
+        collate_fn=collate_fn
     )
     val_dataloader = dt.DataLoader(
-        val_dict,
+        val_dict,# type: ignore
         batch_size=batch_size,
         shuffle=True,
         collate_fn=collate_fn,
@@ -1981,7 +1972,7 @@ def train_test_classifier(
     if loss_weighting:
         labels_tensor = torch.tensor(labels)
         pos_weight_value = (labels_tensor == 0).sum() / (labels_tensor == 1).sum()
-        criterion = nn.BCELoss(pos_weight=pos_weight_value)
+        criterion = nn.BCELoss(pos_weight=pos_weight_value)# type: ignore
     else:
         criterion = nn.BCELoss()
     lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
@@ -2010,7 +2001,7 @@ def train_test_classifier(
             if undersampling:
                 balanced_train_dict = dynamic_undersampling(train_dict)
                 train_dataloader = dt.DataLoader(
-                    balanced_train_dict,
+                    balanced_train_dict,# type: ignore
                     batch_size=batch_size,
                     shuffle=True,
                     collate_fn=collate_fn,
@@ -2150,7 +2141,7 @@ def get_nn(path_data_folder: Optional[str] = None):
     # n_jobs = 1
     # study.optimize(train_test_classifier, n_trials=10, n_jobs=n_jobs)
     train_test_classifier(
-        optuna.trial.FixedTrial(
+        optuna.trial.FixedTrial(# type: ignore
             {
                 "batch_size": 16,
                 "n_layers": 4,
@@ -2223,7 +2214,7 @@ def get_embeddings_datasets(
         for k in datasets:
             for i in range(len(datasets[k])):
                 bug_id = datasets[k][i]["bug_id"]
-                datasets[k][i]["embedding"] = np.copy(fp[str(bug_id)])
+                datasets[k][i]["embedding"] = np.copy(fp[str(bug_id)])# type: ignore
     return datasets  # type: ignore
 
 
