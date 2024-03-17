@@ -2,8 +2,8 @@
 script_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )";
 cd "$script_dir";
 pwd
-dos2unix ./launches/*;
-dos2unix ./launches/*/*;
+dos2unix ../../../launches/*;
+dos2unix ../../../launches/*/*;
 user=rmoine
 server=narval
 rsync -rltv --progress \
