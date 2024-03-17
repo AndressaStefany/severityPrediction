@@ -1,0 +1,58 @@
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --gpus-per-node=a100:1 
+#SBATCH --cpus-per-task=1 
+#SBATCH --time=00-23:59:00
+#SBATCH --output=log-%x-%j.out
+#SBATCH --error=log-%x-%j.err
+#SBATCH --mail-user=robinandressa0@gmail.com
+#SBATCH --mail-type=ALL
+#SBATCH --mem=8G
+
+
+start_time=$(date +"%Y-%m-%d %H:%M:%S")
+export TORCH_CUDNN_V8_API_DISABLED=1
+module load StdEnv/2020  gcc/9.3.0  cuda/11.4 arrow python/3.10.2 cudnn
+virtualenv $SLURM_TMPDIR/MYENV
+source $SLURM_TMPDIR/MYENV/bin/activate
+
+pip install -r requirements.txt --no-index
+
+dataset_choice=eclipse_72k
+lora_r=64
+id_name="_$SLURM_JOB_ID"
+lora_alpha=10
+lora_dropout=0
+model_name=/project/def-aloise/rmoine/cache_dir/models--meta-llama--Llama-2-7b-chat-hf/snapshots/c1b0db933684edbfe29a06fa47eb19cc48025e93
+learning_rate=0.0001
+limit_tokens=500
+tr_bs=4
+num_train_epochs=4
+tr_weighted_sampling=True
+prompt_id=alpaca
+cd /project/def-aloise/$USER/
+
+python /project/def-aloise/$USER/main.py qlora_classification \
+        --dataset_choice=$dataset_choice \
+        --id=$id_name \
+        --lora_alpha=$lora_alpha \
+        --lora_r=$lora_r \
+        --lora_dropout=$lora_dropout \
+        --model_name=$model_name \
+        --limit_tokens=$limit_tokens \
+        --num_train_epochs=$num_train_epochs \
+        --learning_rate=$learning_rate \
+        --tr_bs=$tr_bs \
+        --tr_weighted_sampling=$tr_weighted_sampling \
+        --prompt_id=$prompt_id
+
+
+# Capture the end time
+end_time=$(date +"%Y-%m-%d %H:%M:%S")
+
+# Calculate and display the execution time
+start_seconds=$(date -d "$start_time" '+%s')
+end_seconds=$(date -d "$end_time" '+%s')
+execution_time=$((end_seconds - start_seconds))
+
+echo "Execution time: $execution_time seconds"
