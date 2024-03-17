@@ -167,7 +167,7 @@ def generate_finetune(clear: bool = False):
     random.seed(0)
     model_name = "/project/def-aloise/rmoine/cache_dir/models--meta-llama--Llama-2-7b-chat-hf/snapshots/c1b0db933684edbfe29a06fa47eb19cc48025e93"# "meta-llama/Llama-2-7b-chat-hf"
     dataset_choices = ["eclipse_72k", "mozilla_200k"]
-    learning_rate = [1e-3, 1e-4, 1e-5]
+    learning_rate = [1e-4, 1e-5]
     lora_r = [10, 64, 5]
     weighted = [True, False]
     lora_alpha = [4, 10]
