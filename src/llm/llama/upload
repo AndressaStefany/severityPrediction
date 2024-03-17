@@ -9,6 +9,7 @@ server=narval
 rsync -rltv --progress \
     ./*.py \
     ../../../requirements.txt \
+    ../../../launches \
     $user@$server.computecanada.ca:/project/def-aloise/$user/;
 
 # scp -r ../../baseline/*.py $user@$server.computecanada.ca:/project/def-aloise/$user/
