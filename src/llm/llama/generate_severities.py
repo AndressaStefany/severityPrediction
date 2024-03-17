@@ -56,7 +56,7 @@ def generate_generic(
         )
 
 
-def generate_inference(clear: bool = False):
+def generate_inference():
     kwargs = {
         "dataset_choice": "",
         "missing_file": "",
@@ -78,7 +78,6 @@ def generate_inference(clear: bool = False):
                     "inference",
                     id=f"_{prompt_id}_{dataset_choice}_{'missing' if missing_file != '' else 'normal'}",
                     kwargs=[kwargs for _ in range(n_chunks)],
-                    n_chunks=n_chunks
                 )
 
 
