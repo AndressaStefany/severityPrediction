@@ -883,6 +883,9 @@ def run_optuna(
     if classifier_name in ["BernoulliNB", "MultinomialNB", "ComplementNB"]:
         kwargs["alpha"] = trial.suggest_float("alpha", 1e-10, 1, log=True)
         kwargs["fit_prior"] = trial.suggest_categorical("fit_prior", [True, False])
+    if classifier_name in ["BernoulliNB", "MultinomialNB", "GaussianNB", "ComplementNB"]:
+        class_prior_non_severe = trial.suggest_float("class_prior", 0.0, 1.0)
+        kwargs["class_prior"] = np.array([class_prior_non_severe, 1-class_prior_non_severe])
     if classifier_name in ["BernoulliNB"]:
         kwargs["binarize"] = trial.suggest_float("binarize", 0.0, 1.0)
     if classifier_name == "ComplementNB":

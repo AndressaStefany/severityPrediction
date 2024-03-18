@@ -12,8 +12,12 @@ rsync -rltv --progress \
     ../../../launches \
     $user@$server.computecanada.ca:/project/def-aloise/$user/;
 
-# scp -r ../../baseline/*.py $user@$server.computecanada.ca:/project/def-aloise/$user/
-# dos2unix ../../baseline/*;
+user=rmoine
+server=narval
+dos2unix ../../baseline/*;
+rsync -rltv --progress \
+    ../../baseline/*.py \
+    $user@$server.computecanada.ca:/project/def-aloise/$user/;
 # scp -r ../../baseline/* $user@$server.computecanada.ca:/project/def-aloise/$user/
 # scp ../../../data/baseline_studies/* $user@$server.computecanada.ca:/project/def-aloise/$user/
 # scp -r ./*.ipynb $user@$server.computecanada.ca:/project/def-aloise/$user/
