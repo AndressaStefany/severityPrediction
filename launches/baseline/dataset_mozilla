@@ -6,7 +6,7 @@
 #SBATCH --error=log-%x-%j.err
 #SBATCH --mail-user=robin.moine456@gmail.com
 #SBATCH --mail-type=ALL
-#SBATCH --mem=200G
+#SBATCH --mem=250G
 
 start_time=$(date +"%Y-%m-%d %H:%M:%S")
 
