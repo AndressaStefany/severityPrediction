@@ -4,16 +4,19 @@ cd "$script_dir";
 pwd
 dos2unix ../../../launches/*;
 dos2unix ../../../launches/*/*;
+# user=rmoine
+# server=narval
+# rsync -rltv --progress \
+#     ./*.py \
+#     ../../../requirements.txt \
+#     ../../../launches \
+#     $user@$server.computecanada.ca:/project/def-aloise/$user/;
+
 user=rmoine
 server=narval
 rsync -rltv --progress \
-    ./*.py \
-    ../../../requirements.txt \
     ../../../launches \
     $user@$server.computecanada.ca:/project/def-aloise/$user/;
-
-# scp -r ../../baseline/*.py $user@$server.computecanada.ca:/project/def-aloise/$user/
-# dos2unix ../../baseline/*;
 # scp -r ../../baseline/* $user@$server.computecanada.ca:/project/def-aloise/$user/
 # scp ../../../data/baseline_studies/* $user@$server.computecanada.ca:/project/def-aloise/$user/
 # scp -r ./*.ipynb $user@$server.computecanada.ca:/project/def-aloise/$user/
