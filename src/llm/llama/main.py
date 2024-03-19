@@ -6,16 +6,11 @@ import datetime
 import gc
 import os
 from itertools import product
-from textwrap import wrap
-import argparse
 import abc
 import shutil
 import logging
 import subprocess
-from typing import Any, Dict, List, Optional, Tuple, Union
 import psutil
-import multiprocessing as mp
-import functools
 import random
 from torch import nn
 
@@ -1111,13 +1106,11 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         predictions: List[float],
         trues: List[int],
         loss: float,
-        num_samples: int,
         n_tokens: List[int],
         event: Literal["val", "train", "test"],
         epoch: float,
     ):
         """Function to save data of the prediction or training depending of the self.event watch Stops the training if early stopping asks to with the current validation loss for the epoch"""
-        logger.info(f"PredictionAggregator {event=} {self.event=}")
         if event == self.event:
             self.batch_id += 1
             for bug_id, prediction, true, n in zip(
@@ -1140,16 +1133,12 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                     }
                 )
                 if len(self.buffer[epoch_int]) >= self.size:
-                    logger.info(
-                        f"Last batch had size {num_samples} with {bug_ids=}\nExpecting to see in one epoch only one time the dataset with {self.size=}, not {len(self.buffer[epoch_int])=}"
-                    )
                     _, _, data_full = compute_metrics_from_list(
                         fields_data=self.buffer[epoch_int],
                         pred_field="prediction",
                         n_tokens_infered_max=self.n_tokens_infered_max,
                     )
                     id = f"_epoch_{str(epoch_int).replace('.','-')}_{self.event}"
-                    logger.info(f"Writting to data{id}.json")
                     batches = data_full.drop_duplicates("batch_id")
                     loss_avg = batches["loss"].sum() / len(self.buffer[epoch_int])
                     if self.early_stopping is not None:
@@ -1158,7 +1147,6 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                         self.folder_out / f"data{id}.json", orient="records", indent=4
                     )
 def create_groups(data, group_size):
-    groups = []
     current_group = []
 
     for item in data:
@@ -1171,52 +1159,9 @@ def create_groups(data, group_size):
     if current_group:
         yield current_group
 
-class Evaluator:
-    def __init__(self, folder: Path, criterion, datasets_events: List[Tuple['Dataset', Literal['train','val','test']]], batch_size: int, collator: 'DataCollator', ):
-        self.datasets_events = datasets_events
-        self.batch_size = batch_size
-        self.collator = collator
-        self.data = {}
-        self.first_epoch = True
-        self.folder = folder
-        self.criterion = criterion
-        
-    def on_epoch_begin(self, state, control, tokenizer, model, criterion, *args, **kwargs):
-        if self.first_epoch:
-            self.evaluate(state, control, tokenizer, model, criterion, *args, **kwargs)
-            self.first_epoch = False
-    def on_epoch_end(self, state, control, tokenizer, model, criterion, *args, **kwargs):
-        self.evaluate(state, control, tokenizer, model, criterion, *args, **kwargs)
-        
-    def evaluate(self, state, control, tokenizer, model, *args, **kwargs):
-        logger.info(f"Evaluation")
-        model.eval()
-        self.data[state.epoch] = {}
-        with torch.no_grad():
-            for (dataset, event) in self.datasets_events:
-                self.data[state.epoch][event] = []
-                for group in create_groups(dataset, self.batch_size):
-                    inputs = self.collator.torch_call(group)
-                    bug_ids, predictions, trues, loss, loss_item, n_tokens = compute(self.criterion, tokenizer, model, inputs, event)
-                    for bug_id, prediction, true, n in zip(
-                        bug_ids, predictions, trues, n_tokens
-                    ):
-                        self.data[state.epoch][event].append({
-                            "bug_id": bug_id,
-                            "prediction": int(np.round(prediction)),
-                            "probability": prediction,
-                            "binary_severity": true,
-                            "n_tokens": n,
-                            "loss": loss_item,
-                            "event": event,
-                            "epoch": state.epoch,
-                        })
-        with open(self.folder / "evaluation.json", "w") as fp:
-            json.dump(self.data, fp)
 
-i_test = 0
 def compute(
-        criterion, tokenizer, model, inputs: Dict, event: Literal["train", "val", "test"], *args, **kwargs
+        criterion, tokenizer, model, inputs: Dict
     ):
     """The main function to make the prediction, compute the loss and then notify the correct callbacks depending of the event (val or train)
 
@@ -1228,74 +1173,31 @@ def compute(
     # Returns
     - loss: float, the loss for this batch
     """
-    global i_test
     try:
         gc.collect()
         torch.cuda.empty_cache()  # type: ignore
     except Exception as e:
-        print("Exception clear")
-        print(e)
-        print("End exception clear")
-    # logger.info("start compute")
+        logger.error("Exception clear")
+        logger.error(e)
+        logger.error("End exception clear")
     input = inputs["input"]
     pad_token = tokenizer(tokenizer.pad_token)["input_ids"][1]
     n_tokens = [len([e for e in elem if e != pad_token]) for elem in input.tolist()]
     label = inputs["label"]
     bug_id = inputs["bug_id"]
-    if event != "train":
-        model.eval()
-        with torch.no_grad():
-            prediction = model(input)[0]
-            predictions = torch.nn.functional.sigmoid(
-                prediction.reshape((-1,)).detach().cpu()
-            ).tolist()
-            assert not torch.isnan(prediction).any()
-            loss = criterion(torch.nn.functional.sigmoid(prediction), label)
-        model.eval()
-    else:
-        prediction = model(input)[0]
-        predictions = torch.nn.functional.sigmoid(
-            prediction.reshape((-1,)).detach().cpu()
-        ).tolist()
-        assert not torch.isnan(prediction).any()
-        loss = criterion(torch.nn.functional.sigmoid(prediction), label)
-        
-    # logger.info(f"{i_test=}")
-    i_test += 1
-    try:
-        trues = label.reshape((-1,)).tolist()
-    except Exception as e:
-        print("inputs ", inputs)
-        print("label ",inputs["label"])
-        print("label size ",label.size())
-        raise e
+    prediction = model(input)[0]
+    predictions = torch.nn.functional.sigmoid(
+        prediction.reshape((-1,)).detach().cpu()
+    ).tolist()
+    if torch.isnan(prediction).any():
+        logger.error("inputs ", inputs)
+        logger.error("label ",inputs["label"])
+        logger.error("label size ",label.size())
+        logger.error(f"{predictions=}")
+    loss = criterion(torch.nn.functional.sigmoid(prediction), label)
+    trues = label.reshape((-1,)).tolist()
     return bug_id, predictions, trues, loss, loss.sum().item(), n_tokens
 
-class CustomCallbacksHandler(trf.trainer_callback.CallbackHandler):
-    def __init__(self, callbacks, model, tokenizer, optimizer, criterion, lr_scheduler):
-        super().__init__(callbacks, model, tokenizer, optimizer, lr_scheduler)
-        self.criterion = criterion
-        
-    def call_event(self, event, args, state, control, **kwargs):
-        
-        for callback in self.callbacks:
-            result = getattr(callback, event)(
-                args,
-                state,
-                control,
-                model=self.model,
-                tokenizer=self.tokenizer,
-                optimizer=self.optimizer,
-                criterion=self.criterion,
-                lr_scheduler=self.lr_scheduler,
-                train_dataloader=self.train_dataloader,
-                eval_dataloader=self.eval_dataloader,
-                **kwargs,
-            )
-            # A Callback can skip the return of `control` if it doesn't change it.
-            if result is not None:
-                control = result
-        return control
 class CustomTrainer(trl.SFTTrainer):
     """Manages the training loop with callbacks for each step of the training.
     Here the objective of this class is to convert the Llama model for sequence classification into a real binary classifier by applying a sigmoid and then applying the binary crossentropy loss. Moreover it notifies the callbacks of new incoming data at the training or validation step
@@ -1309,19 +1211,14 @@ class CustomTrainer(trl.SFTTrainer):
     """
 
     def __init__(
-        self, tokenizer, criterion, callbacks: List, weighted: bool = False, evaluator: Optional[Evaluator] = None, *args, **kwargs
+        self, tokenizer, criterion, callbacks: List, weighted: bool = False, *args, **kwargs
     ):
         self.tokenizer = tokenizer
         self.callbacks = callbacks
         self.events = {c.event for c in callbacks}
         self.weighted = weighted
         self.criterion = criterion
-        self.evaluator = evaluator
         super().__init__(callbacks=callbacks, *args, **kwargs)
-        logger.info(f"End trainer with {len(callbacks)=} with {self.events=}")
-    def _save_checkpoint(self, model, trial, metrics=None):
-        print(f"Saving model")
-        return super()._save_checkpoint(model, trial, metrics=None)
     def prediction_step(
         self, model, inputs, prediction_loss_only: bool, ignore_keys=None
     ) -> Tuple:
@@ -1334,7 +1231,7 @@ class CustomTrainer(trl.SFTTrainer):
         return None, None, None  # to save GPU RAM
 
     def _compute(self, model, inputs, event):
-        bug_id, predictions, trues, loss, loss_item, n_tokens = compute(criterion=self.criterion, tokenizer=self.tokenizer, model=model, inputs=inputs, event=event)
+        bug_id, predictions, trues, loss, loss_item, n_tokens = compute(criterion=self.criterion, tokenizer=self.tokenizer, model=model, inputs=inputs)
         for c in self.callbacks:
             c.add_new_data(
                 self.state,
@@ -1345,7 +1242,6 @@ class CustomTrainer(trl.SFTTrainer):
                 loss=loss_item,
                 n_tokens=n_tokens,
                 event=event,
-                num_samples=len(bug_id),
                 epoch=self.state.epoch,
             )
         return loss
@@ -1497,7 +1393,7 @@ def main_qlora_classification(
     learning_rate: float = 2e-4,
     limit_tokens: int = 7364,
     mapping_dict: Optional[Dict[int, str]] = None,
-    lim_size: int = 50,
+    lim_size: int = -1,
     id: str = "",
     use_cpu: bool = False,
     tr_weighted_sampling: bool = False,
@@ -1505,7 +1401,6 @@ def main_qlora_classification(
     early_stopping_threshold: float = 1e-3,
     prompt_id: str = "official",
     resume_from_checkpoint: bool = False,
-    do_evaluator: bool = True
 ) -> Tuple["np.ndarray", List[float], "pd.DataFrame"]:  # type: ignore
     """
     Perform training and PEFT QLORA fine-tuning of a classification model using LoRA.
@@ -1548,10 +1443,8 @@ def main_qlora_classification(
     # save input arguments using locals of above
     with open(folder_out / "parameters.json", "w") as f:
         json.dump(arguments, indent=4, fp=f, cls=CustomEncoder)
-    # Get the tokenizer and base model quantized
-    logger.info("LlamaTokenizer")
+    # Get the tokenizer and base model quantize
     tokenizer: LlamaTokenizer = get_tokenizer(model_name=model_name, token=token)
-    logger.info("initialize_model")
     model = initialize_model(
         model_name=model_name,
         token=token,
@@ -1561,7 +1454,6 @@ def main_qlora_classification(
         num_labels=1,  # 1 label/class because binary class: 0 NON SEVERE ; 1 SEVERE
     )
     # Prepare LORA arguments
-    logger.info("peft.LoraConfig")
     peft_config = peft.LoraConfig(  # type: ignore
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
@@ -1578,10 +1470,9 @@ def main_qlora_classification(
     logger.info("generate_dataset")
     ## WARNING: here as everything is the same data wise for meta-llama/Llama-2-7b-chat-hf and meta-llama/Llama-2-13b-chat-hf, we replace model_name_dataset in case of llama 13b to have the same cache files names
     model_name_dataset: ModelName = model_name
-    if model_name == "meta-llama/Llama-2-13b-chat-hf":
-        model_name_dataset = "meta-llama/Llama-2-7b-chat-hf"
+    model_name_dataset = "meta-llama/Llama-2-7b-chat-hf"
     # Then we generate (if not already) and get the datasets
-    tr_data, val_data, test_data, train_path, valid_path, test_path = generate_dataset(
+    tr_data, val_data, test_data, _, _, _ = generate_dataset(
         folder_out=folder_data,
         folder_data=folder_data,
         field_input=field_input,
@@ -1592,7 +1483,6 @@ def main_qlora_classification(
         n_tokens_infered_max=limit_tokens,
         prompt_id=prompt_id,
     )
-    logger.info(f"Using {train_path} {valid_path}")
     # Then we generate the huggingface datasets
     ## First if lim_size is provided we limit the number of samples in train and validation datasets
     real_lim_size_tr = lim_size
@@ -1626,7 +1516,6 @@ def main_qlora_classification(
         remove_unused_columns=False,
         evaluation_strategy="epoch",
         logging_first_step=True,
-        use_cpu=use_cpu,
         max_grad_norm=1,
         # load_best_model_at_end=True,
         save_strategy="epoch",
@@ -1639,7 +1528,6 @@ def main_qlora_classification(
             0: "NON SEVERE",
             1: "SEVERE",
         }
-    logger.info("Set supervised fine-tuning parameters")
     # Then we take into account tr_weighted_sampling: balancing or not the training dataset
     tr_size = len(tr_data)
     if tr_weighted_sampling:
@@ -1666,26 +1554,9 @@ def main_qlora_classification(
         ),
     )
     criterion = nn.BCELoss()
-    evaluator = None
-    if do_evaluator or resume_from_checkpoint:
-        evaluator = Evaluator(
-            criterion=criterion,
-            folder=folder_out,
-            datasets_events=[
-                (tr_data, "train"),
-                (val_data, "val"),
-                (test_data, "test")
-            ],
-            batch_size=tr_bs,
-            collator=DataCollator(
-                tokenizer, padding=True,
-                max_length=limit_tokens
-            )
-        )
     # We build the trainer object that will do the training and validations loops, the epochs... As we followed the format specified by huggingface the callbacks will be called at the appropriate time (end of each batch during training, end of each epoch...)
     trainer = CustomTrainer(  # type: ignore
         criterion=criterion,
-        evaluator=evaluator,
         model=model,
         train_dataset=tr_data,
         eval_dataset=val_data,
@@ -1999,7 +1870,8 @@ def train_test_classifier(
     conf_matrix_train_list, conf_matrix_val_list = [], []
     n_epochs_stop = 100
     test_labels_list, test_result_list = [], []
-
+    if split_dataset_name is None:
+        raise Exception
     with open(Path(folder_path) / split_dataset_name, "r") as file:
         idxs = json.load(file)
     labels = []
@@ -2067,17 +1939,20 @@ def train_test_classifier(
     batch_size = trial.suggest_categorical("batch_size", [2, 16, 32, 64])
     if not undersampling:
         train_dataloader = dt.DataLoader(
-            train_dict,
+            train_dict,# type: ignore
             batch_size=batch_size,
             shuffle=True,
             collate_fn=collate_fn,
             drop_last=True,
         )
     test_dataloader = dt.DataLoader(
-        test_dict, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
+        test_dict, # type: ignore
+        batch_size=batch_size, 
+        shuffle=True, 
+        collate_fn=collate_fn
     )
     val_dataloader = dt.DataLoader(
-        val_dict,
+        val_dict,# type: ignore
         batch_size=batch_size,
         shuffle=True,
         collate_fn=collate_fn,
@@ -2097,7 +1972,7 @@ def train_test_classifier(
     if loss_weighting:
         labels_tensor = torch.tensor(labels)
         pos_weight_value = (labels_tensor == 0).sum() / (labels_tensor == 1).sum()
-        criterion = nn.BCELoss(pos_weight=pos_weight_value)
+        criterion = nn.BCELoss(pos_weight=pos_weight_value)# type: ignore
     else:
         criterion = nn.BCELoss()
     lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
@@ -2126,7 +2001,7 @@ def train_test_classifier(
             if undersampling:
                 balanced_train_dict = dynamic_undersampling(train_dict)
                 train_dataloader = dt.DataLoader(
-                    balanced_train_dict,
+                    balanced_train_dict,# type: ignore
                     batch_size=batch_size,
                     shuffle=True,
                     collate_fn=collate_fn,
@@ -2266,7 +2141,7 @@ def get_nn(path_data_folder: Optional[str] = None):
     # n_jobs = 1
     # study.optimize(train_test_classifier, n_trials=10, n_jobs=n_jobs)
     train_test_classifier(
-        optuna.trial.FixedTrial(
+        optuna.trial.FixedTrial(# type: ignore
             {
                 "batch_size": 16,
                 "n_layers": 4,
@@ -2339,7 +2214,7 @@ def get_embeddings_datasets(
         for k in datasets:
             for i in range(len(datasets[k])):
                 bug_id = datasets[k][i]["bug_id"]
-                datasets[k][i]["embedding"] = np.copy(fp[str(bug_id)])
+                datasets[k][i]["embedding"] = np.copy(fp[str(bug_id)])# type: ignore
     return datasets  # type: ignore
 
 

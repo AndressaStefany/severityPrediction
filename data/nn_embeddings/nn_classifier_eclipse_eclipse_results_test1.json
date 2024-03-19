@@ -1,0 +1,20 @@
+{
+    "best_params": {
+        "batch_size": 32,
+        "layer_function_0": "elu",
+        "layer_function_1": "tanh",
+        "layer_function_2": "relu",
+        "layer_function_3": "prelu",
+        "layer_function_4": "elu",
+        "lr": 0.0007713979205605646,
+        "n_layers": 5,
+        "n_units_l0": 59,
+        "n_units_l1": 25,
+        "n_units_l2": 91,
+        "n_units_l3": 88,
+        "n_units_l4": 102,
+        "num_epochs": 100,
+        "pos_weight": 0.951601757057635
+    },
+    "best_value": 0.6319382568057418
+}

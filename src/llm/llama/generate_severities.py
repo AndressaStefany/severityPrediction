@@ -2,7 +2,7 @@ from string import Template
 from pathlib import Path
 import itertools as it
 import random
-from typing import *
+from typing import *# type: ignore
 try:
     import main as m
 except ImportError:
@@ -56,7 +56,7 @@ def generate_generic(
         )
 
 
-def generate_inference(clear: bool = False):
+def generate_inference():
     kwargs = {
         "dataset_choice": "",
         "missing_file": "",
@@ -78,7 +78,6 @@ def generate_inference(clear: bool = False):
                     "inference",
                     id=f"_{prompt_id}_{dataset_choice}_{'missing' if missing_file != '' else 'normal'}",
                     kwargs=[kwargs for _ in range(n_chunks)],
-                    n_chunks=n_chunks
                 )
 
 
@@ -166,8 +165,9 @@ def generate_finetune_evaluation(target_folder: str):
     
 def generate_finetune(clear: bool = False):
     random.seed(0)
+    model_name = "/project/def-aloise/rmoine/cache_dir/models--meta-llama--Llama-2-7b-chat-hf/snapshots/c1b0db933684edbfe29a06fa47eb19cc48025e93"# "meta-llama/Llama-2-7b-chat-hf"
     dataset_choices = ["eclipse_72k", "mozilla_200k"]
-    learning_rate = [1e-3, 1e-4, 1e-5]
+    learning_rate = [1e-4, 1e-5]
     lora_r = [10, 64, 5]
     weighted = [True, False]
     lora_alpha = [4, 10]
@@ -183,13 +183,13 @@ def generate_finetune(clear: bool = False):
         tr_weighted_sampling=tr_weighted_sampling,
     )
     print(f"{len(parameters)=}")
-    N_tests = 100
+    N_tests = 30
     random.shuffle(parameters)
     parameters = parameters[:N_tests]
     print(f"Selecting {len(parameters)}")
     for dataset_choice in dataset_choices:
         for prompt_id in prompt_ids:
-            kwargs = [{**e, "prompt_id": prompt_id, "dataset_choice": dataset_choice} for e in parameters]
+            kwargs = [{**e, "prompt_id": prompt_id, "dataset_choice": dataset_choice, "model_name": model_name} for e in parameters]
             
             generate_generic(
                 folder_name="finetune",

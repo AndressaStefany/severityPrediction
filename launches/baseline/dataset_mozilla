@@ -1,0 +1,33 @@
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=1
+#SBATCH --time=1:0:0 
+#SBATCH --output=log-%x-%j.out
+#SBATCH --error=log-%x-%j.err
+#SBATCH --mail-user=robin.moine456@gmail.com
+#SBATCH --mail-type=ALL
+#SBATCH --mem=250G
+
+start_time=$(date +"%Y-%m-%d %H:%M:%S")
+
+module load StdEnv/2020  gcc/9.3.0  cuda/11.4 arrow python/3.10.2 cudnn
+virtualenv $SLURM_TMPDIR/MYENV
+source $SLURM_TMPDIR/MYENV/bin/activate
+
+pip install numpy scikit-learn tqdm nltk --no-index
+pip install seaborn --no-index
+pip install matplotlib --no-index
+pip install pandas --no-index
+pip install h5py --no-index
+pip install fire --no-index
+pip install optuna --no-index
+
+script="/project/def-aloise/$USER/baseline_functions.py"
+num_samples="(-1,200,500,1000,2000,4000,8000)"
+python $script generate_dataset --dataset=mozilla_200k --num_samples=$num_samples
+
+end_time=$(date +"%Y-%m-%d %H:%M:%S")
+start_seconds=$(date -d "$start_time" '+%s')
+end_seconds=$(date -d "$end_time" '+%s')
+execution_time=$((end_seconds - start_seconds))
+echo "Execution time: $execution_time seconds"

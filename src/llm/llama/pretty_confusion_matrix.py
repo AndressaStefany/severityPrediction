@@ -202,23 +202,23 @@ def pp_matrix(
 
     # Turn off all the ticks
     for t in ax.xaxis.get_major_ticks():
-        t.tick1On = False
-        t.tick2On = False
+        t.tick1On = False# type: ignore
+        t.tick2On = False# type: ignore
     for t in ax.yaxis.get_major_ticks():
-        t.tick1On = False
-        t.tick2On = False
+        t.tick1On = False# type: ignore
+        t.tick2On = False# type: ignore
 
     # face colors list
     quadmesh = ax.findobj(QuadMesh)[0]
-    facecolors = quadmesh.get_facecolors()
+    facecolors = quadmesh.get_facecolors()# type: ignore
 
     # iter in text elements
     array_df = np.array(df_cm.to_records(index=False).tolist())
     text_add = []
     text_del = []
     posi = -1  # from left to right, bottom to top.
-    for t in ax.collections[0].axes.texts:  # ax.texts:
-        pos = np.array(t.get_position()) - [0.5, 0.5]
+    for t in ax.collections[0].axes.texts:  # ax.texts:# type: ignore
+        pos = np.array(t.get_position()) - [0.5, 0.5]# type: ignore
         lin = int(pos[1])
         col = int(pos[0])
         posi += 1
