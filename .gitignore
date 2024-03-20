@@ -3,6 +3,6 @@
 __pycache__
 .ipynb_checkpoints
 .obsidian
-.vscode/launch.json
 /predictions/
 ./*.db
+.vscode/*
