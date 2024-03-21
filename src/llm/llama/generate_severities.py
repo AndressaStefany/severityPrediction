@@ -152,7 +152,6 @@ def generate_finetune_evaluation(target_folder: Path):
     kwargs = {}
     kwargs["dataset_choice"] = parameters["dataset_choice"]
     kwargs["lora_r"] = parameters["lora_r"]
-    kwargs["id_name"] = parameters["id_name"]
     kwargs["lora_alpha"] = parameters["lora_alpha"]
     kwargs["lora_dropout"] = parameters["lora_dropout"]
     kwargs["model_name"] = parameters["model_name"]

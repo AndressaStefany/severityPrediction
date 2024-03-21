@@ -31,7 +31,7 @@ pip install optuna --no-index
 
 dataset_choice=$dataset_choice
 lora_r=$lora_r
-id_name=$id_name
+id_name="_$SLURM_JOB_ID"
 lora_alpha=$lora_alpha
 lora_dropout=$lora_dropout
 model_name="meta-llama/Llama-2-7b-chat-hf"
