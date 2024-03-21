@@ -41,7 +41,7 @@ tr_bs=4
 num_train_epochs=2
 tr_weighted_sampling=$tr_weighted_sampling
 prompt_id=$prompt_id
-resume_from_checkpoint=True
+resume_from_checkpoint=$resume_from_checkpoint
 cd /project/def-aloise/$$USER/
 
 python /project/def-aloise/$$USER/main.py qlora_classification \

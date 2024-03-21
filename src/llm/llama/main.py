@@ -1081,7 +1081,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
 
     def __init__(
         self,
-        event: Literal["train", "val"],
+        event: Literal["train", "val","test"],
         n_tokens_infered_max: int,
         folder_out: Path,
         size: int,
@@ -1211,13 +1211,14 @@ class CustomTrainer(trl.SFTTrainer):
     """
 
     def __init__(
-        self, tokenizer, criterion, callbacks: List, weighted: bool = False, *args, **kwargs
+        self, tokenizer, criterion, callbacks: List, weighted: bool = False, prediction_event: str = "val", *args, **kwargs
     ):
         self.tokenizer = tokenizer
         self.callbacks = callbacks
         self.events = {c.event for c in callbacks}
         self.weighted = weighted
         self.criterion = criterion
+        self.prediction_event = prediction_event
         super().__init__(callbacks=callbacks, *args, **kwargs)
     def prediction_step(
         self, model, inputs, prediction_loss_only: bool, ignore_keys=None
@@ -1227,7 +1228,7 @@ class CustomTrainer(trl.SFTTrainer):
             return super().prediction_step(
                 model, inputs, prediction_loss_only, ignore_keys
             )
-        self._compute(model, inputs, "val")
+        self._compute(model, inputs, self.prediction_event)
         return None, None, None  # to save GPU RAM
 
     def _compute(self, model, inputs, event):
@@ -1400,7 +1401,7 @@ def main_qlora_classification(
     early_stopping_patience: int = 3,
     early_stopping_threshold: float = 1e-3,
     prompt_id: str = "official",
-    resume_from_checkpoint: bool = False,
+    resume_from_checkpoint: str = "",
 ) -> Tuple["np.ndarray", List[float], "pd.DataFrame"]:  # type: ignore
     """
     Perform training and PEFT QLORA fine-tuning of a classification model using LoRA.
@@ -1553,40 +1554,68 @@ def main_qlora_classification(
             early_stopping_threshold=early_stopping_threshold,
         ),
     )
-    criterion = nn.BCELoss()
-    # We build the trainer object that will do the training and validations loops, the epochs... As we followed the format specified by huggingface the callbacks will be called at the appropriate time (end of each batch during training, end of each epoch...)
-    trainer = CustomTrainer(  # type: ignore
-        criterion=criterion,
-        model=model,
-        train_dataset=tr_data,
-        eval_dataset=val_data,
-        tokenizer=tokenizer,
-        args=training_arguments,
-        peft_config=peft_config,  # type: ignore --> to provide LORA hyperparameters
-        packing=False,
-        max_seq_length=limit_tokens
-        + 5,  # For safety: length of the template and we allow 5 tokens to answer even though in practise it only return one value
-        formatting_func=lambda x: x,
-        data_collator=DataCollator(
-            tokenizer, False, limit_tokens
-        ),  # custom way of building batches from individual samples
-        callbacks=[  # callbacks to save the results and do the early stopping
-            predictions_aggregator_tr,
-            predictions_aggregator_val,
-        ],
-        weighted=tr_weighted_sampling,  # wether to balance the training dataset
+    predictions_aggregator_test = PredictionAggregator(
+        event="test",
+        n_tokens_infered_max=limit_tokens,
+        folder_out=folder_out,
+        size=len(test_data),
     )
-    logger.info(f"{trainer.args._n_gpu=}")
-    # with torch.autocast("cuda"):
-    try:
-        trainer.train(resume_from_checkpoint=resume_from_checkpoint)  # launch the training
-    except Exception as e:
-        with open("error.txt", "w") as fp:
-            fp.write("error")
-        raise e
-    
-    with open(folder_out / "log_history.json", "w") as fp:
-        json.dump(trainer.state.log_history, fp)
+    criterion = nn.BCELoss()
+    if resume_from_checkpoint == "":
+        # We build the trainer object that will do the training and validations loops, the epochs... As we followed the format specified by huggingface the callbacks will be called at the appropriate time (end of each batch during training, end of each epoch...)
+        trainer = CustomTrainer(  # type: ignore
+            criterion=criterion,
+            model=model,
+            train_dataset=tr_data,
+            eval_dataset=val_data,
+            tokenizer=tokenizer,
+            args=training_arguments,
+            peft_config=peft_config,  # type: ignore --> to provide LORA hyperparameters
+            packing=False,
+            max_seq_length=limit_tokens
+            + 5,  # For safety: length of the template and we allow 5 tokens to answer even though in practise it only return one value
+            formatting_func=lambda x: x,
+            data_collator=DataCollator(
+                tokenizer, False, limit_tokens
+            ),  # custom way of building batches from individual samples
+            callbacks=[  # callbacks to save the results and do the early stopping
+                predictions_aggregator_tr,
+                predictions_aggregator_val,
+            ],
+            weighted=tr_weighted_sampling and not resume_from_checkpoint,  # wether to balance the training dataset
+        )
+        try:
+            trainer.train(resume_from_checkpoint=False)  # launch the training
+        except Exception as e:
+            with open("error.txt", "w") as fp:
+                fp.write("error")
+            raise e
+    else:
+        # We build the trainer object that will do the training and validations loops, the epochs... As we followed the format specified by huggingface the callbacks will be called at the appropriate time (end of each batch during training, end of each epoch...)
+        trainer = CustomTrainer(  # type: ignore
+            criterion=criterion,
+            model=model,
+            train_dataset=tr_data,
+            eval_dataset=val_data,
+            tokenizer=tokenizer,
+            args=training_arguments,
+            peft_config=peft_config,  # type: ignore --> to provide LORA hyperparameters
+            packing=False,
+            max_seq_length=limit_tokens
+            + 5,  # For safety: length of the template and we allow 5 tokens to answer even though in practise it only return one value
+            formatting_func=lambda x: x,
+            data_collator=DataCollator(
+                tokenizer, False, limit_tokens
+            ),  # custom way of building batches from individual samples
+            callbacks=[  # callbacks to save the results and do the early stopping
+            ],
+            weighted=tr_weighted_sampling and not resume_from_checkpoint,  # wether to balance the training dataset
+        )
+        trainer._load_from_checkpoint(resume_from_checkpoint)
+        for event,data,callback in zip(["val", "train", "test"], [tr_data, val_data, test_data], [predictions_aggregator_tr, predictions_aggregator_val, predictions_aggregator_test]):
+            trainer.callbacks = [callback]
+            trainer.prediction_event = event
+            trainer.evaluate(data)
 
 
 def get_max_tokens(

@@ -28,7 +28,7 @@ def generate_generic(
     print("Writting in ", path_folder_out)
     folder_name += id
     for i in range(n_chunks):
-        with open(path_folder_out / f"{folder_name}_{i}", "w") as f:
+        with open((path_folder_out / f"{folder_name}_{i}").resolve(), "w") as f:
             if chunking:
                 kwargs[i]['interval_idx'] = i
                 kwargs[i]['n_chunks'] = n_chunks
@@ -146,21 +146,25 @@ def cartesian_product_dict(**kwargs):
 
     return result
 
-def generate_finetune_evaluation(target_folder: str):
-    with open(Path(__file__).parent.parent.parent.parent / "data" / "finetuning" / "redo" / target_folder / "parameters.json") as fp:
+def generate_finetune_evaluation(target_folder: Path):
+    with open(Path(target_folder) / "redo.json") as fp:
         parameters = json.load(fp)
     kwargs = {}
-    kwargs['dataset_choice'] = parameters['dataset_choice']
-    kwargs['lora_r'] = parameters['lora_r']
-    kwargs['id_name'] = parameters['id']
-    kwargs['lora_alpha'] = parameters['lora_alpha']
-    kwargs['lora_dropout'] = parameters['lora_dropout']
-    kwargs['model_name'] = parameters['model_name']
-    kwargs['learning_rate'] = parameters['learning_rate']
-    kwargs['tr_weighted_sampling'] = parameters['tr_weighted_sampling']
-    kwargs['prompt_id'] = parameters['prompt_id']
+    kwargs["dataset_choice"] = parameters["dataset_choice"]
+    kwargs["lora_r"] = parameters["lora_r"]
+    kwargs["id_name"] = parameters["id_name"]
+    kwargs["lora_alpha"] = parameters["lora_alpha"]
+    kwargs["lora_dropout"] = parameters["lora_dropout"]
+    kwargs["model_name"] = parameters["model_name"]
+    kwargs["learning_rate"] = parameters["learning_rate"]
+    kwargs["limit_tokens"] = parameters["limit_tokens"]
+    kwargs["tr_bs"] = parameters["tr_bs"]
+    kwargs["num_train_epochs"] = parameters["num_train_epochs"]
+    kwargs["tr_weighted_sampling"] = parameters["tr_weighted_sampling"]
+    kwargs["prompt_id"] = parameters["prompt_id"]
+    kwargs["resume_from_checkpoint"] = parameters["resume_from_checkpoint"]
     generate_generic(
-        folder_name="finetune_eval", kwargs=[kwargs], id=target_folder, chunking=False
+        folder_name="finetune_eval", kwargs=[kwargs], id=target_folder.stem, chunking=False
     )
     
 def generate_finetune(clear: bool = False):
