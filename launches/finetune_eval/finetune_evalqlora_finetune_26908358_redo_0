@@ -1,40 +1,28 @@
 #!/bin/bash
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=v100l:1 
+#SBATCH --gpus-per-node=a100:1 
 #SBATCH --cpus-per-task=1 
 #SBATCH --time=00-23:59:00
 #SBATCH --output=log-%x-%j.out
 #SBATCH --error=log-%x-%j.err
-#SBATCH --mail-user=robin.moine456@gmail.com
+#SBATCH --mail-user=robinandressa0@gmail.com
 #SBATCH --mail-type=ALL
 #SBATCH --mem=8G
 
 start_time=$(date +"%Y-%m-%d %H:%M:%S")
-
+export TORCH_CUDNN_V8_API_DISABLED=1
 module load StdEnv/2020  gcc/9.3.0  cuda/11.4 arrow python/3.10.2 cudnn
 virtualenv $SLURM_TMPDIR/MYENV
 source $SLURM_TMPDIR/MYENV/bin/activate
 
-pip install /home/rmoine/docstring_parser-0.15-py3-none-any.whl --no-index
-pip install /home/rmoine/shtab-1.6.4-py3-none-any.whl --no-index
-pip install /home/rmoine/tyro-0.5.10-py3-none-any.whl --no-index
-pip install /home/rmoine/trl-0.7.2-py3-none-any.whl --no-index
-pip install bitsandbytes==0.41.1 --no-index 
-pip install transformers torch peft accelerate xformers scikit-learn sentencepiece huggingface_hub protobuf tqdm nltk --no-index
-pip install datasets --no-index
-pip install seaborn --no-index
-pip install matplotlib --no-index
-pip install pandas --no-index
-pip install h5py --no-index
-pip install fire --no-index
-pip install optuna --no-index
+pip install -r requirements.txt --no-index
 
 dataset_choice=eclipse_72k
 lora_r=5
-id_name=9 eclipse_72k, not_weighted, r=5, val
+id_name="_$SLURM_JOB_ID_redo"
 lora_alpha=10
 lora_dropout=0.2
-model_name="meta-llama/Llama-2-7b-chat-hf"
+model_name=/project/def-aloise/rmoine/cache_dir/models--meta-llama--Llama-2-7b-chat-hf/snapshots/c1b0db933684edbfe29a06fa47eb19cc48025e93
 learning_rate=0.0001
 limit_tokens=500
 tr_bs=4
