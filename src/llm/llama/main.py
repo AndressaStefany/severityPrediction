@@ -1225,9 +1225,7 @@ class CustomTrainer(trl.SFTTrainer):
     ) -> Tuple:
         """Validation step in our case as wwe do not do other predictions (train does not count)"""
         if "val" not in self.events:
-            return super().prediction_step(
-                model, inputs, prediction_loss_only, ignore_keys
-            )
+            return None, None, None  # to save GPU RAM
         self._compute(model, inputs, self.prediction_event)
         return None, None, None  # to save GPU RAM
 
@@ -1614,6 +1612,7 @@ def main_qlora_classification(
         trainer._load_from_checkpoint(resume_from_checkpoint)
         for event,data,callback in zip(["val", "train", "test"], [tr_data, val_data, test_data], [predictions_aggregator_tr, predictions_aggregator_val, predictions_aggregator_test]):
             trainer.callbacks = [callback]
+            trainer.events = ["val"]
             trainer.prediction_event = event
             trainer.evaluate(data)
 

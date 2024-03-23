@@ -5,15 +5,18 @@ pwd
 dos2unix ../../../launches/*;
 dos2unix ../../../launches/*/*;
 user=rmoine
-server=narval
+server=graham
 rsync -rltv --progress \
     ./*.py \
     ../../../requirements.txt \
     ../../../launches \
     $user@$server.computecanada.ca:/project/def-aloise/$user/;
 
+rsync -rltv --progress \
+    ../../../data/finetuning_v3/redo/ \
+    $user@$server.computecanada.ca:/project/def-aloise/$user/data;
 # user=rmoine
-# server=narval
+# server=graham
 # rsync -rltv --progress \
 #     ../../../launches \
 #     $user@$server.computecanada.ca:/project/def-aloise/$user/;
