@@ -878,7 +878,7 @@ def plot_confusion(
     # pretty print the confusion matrix
     values = [mapping_dict[e] + f"\n({e})" for e in unique_values]
     try:
-        index=[0,1]
+        index=[mapping_dict[e] + f"\n({e})" for e in [0,1]]
         df_conf_matrix = pd.DataFrame(conf_matrix, index=index, columns=values)
     except Exception as e:
         print(f"{index=} {values=} {conf_matrix.shape=}")
