@@ -1086,6 +1086,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         folder_out: Path,
         size: int,
         early_stopping: Optional[EarlyStoppingTrainer] = None,
+        target_epoch: Optional[int] = None,
     ) -> None:
         self.history = []
         self.buffer = {}
@@ -1096,6 +1097,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         self.size = size
         self.early_stopping = early_stopping
         self.batch_id = 0
+        self.target_epoch = target_epoch
         super().__init__()
 
     def add_new_data(
@@ -1116,7 +1118,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
             for bug_id, prediction, true, n in zip(
                 bug_ids, predictions, trues, n_tokens
             ):
-                epoch_int = int(epoch)
+                epoch_int = int(epoch) if epoch is not None else self.target_epoch
                 if epoch_int not in self.buffer:
                     self.buffer[epoch_int] = []
                 self.buffer[epoch_int].append(
@@ -1128,7 +1130,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                         "n_tokens": n,
                         "loss": loss,
                         "event": event,
-                        "epoch": epoch,
+                        "epoch": epoch if epoch is not None else self.target_epoch,
                         "batch_id": self.batch_id,
                     }
                 )
@@ -1610,9 +1612,12 @@ def main_qlora_classification(
             weighted=tr_weighted_sampling and not resume_from_checkpoint,  # wether to balance the training dataset
         )
         trainer._load_from_checkpoint(resume_from_checkpoint)
-        for event,data,callback in zip(["val", "train", "test"], [tr_data, val_data, test_data], [predictions_aggregator_tr, predictions_aggregator_val, predictions_aggregator_test]):
+        with open(Path(resume_from_checkpoint) / "trainer_state.json") as fp:
+            last_epoch = json.load(fp)['log_history'][-1]['epoch']
+        for event,data,callback in zip(["train", "val", "test"], [tr_data, val_data, test_data], [predictions_aggregator_tr, predictions_aggregator_val, predictions_aggregator_test]):
             trainer.callbacks = [callback]
             trainer.events = ["val"]
+            callback.target_epoch = last_epoch
             trainer.prediction_event = event
             trainer.evaluate(data)
 
