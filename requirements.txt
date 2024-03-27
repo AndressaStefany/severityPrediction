@@ -1,5 +1,5 @@
-accelerate==0.21.0
-bitsandbytes==0.40.2
+accelerate
+bitsandbytes
 datasets
 fire
 h5py
@@ -8,14 +8,14 @@ matplotlib
 nltk
 optuna
 pandas
-peft==0.4.0
+peft
 protobuf
 scikit-learn
 seaborn
 sentencepiece
 torch
 tqdm
-transformers==4.31.0
-trl==0.4.7
+transformers
+trl
 tyro
 xformers
