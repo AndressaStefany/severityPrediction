@@ -884,7 +884,7 @@ def plot_confusion(
         print(f"{index=} {values=} {conf_matrix.shape=}")
         raise e
     if backend is not None:
-        matplotlib.use("agg")
+        matplotlib.use(backend)
     try:
         from pretty_confusion_matrix import pp_matrix
     except Exception:
