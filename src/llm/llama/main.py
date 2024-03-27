@@ -1399,7 +1399,7 @@ def main_qlora_classification(
     learning_rate: float = 2e-4,
     limit_tokens: int = 7364,
     mapping_dict: Optional[Dict[int, str]] = None,
-    lim_size: int = 50,
+    lim_size: int = -1,
     id: str = "",
     use_cpu: bool = False,
     tr_weighted_sampling: bool = False,
