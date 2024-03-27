@@ -1,0 +1,2 @@
+#/bin/bash
+sbatch /project/def-aloise/rmoine/launches/finetune_eval//finetune_evalqlora_finetune_26908416_redo_0;

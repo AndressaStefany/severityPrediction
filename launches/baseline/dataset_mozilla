@@ -14,13 +14,7 @@ module load StdEnv/2020  gcc/9.3.0  cuda/11.4 arrow python/3.10.2 cudnn
 virtualenv $SLURM_TMPDIR/MYENV
 source $SLURM_TMPDIR/MYENV/bin/activate
 
-pip install numpy scikit-learn tqdm nltk --no-index
-pip install seaborn --no-index
-pip install matplotlib --no-index
-pip install pandas --no-index
-pip install h5py --no-index
-pip install fire --no-index
-pip install optuna --no-index
+pip install -r requirements.txt --no-index
 
 script="/project/def-aloise/$USER/baseline_functions.py"
 num_samples="(-1,200,500,1000,2000,4000,8000)"
