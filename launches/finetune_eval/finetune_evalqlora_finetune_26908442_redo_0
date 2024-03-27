@@ -19,7 +19,7 @@ pip install -r requirements.txt --no-index
 
 dataset_choice=mozilla_200k
 lora_r=10
-id_name="_$SLURM_JOB_ID_redo"
+id_name="_2"
 lora_alpha=10
 lora_dropout=0.1
 model_name=/project/def-aloise/rmoine/cache_dir/models--meta-llama--Llama-2-7b-chat-hf/snapshots/c1b0db933684edbfe29a06fa47eb19cc48025e93
