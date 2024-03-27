@@ -1614,7 +1614,7 @@ def main_qlora_classification(
         trainer._load_from_checkpoint(resume_from_checkpoint)
         with open(Path(resume_from_checkpoint) / "trainer_state.json") as fp:
             last_epoch = json.load(fp)['log_history'][-1]['epoch']
-        for event,data,callback in zip(["train", "val", "test"], [tr_data, val_data, test_data], [predictions_aggregator_tr, predictions_aggregator_val, predictions_aggregator_test]):
+        for event,data,callback in zip(["val", "test"], [tr_data, val_data, test_data], [predictions_aggregator_tr, predictions_aggregator_val, predictions_aggregator_test]):
             trainer.callbacks = [callback]
             trainer.events = ["val"]
             callback.target_epoch = last_epoch
