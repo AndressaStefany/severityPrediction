@@ -1129,7 +1129,6 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
     ):
         """Function to save data of the prediction or training depending of the self.event watch Stops the training if early stopping asks to with the current validation loss for the epoch"""
         
-        logger.info(f"{event=} {self.event=}")
         if event == self.event or self.target_epoch is not None:
             self.batch_id += 1
             for bug_id, prediction, true, n in zip(
