@@ -1103,7 +1103,22 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         self.batch_id = 0
         self.target_epoch = target_epoch
         super().__init__()
-
+    def save(self, epoch_int: int = -1):
+        if epoch_int == -1:
+            epoch_int = max(list(self.buffer))
+        _, _, data_full = compute_metrics_from_list(
+            fields_data=self.buffer[epoch_int],
+            pred_field="prediction",
+            n_tokens_infered_max=self.n_tokens_infered_max,
+        )
+        id = f"_epoch_{str(epoch_int).replace('.','-')}_{self.event}"
+        batches = data_full.drop_duplicates("batch_id")
+        loss_avg = batches["loss"].sum() / len(self.buffer[epoch_int])
+        if self.early_stopping is not None:
+            self.early_stopping.on_evaluate(state, control, loss_avg)
+        data_full.to_json(
+            self.folder_out / f"data{id}.json", orient="records", indent=4
+        )
     def add_new_data(
         self,
         state,
@@ -1117,7 +1132,8 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
         epoch: float,
     ):
         """Function to save data of the prediction or training depending of the self.event watch Stops the training if early stopping asks to with the current validation loss for the epoch"""
-        if event == self.event:
+        
+        if event == self.event or self.target_epoch is not None:
             self.batch_id += 1
             for bug_id, prediction, true, n in zip(
                 bug_ids, predictions, trues, n_tokens
@@ -1139,19 +1155,7 @@ class PredictionAggregator(trf.trainer_callback.TrainerCallback):
                     }
                 )
                 if len(self.buffer[epoch_int]) >= self.size:
-                    _, _, data_full = compute_metrics_from_list(
-                        fields_data=self.buffer[epoch_int],
-                        pred_field="prediction",
-                        n_tokens_infered_max=self.n_tokens_infered_max,
-                    )
-                    id = f"_epoch_{str(epoch_int).replace('.','-')}_{self.event}"
-                    batches = data_full.drop_duplicates("batch_id")
-                    loss_avg = batches["loss"].sum() / len(self.buffer[epoch_int])
-                    if self.early_stopping is not None:
-                        self.early_stopping.on_evaluate(state, control, loss_avg)
-                    data_full.to_json(
-                        self.folder_out / f"data{id}.json", orient="records", indent=4
-                    )
+                    self.save(epoch_int)
 def create_groups(data, group_size):
     current_group = []
 
@@ -1556,7 +1560,7 @@ def main_qlora_classification(
         early_stopping=EarlyStoppingTrainer(  # We attach the early stopper there as the validation loss is only accessible via PredictionAggregator and we can stop the training via the object control
             early_stopping_patience=early_stopping_patience,
             early_stopping_threshold=early_stopping_threshold,
-        ),
+        ) if resume_from_checkpoint is None else None,
     )
     predictions_aggregator_test = PredictionAggregator(
         event="test",
@@ -1595,6 +1599,7 @@ def main_qlora_classification(
                 fp.write("error")
             raise e
     else:
+        logger.info(f"---------------------------EVALUATION-----------------------------------")
         # We build the trainer object that will do the training and validations loops, the epochs... As we followed the format specified by huggingface the callbacks will be called at the appropriate time (end of each batch during training, end of each epoch...)
         trainer = CustomTrainer(  # type: ignore
             criterion=criterion,
@@ -1615,15 +1620,17 @@ def main_qlora_classification(
             ],
             weighted=tr_weighted_sampling and not resume_from_checkpoint,  # wether to balance the training dataset
         )
+        logger.info(f"{folder_out=}")
         trainer._load_from_checkpoint(resume_from_checkpoint)
         with open(Path(resume_from_checkpoint) / "trainer_state.json") as fp:
             last_epoch = json.load(fp)['log_history'][-1]['epoch']
-        for event,data,callback in zip(["train", "val", "test"], [tr_data, val_data, test_data], [predictions_aggregator_tr, predictions_aggregator_val, predictions_aggregator_test]):
+        for event,data,callback in zip(["val", "test"], [val_data, test_data], [predictions_aggregator_val, predictions_aggregator_test]):
             trainer.callbacks = [callback]
             trainer.events = ["val"]
             callback.target_epoch = last_epoch
             trainer.prediction_event = event
             trainer.evaluate(data)
+            callback.save()
 
 
 def get_max_tokens(
