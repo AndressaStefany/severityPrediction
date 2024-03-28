@@ -19,9 +19,9 @@ import seaborn as sn
 from matplotlib.collections import QuadMesh
 import warnings
 
-def get_new_fig(fn, figsize=[9, 9]):
+def get_new_fig(fn, figsize=[9, 9], dpi=300):
     """Init graphics"""
-    fig1 = plt.figure(fn, figsize)
+    fig1 = plt.figure(fn, figsize, dpi)
     ax1 = fig1.gca()  # Get Current Axis
     ax1.cla()  # clear existing plot
     return fig1, ax1
@@ -154,7 +154,8 @@ def pp_matrix(
     pred_val_axis="y",
     title="Confusion matrix",
     vmin=0,
-    vmax=None
+    vmax=None,
+    dpi=300
 ):
     """
     print conf matrix with default layout (like matlab)
@@ -180,7 +181,7 @@ def pp_matrix(
     insert_totals(df_cm)
 
     # this is for print allways in the same window
-    fig, ax1 = get_new_fig("Conf matrix default", figsize)
+    fig, ax1 = get_new_fig("Conf matrix default", figsize, dpi)
 
     ax = sn.heatmap(
         df_cm,

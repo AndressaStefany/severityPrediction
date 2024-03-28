@@ -777,6 +777,7 @@ def compute_metrics_from_files(
     possibilities_pred: Optional[List[int]] = None,
     id: str = "",
     title: str = "",
+    dpi: int = 300,
 ):
     """Taking the path of the predictions folder, it computes the statistics with the predictions (confusion matrix, precision, recall, f1-score). The confusion matrix is plotted into a png file
 
@@ -827,6 +828,7 @@ def compute_metrics_from_files(
         backend=backend,  # type: ignore
         title=title,
         id=id,
+        dpi=dpi,
     )
     if data_full is not None:
         # find representants
@@ -849,6 +851,7 @@ def plot_confusion(
     limit_tokens: int = 7366,
     title: str = "Confusion matrix",
     id: str = "",
+    dpi: int = 300
 ):
     """Takes the confusion matrix and plots it with totals values (recall is the percentage of the total of each column, precision percentage for the total of each line and accuracy is the percentage at the bottom right)
     Can be used in notebooks just to plot or just to save into a file. See doc of arguments
@@ -900,6 +903,7 @@ def plot_confusion(
         title=title,
         vmin=0,
         vmax=np.sum(conf_matrix),
+        dpi=dpi
     )
     if folder_path is not None:
         plt.savefig(folder_path / f"confusion_matrix{id}.png")
