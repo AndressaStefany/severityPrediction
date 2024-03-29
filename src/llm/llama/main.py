@@ -851,7 +851,8 @@ def plot_confusion(
     limit_tokens: int = 7366,
     title: str = "Confusion matrix",
     id: str = "",
-    dpi: int = 300
+    dpi: int = 300,
+    cmap: str = "coolwarm",
 ):
     """Takes the confusion matrix and plots it with totals values (recall is the percentage of the total of each column, precision percentage for the total of each line and accuracy is the percentage at the bottom right)
     Can be used in notebooks just to plot or just to save into a file. See doc of arguments
@@ -897,7 +898,7 @@ def plot_confusion(
             from llama.pretty_confusion_matrix import pp_matrix
     pp_matrix(  # type: ignor
         df_conf_matrix,
-        cmap="coolwarm",
+        cmap=cmap,
         fz=11,
         figsize=[5, 5],
         title=title,
