@@ -28,7 +28,7 @@ def get_new_fig(fn, figsize=[9, 9], dpi=300):
 
 
 def configcell_text_and_colors(
-    array_df, lin, col, oText, facecolors, posi, fz, fmt, show_null_values=0
+    array_df, lin, col, oText, facecolors, posi, fz, fmt, show_null_values=0, complement: bool = False
 ):
     """
     config cell text and colors
@@ -68,7 +68,8 @@ def configcell_text_and_colors(
         text_del.append(oText)
 
         # text to ADD
-        font_prop = fm.FontProperties(weight="bold", size=fz)
+        diag_end = (col == (ccl - 1)) and (lin == (ccl - 1))
+        font_prop = fm.FontProperties(weight="normal", size=fz, style="italic" if diag_end else "normal")
         text_kwargs = dict(
             color="w",
             ha="center",
@@ -76,19 +77,29 @@ def configcell_text_and_colors(
             gid="sum",
             fontproperties=font_prop,
         )
-        lis_txt = ["%d" % (cell_val), per_ok_s, "%.2f%%" % (per_err)]
+        cell_val_txt = f"{cell_val:d}"
+        lis_txt = [cell_val_txt, per_ok_s, "%.2f%%" % (per_err)]
+        if not complement:
+            lis_txt = [cell_val_txt, per_ok_s]
         lis_kwa = [text_kwargs]
         dic = text_kwargs.copy()
-        dic["color"] = "g"
+        dic["color"] = "w"
+        dic["fontproperties"] = fm.FontProperties(weight="bold", size=fz, style="italic" if diag_end else "normal")
         lis_kwa.append(dic)
         dic = text_kwargs.copy()
-        dic["color"] = "r"
+        dic["color"] = "w"
         lis_kwa.append(dic)
-        lis_pos = [
-            (oText._x, oText._y - 0.3),
-            (oText._x, oText._y),
-            (oText._x, oText._y + 0.3),
-        ]
+        if complement:
+            lis_pos = [
+                (oText._x, oText._y - 0.3),
+                (oText._x, oText._y),
+                (oText._x, oText._y + 0.3),
+            ]
+        else:
+            lis_pos = [
+                (oText._x, oText._y - 0.1),
+                (oText._x, oText._y + 0.1),
+            ]
         for i in range(len(lis_txt)):
             newText = dict(
                 x=lis_pos[i][0],
@@ -123,12 +134,12 @@ def configcell_text_and_colors(
             # set background color in the diagonal to blue
             facecolors[posi] = [0.35, 0.8, 0.55, 1.0]
         else:
-            oText.set_color("r")
+            oText.set_color("w")
 
     return text_add, text_del
 
 
-def insert_totals(df_cm):
+def insert_totals(df_cm, name_tot_line: str = "sum_lin", name_tot_cols: str = "sum_col"):
     """insert total column and line (the last ones)"""
     sum_col = []
     for c in df_cm.columns:
@@ -136,9 +147,9 @@ def insert_totals(df_cm):
     sum_lin = []
     for item_line in df_cm.iterrows():
         sum_lin.append(item_line[1].sum())
-    df_cm["sum_lin"] = sum_lin
+    df_cm[name_tot_line] = sum_lin
     sum_col.append(np.sum(sum_lin))
-    df_cm.loc["sum_col"] = sum_col
+    df_cm.loc[name_tot_cols] = sum_col
 
 
 def pp_matrix(
@@ -155,7 +166,11 @@ def pp_matrix(
     title="Confusion matrix",
     vmin=0,
     vmax=None,
-    dpi=300
+    dpi=300,
+    name_tot_line: str = "sum_lin",
+    name_tot_cols: str = "sum_col",
+    complement: bool = False,
+    tight_layout: bool = False,
 ):
     """
     print conf matrix with default layout (like matlab)
@@ -178,7 +193,7 @@ def pp_matrix(
         df_cm = df_cm.T
 
     # create "Total" column
-    insert_totals(df_cm)
+    insert_totals(df_cm, name_tot_cols=name_tot_cols, name_tot_line=name_tot_line)
 
     # this is for print allways in the same window
     fig, ax1 = get_new_fig("Conf matrix default", figsize, dpi)
@@ -226,7 +241,7 @@ def pp_matrix(
 
         # set text
         txt_res = configcell_text_and_colors(
-            array_df, lin, col, t, facecolors, posi, fz, fmt, show_null_values
+            array_df, lin, col, t, facecolors, posi, fz, fmt, show_null_values, complement=complement
         )
 
         text_add.extend(txt_res[0])
@@ -243,8 +258,9 @@ def pp_matrix(
     ax.set_title(title)
     ax.set_xlabel(xlbl)
     ax.set_ylabel(ylbl)
-    with warnings.catch_warnings():
-        plt.tight_layout()  # set layou*t slim
+    if tight_layout:
+        with warnings.catch_warnings():
+            plt.tight_layout()  # set layou*t slim
     return ax
 
 

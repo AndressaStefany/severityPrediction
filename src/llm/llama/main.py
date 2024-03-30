@@ -708,7 +708,7 @@ def compute_metrics_from_list(
     data = pd.DataFrame(fields_data)
     assert len(data) > 0
     # Remove duplicates by bug_id
-    data.drop_duplicates(subset="bug_id", inplace=True)
+    data = data.drop_duplicates(subset="bug_id")
     assert len(data) > 1
     if "binary_severity" not in data.columns:
         if path_backup_fields is not None:
@@ -726,16 +726,8 @@ def compute_metrics_from_list(
     if tokenizer is not None:
         data["n_tokens"] = data[input_field].apply(lambda x: len(tokenizer(x)["input_ids"]))  # type: ignore
     data_full = data.copy()
-    # Filter by limit of tokens
-    if "n_tokens" in data.columns:
-        data = data.query(
-            f"n_tokens < {n_tokens_show_max} & n_tokens >= {n_tokens_show_min}"
-        )
     # Replace Nan by -2 in prediction
     data[pred_field] = data[pred_field].apply(lambda x: -2 if np.isnan(x) else int(x))
-    data["binary_severity"] = np.where(
-        data[pred_field] == -2, -2, data["binary_severity"]
-    )
     data.rename({"binary_severity": "true", pred_field: "pred"}, axis=1, inplace=True)
     # Apply mapping
     if mapping_dict is None:
@@ -749,13 +741,9 @@ def compute_metrics_from_list(
     data["true_text"] = data["true"].apply(lambda x: mapping_dict[x])
     true = np.array(data["true"])
     pred = np.array(data["pred"])
-    pred_unique = np.unique(pred)
     # Compute the confusion matrix
-    conf_matrix = skMetr.confusion_matrix(true, pred)
-    if -2 in pred_unique:
-        conf_matrix = conf_matrix[1:,:]
-    if -1 in pred_unique:
-        conf_matrix = conf_matrix[1:,:]
+    unique_values = sorted(set(np.unique(true)).union(np.unique(pred)))
+    conf_matrix = skMetr.confusion_matrix(true, pred, labels=unique_values)
 
     # Compute F1-score
     f1: List[float] = skMetr.f1_score(true, pred, average=None).tolist()  # type: ignore
@@ -847,12 +835,16 @@ def plot_confusion(
     folder_path: Optional[Path] = None,
     mapping_dict: Optional[Dict] = None,
     unique_values: Optional[List] = None,
-    backend=Optional[Literal["agg"]],
+    backend: Optional[Literal["agg"]] = None,
     limit_tokens: int = 7366,
     title: str = "Confusion matrix",
     id: str = "",
     dpi: int = 300,
     cmap: str = "coolwarm",
+    name_tot_line: str = "sum_lin",
+    name_tot_cols: str = "sum_col",
+    complement: bool = False,
+    shift_max: float = 1
 ):
     """Takes the confusion matrix and plots it with totals values (recall is the percentage of the total of each column, precision percentage for the total of each line and accuracy is the percentage at the bottom right)
     Can be used in notebooks just to plot or just to save into a file. See doc of arguments
@@ -872,7 +864,7 @@ def plot_confusion(
     """
     if mapping_dict is None:
         mapping_dict = {
-            -2: f"Too big >={limit_tokens}",
+            -2: f"GPU error",
             -1: "Mixed answer",
             0: "NON SEVERE",
             1: "SEVERE",
@@ -882,7 +874,7 @@ def plot_confusion(
     # pretty print the confusion matrix
     values = [mapping_dict[e] + f"\n({e})" for e in unique_values]
     try:
-        index=[mapping_dict[e] + f"\n({e})" for e in [0,1]]
+        index=[mapping_dict[e] + f"\n({e})" for e in unique_values]
         df_conf_matrix = pd.DataFrame(conf_matrix, index=index, columns=values)
     except Exception as e:
         print(f"{index=} {values=} {conf_matrix.shape=}")
@@ -902,9 +894,12 @@ def plot_confusion(
         fz=11,
         figsize=[5, 5],
         title=title,
-        vmin=0,
-        vmax=np.sum(conf_matrix),
-        dpi=dpi
+        vmin=np.min(conf_matrix),
+        vmax=np.max(conf_matrix),
+        dpi=dpi,
+        name_tot_cols=name_tot_cols,
+        name_tot_line=name_tot_line,
+        complement=complement
     )
     if folder_path is not None:
         plt.savefig(folder_path / f"confusion_matrix{id}.png")
