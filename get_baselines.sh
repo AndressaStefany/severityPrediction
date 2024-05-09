@@ -1,3 +1,3 @@
 #/bin/bash
 mkdir ./data/baselineDB/;
-scp rmoine@narval.computecanada.ca:/scratch/rmoine/severityPrediction/*.db ./data/baselineDB/
+scp x@narval.computecanada.ca:/scratch/x/severityPrediction/*.db ./data/baselineDB/
