@@ -23,8 +23,8 @@ catL () {
 };
 alias c='clear&&cd .&&pwd';
 alias bashrc='vim ~/.bashrc';
-alias projets='cd /mnt/c/users/robin/documents/projets/';
-alias severity='cd /mnt/c/Users/robin/Documents/projets/severityPrediction/';
+alias projets='cd /mnt/c/users/$USER/documents/projets/';
+alias severity='cd /mnt/c/Users/$USER/Documents/projets/severityPrediction/';
 alias endsound='paplay /usr/share/sounds/freedesktop/stereo/complete.oga';
 # To display the current path each time
 shopt -s autocd;
